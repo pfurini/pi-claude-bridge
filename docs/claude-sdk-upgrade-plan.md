@@ -6,24 +6,34 @@
 
 ## Executive summary
 
-Upgrade the bridge in a dedicated compatibility change to `@anthropic-ai/claude-agent-sdk` `0.3.217`, which bundles Claude Code `2.1.217`. Do not add `@anthropic-ai/claude-code` as a separate dependency because the Agent SDK already provides the matching platform binary.
+Upgrade the bridge in a dedicated compatibility change to `@anthropic-ai/claude-agent-sdk` `0.3.218`, which bundles Claude Code `2.1.218`. Do not add `@anthropic-ai/claude-code` as a separate dependency because the Agent SDK already provides the matching platform binary.
 
-The source appears compatible with the target SDK. A temporary upgrade rehearsal passed all 99 unit tests and introduced no new TypeScript errors. However, those results are not enough to approve the upgrade because the existing suite does not directly test SDK query construction, SDK message shapes, MCP initialization, AskClaude tool policy, or authenticated session compatibility.
+The source appears compatible with the target SDK. A clean-install rehearsal of `0.3.218`, after aligning the Pi development dependencies, passed all 99 unit tests and typechecking. However, those results are not enough to approve the upgrade because the existing suite does not directly test SDK query construction, SDK message shapes, MCP initialization, AskClaude tool policy, or authenticated session compatibility.
 
-The highest-risk area is the synthetic Claude Code JSONL produced through `cc-session-io`. The latest SDK can parse and list a generated session offline, but authenticated resume, rebuild, compaction, abort, and cross-version rollback behavior remain unverified because the local Claude OAuth session was expired during this assessment.
+The pre-upgrade assessment proved that the SDK session APIs could parse and list a generated session offline, but authenticated resume, rebuild, compaction, abort, and cross-version rollback behavior remain unverified because the local Claude OAuth session was expired during this assessment.
 
 The upgrade should be completed before implementing the proposed Claude configuration isolation. Keeping the two changes separate will make failures attributable and will let the isolation work target the current SDK behavior.
 
 ## Recommended dependency target
 
-Use these versions for the upgrade rehearsal and committed lockfile:
+Use these runtime dependency versions for the upgrade rehearsal and committed lockfile:
 
 ```json
 {
-  "@anthropic-ai/claude-agent-sdk": "0.3.217",
+  "@anthropic-ai/claude-agent-sdk": "0.3.218",
   "@anthropic-ai/sdk": "0.113.0",
   "@modelcontextprotocol/sdk": "1.29.0",
   "zod": "4.4.3"
+}
+```
+
+Establish the clean baseline with an exact, coherent Pi development set:
+
+```json
+{
+  "@earendil-works/pi-ai": "0.80.3",
+  "@earendil-works/pi-coding-agent": "0.80.3",
+  "@earendil-works/pi-tui": "0.80.3"
 }
 ```
 
@@ -33,20 +43,22 @@ Keep `cc-session-io` at `0.3.1`, which was still its latest published version on
 
 | Component | Current | Recommended | Notes |
 | --- | ---: | ---: | --- |
-| Claude Agent SDK | `0.2.141` | `0.3.217` | Latest npm `latest` release assessed |
-| Bundled Claude Code | `2.1.141` | `2.1.217` | Paired and shipped by the Agent SDK |
+| Claude Agent SDK | `0.2.141` | `0.3.218` | Current npm `latest` release selected for execution |
+| Bundled Claude Code | `2.1.141` | `2.1.218` | Paired and shipped by the Agent SDK |
 | Anthropic API SDK | `^0.73.0` | `0.113.0` | Latest Agent SDK requires `>=0.93.0` |
 | MCP SDK | Transitive | `1.29.0` | Latest Agent SDK declares it as a peer |
 | Zod | Transitive but directly imported | `4.4.3` | Must become an explicit dependency |
 | `cc-session-io` | `0.3.1` | `0.3.1` | No newer release available |
 
-> **Re-validate the pin at execution time.** The version above was `latest` on the assessment date. As of a follow-up check, `npm view @anthropic-ai/claude-agent-sdk dist-tags` returns `{ latest: "0.3.218", next: "0.3.218" }`, so `0.3.218` (Claude Code `2.1.218`) is now the current stable release, not a `next`-only preview. The original rationale for excluding `0.3.218` ("published under the `next` tag") no longer holds. Before applying Phase 3, re-run `npm view @anthropic-ai/claude-agent-sdk dist-tags`, rehearse against whatever is then tagged `latest`, and pin that exact version. Treat the numbers in this table as the assessed baseline, not a fixed target.
+> **Re-validate the pin at execution time.** `0.3.218` (Claude Code `2.1.218`) is the stable target selected on the assessment date. Immediately before Phase 3, re-run `npm view @anthropic-ai/claude-agent-sdk dist-tags`. If `latest` has changed, update the target Agent SDK and bundled Claude Code versions consistently throughout this plan, repeat the clean-install rehearsal, and pin the newly selected Agent SDK exactly.
 
 ### Pinning policy
 
 Pin the Agent SDK exactly. Each Agent SDK release selects a specific Claude Code binary, so an automatic patch-range update can change runtime behavior without a source change in this repository.
 
 The supporting peer packages may also be pinned exactly for the first release. Future updates should arrive through reviewed dependency PRs that run the compatibility gates described below.
+
+Pin `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui` to the same exact release for the baseline. Use `0.80.3` here because it is the smallest coherent change from the current lockfile. A temporary `0.81.1` rehearsal also passed typechecking and all 99 unit tests, but taking that unrelated Pi minor upgrade in the same change would weaken failure attribution. Upgrade Pi separately after the SDK work.
 
 ## Integration surface
 
@@ -128,19 +140,19 @@ This is a concrete gap, not a hypothetical one. `MODE_DISALLOWED_TOOLS.none` (`s
 
 ## Rehearsal results
 
-The dependency upgrade was rehearsed in a temporary clone. No repository source files were changed during the assessment.
+The original `0.3.217` dependency upgrade was rehearsed in a temporary clone. A follow-up clean-install rehearsal used `0.3.218` with the coherent Pi `0.80.3` development set. No repository source files were changed during either rehearsal. Unless noted otherwise, the offline initialization probes below came from the original `0.3.217` rehearsal.
 
 ### Passed checks
 
 - The target packages installed successfully.
-- The latest Agent SDK's bundled native executable reported `2.1.217`.
-- All 99 existing unit tests passed unchanged.
-- Typechecking produced the same existing `TS2345` error at `src/index.ts:1645` and no additional errors.
-- Latest `resolveSettings()` read the relocated user settings from `CLAUDE_CONFIG_DIR`.
+- The target Agent SDK's bundled native executable reported `2.1.218`.
+- All 99 existing unit tests passed unchanged under `0.3.218`.
+- Typechecking passed under `0.3.218` after aligning all Pi development packages at `0.80.3`.
+- The assessed SDK's `resolveSettings()` read the relocated user settings from `CLAUDE_CONFIG_DIR`.
 - `settingSources: ["user"]` loaded only relocated user settings.
 - `settingSources: ["user", "project"]` loaded relocated user and project settings.
 - `settingSources: []` loaded neither source.
-- Latest SDK session APIs parsed and listed a session generated by `cc-session-io 0.3.1`.
+- The assessed SDK's session APIs parsed and listed a session generated by `cc-session-io 0.3.1`.
 - An in-process MCP server initialized as connected and advertised its tool in 5 of 5 probes.
 - AskClaude read-mode initialization still included Read, Grep, and Glob.
 - AskClaude none-mode initialization did not include filesystem, shell, web, or native Agent tools.
@@ -233,7 +245,11 @@ There is no install matrix proving that npm selects the correct optional native 
 
 The existing `TS2345` error means typechecking is already red. That prevents the project from using a clean typecheck as an upgrade acceptance gate.
 
-The error is a dependency-dedup problem, not a source bug at `src/index.ts:1645`. It is a nominal type mismatch (`private property 'queue'`) caused by two installed copies of `@earendil-works/pi-ai`: `0.80.3` at the root and `0.80.2` nested under `@earendil-works/pi-coding-agent`. Editing line 1645 will not fix it. Because `pi-coding-agent` depends on `pi-ai` at `^0.80.2`, the two copies can be collapsed to a single `0.80.3` install via `npm dedupe` or an `overrides` entry. Enforce the dedup with an `overrides` pin rather than relying on install order — a future `pi-coding-agent` release could otherwise reintroduce a nested copy and turn the typecheck gate red again. Resolve this before the dependency bump so the `@anthropic-ai/sdk` version change (see below) is actually gated by a clean typecheck instead of being masked by this pre-existing error.
+The error is a dependency-dedup problem, not a source bug at `src/index.ts:1645`. It is a nominal type mismatch (`private property 'queue'`) caused by two installed copies of `@earendil-works/pi-ai`: `0.80.3` at the root and `0.80.2` nested under `@earendil-works/pi-coding-agent`. Editing line 1645 will not fix it. The nested copy is retained by the published `npm-shrinkwrap.json` in `@earendil-works/pi-coding-agent 0.80.2`, so `npm dedupe` and a root `overrides` pin do not collapse it. Pin `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui` exactly to `0.80.3`; a clean install then resolves the Pi packages coherently and makes typechecking pass. Resolve this before the Agent SDK dependency bump so the `@anthropic-ai/sdk` type changes are checked against a clean baseline.
+
+### Node runtime baseline
+
+`package.json` currently declares Node `>=20`, but the required `@earendil-works/pi-*` packages declare Node `>=22.19.0`. Node 20 is therefore not a supportable package baseline. Update the bridge engine requirement to `>=22.19.0` in Phase 1 and use Node 22.19 plus the current Node LTS for the packaging matrix.
 
 ## Upgrade plan
 
@@ -241,11 +257,12 @@ The error is a dependency-dedup problem, not a source bug at `src/index.ts:1645`
 
 Complete this phase using the current Agent SDK.
 
-1. Resolve the existing typecheck error by deduping `@earendil-works/pi-ai` to a single copy (via `npm dedupe` plus an `overrides` pin), not by editing `src/index.ts:1645`. See "Typecheck gate" above for why the line-level location is misleading.
-2. Extract or expose testable SDK option builders for provider, AskClaude, and isolated compaction queries.
-3. Extract or expose the SDK message reducer and terminal-result handling.
-4. Add a small fake Claude executable that speaks enough stream-json protocol to test the bridge without authentication.
-5. Record current functional invariants rather than brittle complete object snapshots.
+1. Pin `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui` exactly to `0.80.3`, regenerate the lockfile from a clean install, and confirm only one effective `@earendil-works/pi-ai` version is installed. Do not edit `src/index.ts:1645` and do not rely on `npm dedupe` or `overrides`.
+2. Change the package engine requirement from Node `>=20` to `>=22.19.0`, matching the required Pi packages.
+3. Extract or expose testable SDK option builders for provider, AskClaude, and isolated compaction queries.
+4. Extract or expose the SDK message reducer and terminal-result handling.
+5. Add a small fake Claude executable that speaks enough stream-json protocol to test the bridge without authentication.
+6. Record current functional invariants rather than brittle complete object snapshots.
 
 Suggested tests:
 
@@ -267,15 +284,16 @@ Add tests that run without credentials:
 7. Create a synthetic session and read it through the SDK session APIs.
 8. Assert bundled executable resolution and external executable override behavior.
 
-> **Scope justification for Phases 1-2.** Building a fake Claude CLI and extracting testable option and message builders is deliberately heavy for a one-time upgrade whose rehearsal already passed 99 unit tests with a clean typecheck. It is worth it here for one reason: the actual bottleneck during the assessment was that expired Claude OAuth blocked every authenticated check, so there is currently no way to gate SDK behavior offline. This harness is what lets future SDK bumps run in CI without credentials, which is a stated goal of this plan (reviewed automated dependency PRs, see "Pinning policy" and Phase 9). Treat Phases 1-2 as durable regression infrastructure for recurring upgrades, not as one-shot scaffolding. If the project decides it will *not* pursue recurring automated SDK bumps, reconsider this scope, because for a single upgrade it is over-engineered.
+> **Scope justification for Phases 1-2.** Building a fake Claude CLI and extracting testable option and message builders is deliberately heavy for a one-time upgrade whose follow-up rehearsal already passed 99 unit tests and typechecking. It is worth it here for one reason: the actual bottleneck during the assessment was that expired Claude OAuth blocked every authenticated check, so there is currently no way to gate SDK behavior offline. This harness is what lets future SDK bumps run in CI without credentials, which is a stated goal of this plan (reviewed automated dependency PRs, see "Pinning policy" and Phase 9). Treat Phases 1-2 as durable regression infrastructure for recurring upgrades, not as one-shot scaffolding. If the project decides it will *not* pursue recurring automated SDK bumps, reconsider this scope, because for a single upgrade it is over-engineered.
 
 ### Phase 3: Apply the dependency upgrade
 
-1. Update `package.json` to the recommended versions.
-2. Regenerate `package-lock.json` from a clean installation.
-3. Confirm `npm ls` has no invalid peer dependency relationships.
-4. Do not add standalone `@anthropic-ai/claude-code`.
-5. Keep `cc-session-io` unchanged unless authenticated compatibility fails.
+1. Re-run `npm view @anthropic-ai/claude-agent-sdk dist-tags`. If `latest` is no longer `0.3.218`, update every target SDK and bundled Claude Code reference in this plan and repeat the clean-install rehearsal before proceeding.
+2. Update `package.json` to the recommended runtime dependency versions.
+3. Regenerate `package-lock.json` from a clean installation.
+4. Confirm `npm ls` has no invalid peer dependency relationships.
+5. Do not add standalone `@anthropic-ai/claude-code`.
+6. Keep `cc-session-io` unchanged unless authenticated compatibility fails.
 
 ### Phase 4: Adapt behavior deliberately
 
@@ -339,7 +357,7 @@ Required scenarios:
 Use isolated profile directories and separate installations for the current and target versions.
 
 1. Generate and resume a session with `0.2.141` and Claude Code `2.1.141`.
-2. Resume equivalent synthetic history with `0.3.217` and Claude Code `2.1.217`.
+2. Resume equivalent synthetic history with `0.3.218` and Claude Code `2.1.218`.
 3. Let the new binary append records, then test whether the old binary can read them.
 4. Let the old binary append records, then test whether the new binary can read them.
 5. Restart Pi and prove that the bridge can rebuild a fresh session from Pi history after a downgrade.
@@ -352,10 +370,10 @@ If latest resume fails, fix or update `cc-session-io`. Avoid adding ad hoc JSONL
 
 1. Run `npm pack`.
 2. Install the tarball into a clean consumer project.
-3. Start a query and assert `system:init.claude_code_version` is `2.1.217`.
+3. Start a query and assert `system:init.claude_code_version` is `2.1.218`.
 4. Verify the bundled executable runs without relying on a `claude` binary from `PATH`.
 5. Verify `pathToClaudeCodeExecutable` still overrides the bundle.
-6. Test Node 20, which is the package's declared minimum, and the current Node LTS.
+6. Test Node 22.19, the package's corrected minimum, and the current Node LTS.
 7. Test native package resolution on Linux x64, macOS arm64, and Windows if those platforms remain supported.
 
 The repository currently has no GitHub Actions workflow. If CI is added, keep authenticated tests on trusted manual, scheduled, or protected runs so credentials are never exposed to untrusted pull requests.
@@ -392,15 +410,16 @@ Package the candidate and test it locally before publishing. Keep the Agent SDK 
 
 The upgrade is ready to release only when all of the following are true:
 
-- `npm run typecheck` passes from a clean checkout, with the `@earendil-works/pi-ai` dedup enforced by an `overrides` pin so the gate stays stable across reinstalls.
+- `npm run typecheck` passes from a clean checkout with `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui` pinned coherently to `0.80.3` and only one effective `@earendil-works/pi-ai` version installed.
 - All existing unit tests and new SDK contract tests pass.
-- The complete authenticated integration suite passes with Claude Code `2.1.217`.
+- The complete authenticated integration suite passes with Claude Code `2.1.218`.
 - `system:init` confirms the bundled version rather than an unintended system CLI.
 - A Pi custom tool succeeds on the first provider turn.
 - AskClaude read, full, and none policies match the documented contract.
 - Terminal SDK errors are surfaced instead of being accepted as successful summaries.
 - Synthetic session resume, rebuild, abort recovery, and compaction pass.
 - Package installation resolves all peer and platform dependencies cleanly.
+- The package declares Node `>=22.19.0`, and packaging checks pass on Node 22.19 and the current Node LTS.
 - Model and context-window documentation reflects measurements from the target binary.
 - A downgrade followed by Pi restart rebuilds a usable session from Pi history.
 
