@@ -1,5 +1,9 @@
 # Changelog
 
+## UNRELEASED
+
+- **Tests: add a measurable Agent SDK upgrade baseline** — align Pi development packages at `0.80.3`, require Node `>=22.19.0`, extract SDK option and message contracts, and add an unauthenticated fake Claude stream-json runtime for offline tests.
+
 ## 0.6.2 — 2026-07-06
 
 - **Fix: Sonnet 5 and Fable 5 with 1M context** — bare model IDs (`claude-sonnet-5`, `claude-fable-5`) are 200K context. Must pass `[1m]` suffix for both, similar to Opus 4.8.

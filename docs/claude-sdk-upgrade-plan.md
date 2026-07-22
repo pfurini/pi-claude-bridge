@@ -2,7 +2,7 @@
 
 **Assessment date:** 2026-07-22  
 **Project:** `pi-claude-bridge`  
-**Status:** Upgrade recommended after compatibility gates are added
+**Status:** Phase 1 complete; Phase 2 offline compatibility contracts are next
 
 ## Executive summary
 
@@ -243,35 +243,55 @@ There is no install matrix proving that npm selects the correct optional native 
 
 ### Typecheck gate
 
-The existing `TS2345` error means typechecking is already red. That prevents the project from using a clean typecheck as an upgrade acceptance gate.
+Before Phase 1, typechecking was red because two installed copies of `@earendil-works/pi-ai` created a nominal type mismatch (`private property 'queue'`). The root used `0.80.3`, while `@earendil-works/pi-coding-agent 0.80.2` retained a nested `0.80.2` through its published `npm-shrinkwrap.json`; `npm dedupe` and a root `overrides` pin could not collapse it.
 
-The error is a dependency-dedup problem, not a source bug at `src/index.ts:1645`. It is a nominal type mismatch (`private property 'queue'`) caused by two installed copies of `@earendil-works/pi-ai`: `0.80.3` at the root and `0.80.2` nested under `@earendil-works/pi-coding-agent`. Editing line 1645 will not fix it. The nested copy is retained by the published `npm-shrinkwrap.json` in `@earendil-works/pi-coding-agent 0.80.2`, so `npm dedupe` and a root `overrides` pin do not collapse it. Pin `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui` exactly to `0.80.3`; a clean install then resolves the Pi packages coherently and makes typechecking pass. Resolve this before the Agent SDK dependency bump so the `@anthropic-ai/sdk` type changes are checked against a clean baseline.
+Phase 1 aligned `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui` exactly at `0.80.3`. A clean install now resolves one effective `@earendil-works/pi-ai` version, and `npm run typecheck` passes without changing the affected provider call site.
 
 ### Node runtime baseline
 
-`package.json` currently declares Node `>=20`, but the required `@earendil-works/pi-*` packages declare Node `>=22.19.0`. Node 20 is therefore not a supportable package baseline. Update the bridge engine requirement to `>=22.19.0` in Phase 1 and use Node 22.19 plus the current Node LTS for the packaging matrix.
+`package.json` now declares Node `>=22.19.0`, matching the required `@earendil-works/pi-*` packages. Phase 7 still needs to run the packaging matrix on Node 22.19 and the current Node LTS.
 
 ## Upgrade plan
 
-### Phase 1: Make the baseline measurable
+### Phase 1: Make the baseline measurable (completed 2026-07-22)
 
-Complete this phase using the current Agent SDK.
+This phase was completed using the current Agent SDK (`0.2.141`).
 
-1. Pin `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui` exactly to `0.80.3`, regenerate the lockfile from a clean install, and confirm only one effective `@earendil-works/pi-ai` version is installed. Do not edit `src/index.ts:1645` and do not rely on `npm dedupe` or `overrides`.
-2. Change the package engine requirement from Node `>=20` to `>=22.19.0`, matching the required Pi packages.
-3. Extract or expose testable SDK option builders for provider, AskClaude, and isolated compaction queries.
-4. Extract or expose the SDK message reducer and terminal-result handling.
-5. Add a small fake Claude executable that speaks enough stream-json protocol to test the bridge without authentication.
-6. Record current functional invariants rather than brittle complete object snapshots.
+1. [x] Pin `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and `@earendil-works/pi-tui` exactly to `0.80.3`, regenerate the lockfile from a clean install, and confirm only one effective `@earendil-works/pi-ai` version is installed. No `npm dedupe`, `overrides`, or provider call-site workaround was used.
+2. [x] Change the package engine requirement from Node `>=20` to `>=22.19.0`, matching the required Pi packages.
+3. [x] Extract testable SDK option builders for provider, AskClaude, and isolated compaction queries into `src/sdk-options.ts`.
+4. [x] Extract shared SDK message reduction and terminal-result parsing into `src/sdk-messages.ts`.
+5. [x] Add a fake Claude executable that speaks enough stream-json protocol to test the SDK without authentication.
+6. [x] Record current functional invariants with focused assertions rather than complete option or message snapshots.
 
-Suggested tests:
+Implemented tests:
 
 - `tests/unit-sdk-options.mjs`
 - `tests/unit-sdk-messages.mjs`
 - `tests/unit-sdk-runtime-contract.mjs`
 - `tests/fixtures/fake-claude-cli.mjs`
 
-### Phase 2: Add offline compatibility contracts
+#### Phase 1 completion record
+
+Implemented files:
+
+- `src/sdk-options.ts` owns the three production query-option builders.
+- `src/sdk-messages.ts` owns reusable message reduction and terminal-result parsing.
+- `tests/fixtures/fake-claude-cli.mjs` implements the offline stream-json process boundary.
+- `tests/unit-sdk-options.mjs`, `tests/unit-sdk-messages.mjs`, and `tests/unit-sdk-runtime-contract.mjs` cover the new seams.
+
+Verification completed on 2026-07-22:
+
+- A clean `npm install` regenerated `package-lock.json`.
+- `npm ls` resolved all three Pi development packages to `0.80.3` and found only one effective `@earendil-works/pi-ai` version.
+- The runtime remained on Agent SDK `0.2.141`; the dependency upgrade has not started.
+- `npm run typecheck` passed.
+- All 110 unit tests passed (99 existing tests plus 11 new SDK contract tests).
+- The fake executable completed an unauthenticated Agent SDK query and produced `system:init`, streaming, completed assistant, and terminal result messages.
+
+**Phase 2 session handoff:** Keep the current dependency versions until the offline contracts are complete. Extend the fake executable and the extracted builders/reducer to cover MCP initialization, generated Zod schemas, AskClaude mode inventories, terminal error and abort paths, configuration-source isolation, synthetic session APIs, and executable resolution. Do not apply the Agent SDK upgrade until Phase 3.
+
+### Phase 2: Add offline compatibility contracts (next)
 
 Add tests that run without credentials:
 

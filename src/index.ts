@@ -19,6 +19,8 @@ import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, type Config } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
+import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions } from "./sdk-options.js";
+import { createSdkMessageState, parseSdkResult, reduceSdkMessage } from "./sdk-messages.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
@@ -310,12 +312,6 @@ function extractIsolatedSummaryPrompt(messages: Context["messages"]): string {
 	return promptText;
 }
 
-function resultErrorText(message: SDKMessage): string {
-	const result = message as SDKMessage & { subtype?: string; errors?: unknown; error?: unknown };
-	if (Array.isArray(result.errors)) return result.errors.map(String).join("\n");
-	if (typeof result.error === "string") return result.error;
-	return `Claude Code summary failed: ${result.subtype ?? "unknown result"}`;
-}
 
 function isolatedStreamFn(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = newAssistantMessageEventStream();
@@ -346,30 +342,21 @@ async function runIsolatedSummary(
 
 		sdkQuery = query({
 			prompt: promptText,
-			options: {
+			options: buildIsolatedSummaryQueryOptions({
 				cwd,
-				env: { ...process.env, DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
-				tools: [],
-				strictMcpConfig: true,
-				settingSources: [] as SettingSource[],
-				skills: [],
-				persistSession: false,
+				baseEnv: process.env,
 				systemPrompt: context.systemPrompt,
-				model: cliModel,
-				maxTurns: 1,
-				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-				...makeCliDebugOptions("compact-summary"),
-			},
+				cliModel,
+				claudeExecutable,
+				debugOptions: makeCliDebugOptions("compact-summary"),
+			}),
 		});
-
 		if (options?.signal) {
 			if (options.signal.aborted) onAbort();
 			else options.signal.addEventListener("abort", onAbort, { once: true });
 		}
 
-		let assistantText = "";
-		let finalText = "";
-		let errorText: string | undefined;
+		const messageState = createSdkMessageState();
 		let firstEventLogged = false;
 
 		for await (const message of sdkQuery) {
@@ -379,18 +366,8 @@ async function runIsolatedSummary(
 			}
 			if (wasAborted) break;
 
-			if (message.type === "assistant") {
-				for (const block of (message as any).message?.content ?? []) {
-					if (block.type === "text" && typeof block.text === "string") assistantText += block.text;
-				}
-			} else if (message.type === "result") {
-				logServedContextWindow("compact summary", message, model);
-				if (message.subtype === "success") {
-					finalText = message.result || assistantText;
-				} else {
-					errorText = resultErrorText(message);
-				}
-			}
+			const reduced = reduceSdkMessage(messageState, message, { failureLabel: "Claude Code summary" });
+			if (reduced.result) logServedContextWindow("compact summary", message, model);
 		}
 
 		if (wasAborted) {
@@ -401,7 +378,8 @@ async function runIsolatedSummary(
 			return;
 		}
 
-		const text = finalText || assistantText;
+		const text = messageState.result?.successful ? messageState.result.text : messageState.assistantText;
+		const errorText = messageState.result?.successful ? undefined : messageState.result?.errorText;
 		if (errorText || !text.trim()) {
 			const msg = errorText ?? "Claude Code summary returned empty text";
 			debug(`compact summary: error ${msg}`);
@@ -1003,6 +981,44 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	}
 }
 
+function processTerminalResultMessage(message: SDKMessage, model: Model<any>, queryCtx: QueryContext): void {
+	logServedContextWindow("result", message, model);
+	const terminalResult = parseSdkResult(message);
+	if (queryCtx.turnSawStreamEvent || !terminalResult?.successful) return;
+
+	ensureTurnStarted(queryCtx);
+	const text = terminalResult.text;
+	queryCtx.turnBlocks.push({ type: "text", text });
+	const idx = queryCtx.turnBlocks.length - 1;
+	queryCtx.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: queryCtx.turnOutput });
+	queryCtx.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: queryCtx.turnOutput });
+	queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
+}
+
+function systemInitSessionId(message: SDKMessage): string | undefined {
+	const system = message as SDKMessage & { subtype?: string; session_id?: unknown };
+	return system.subtype === "init" && typeof system.session_id === "string" ? system.session_id : undefined;
+}
+
+function processRateLimitMessage(message: SDKMessage): void {
+	const rateLimit = message as SDKMessage & {
+		rate_limit_info?: {
+			status?: string;
+			resetsAt?: string | number;
+			rateLimitType?: string;
+			utilization?: number;
+		};
+	};
+	const info = rateLimit.rate_limit_info;
+	debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
+	if (info?.status === "rejected") {
+		const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
+		piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+	} else if (info?.status === "allowed_warning") {
+		piUI?.notify(`Claude rate limit warning: ${Math.round(info.utilization ?? 0)}% used (${info.rateLimitType ?? ""})`, "warning");
+	}
+}
+
 /** Background consumer: iterates the SDK generator, pushing events to currentPiStream.
  *  Runs until the query ends. Per turn, the SDK yields stream_events (deltas), then
  *  an assistant message (completed blocks). On tool_use, the stream is ended by
@@ -1029,35 +1045,16 @@ async function consumeQuery(
 				processAssistantMessage(message, model, customToolNameToPi, queryCtx);
 				break;
 			case "result":
-				logServedContextWindow("result", message, model);
-				if (!queryCtx.turnSawStreamEvent && message.subtype === "success") {
-					ensureTurnStarted(queryCtx);
-					const text = message.result || "";
-					queryCtx.turnBlocks.push({ type: "text", text });
-					const idx = queryCtx.turnBlocks.length - 1;
-					queryCtx.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: queryCtx.turnOutput });
-					queryCtx.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: queryCtx.turnOutput });
-					queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
-				}
+				processTerminalResultMessage(message, model, queryCtx);
 				break;
 			case "system":
-				if ((message as any).subtype === "init" && (message as any).session_id) {
-					capturedSessionId = (message as any).session_id;
-				}
+				capturedSessionId = systemInitSessionId(message) ?? capturedSessionId;
 				break;
 			case "user":
 				break; // SDK echo of user prompt — not needed
-			case "rate_limit_event": {
-				const info = (message as any).rate_limit_info;
-				debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
-				if (info?.status === "rejected") {
-					const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
-					piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
-				} else if (info?.status === "allowed_warning") {
-					piUI?.notify(`Claude rate limit warning: ${Math.round(info.utilization ?? 0)}% used (${info.rateLimitType ?? ""})`, "warning");
-				}
+			case "rate_limit_event":
+				processRateLimitMessage(message);
 				break;
-			}
 			default:
 				debug("consumeQuery: unhandled SDK message type", message.type);
 				break;
@@ -1227,11 +1224,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
-	const extraArgs: Record<string, string | null> = { model: cliModel };
-	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
-	if (effort) extraArgs["thinking-display"] = "summarized";
 
 	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
 	// when the user is logged into Anthropic). These are a separate code path from
@@ -1243,25 +1237,19 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// also autocompact would double-flush the prompt cache and races pi's
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
-	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" };
-	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
+	const queryOptions = buildProviderQueryOptions({
 		cwd,
-		env: childEnv,
-		tools: [],
-		permissionMode: "bypassPermissions",
-		includePartialMessages: true,
-		systemPrompt: {
-			type: "preset", preset: "claude_code",
-			append: systemPromptAppend ? systemPromptAppend : undefined,
-		},
-		extraArgs,
-		...(effort ? { effort } : {}),
-		...(settingSources ? { settingSources } : {}),
-		...(mcpServers ? { mcpServers } : {}),
-		...(resumeSessionId ? { resume: resumeSessionId } : {}),
-		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-		...makeCliDebugOptions("provider"),
-	};
+		baseEnv: process.env,
+		cliModel,
+		systemPromptAppend,
+		effort,
+		settingSources,
+		mcpServers,
+		resumeSessionId,
+		claudeExecutable,
+		strictMcpConfigEnabled,
+		debugOptions: makeCliDebugOptions("provider"),
+	});
 
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
@@ -1471,11 +1459,6 @@ async function promptAndWait(
 
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
-	const extraArgs: Record<string, string | null> = {
-		"strict-mcp-config": null,
-		model: cliModel,
-	};
-	if (effort) extraArgs["thinking-display"] = "summarized";
 
 	debug("askClaude:",
 		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,
@@ -1484,22 +1467,18 @@ async function promptAndWait(
 
 	const sdkQuery = query({
 		prompt,
-		options: {
+		options: buildAskClaudeQueryOptions({
 			cwd,
-			env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
-			permissionMode: "bypassPermissions",
-			...(disallowedTools.length ? { disallowedTools } : {}),
-			...(effort ? { effort } : {}),
-			systemPrompt: skillsBlock
-				? { type: "preset", preset: "claude_code", append: skillsBlock }
-				: undefined,
-			settingSources: ["user", "project"] as SettingSource[],
-			extraArgs,
-			...(resumeSessionId ? { resume: resumeSessionId } : {}),
-			...(options?.isolated ? { persistSession: false } : {}),
-			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-			...makeCliDebugOptions("askclaude"),
-		},
+			baseEnv: process.env,
+			cliModel,
+			disallowedTools,
+			effort,
+			skillsBlock,
+			resumeSessionId,
+			isolated: options?.isolated,
+			claudeExecutable,
+			debugOptions: makeCliDebugOptions("askclaude"),
+		}),
 	});
 
 	// Abort handling
@@ -1513,7 +1492,7 @@ async function promptAndWait(
 
 	let responseText = "";
 	let sdkMessageCount = 0;
-	let textDeltaCount = 0;
+	const messageState = createSdkMessageState();
 	let resultSubtype: string | undefined;
 
 	try {
@@ -1521,48 +1500,43 @@ async function promptAndWait(
 			if (wasAborted) break;
 			sdkMessageCount++;
 
-			switch (message.type) {
-				case "stream_event": {
-					const event = (message as SDKMessage & { event: any }).event;
-					// Text deltas → accumulate and stream
-					if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
-						responseText += event.delta.text;
-						textDeltaCount++;
-						options?.onStreamUpdate?.(responseText);
-					}
-					// Tool call start → track for action summary progress
-					if (event?.type === "content_block_start" && event.content_block?.type === "tool_use") {
-						debug(`askClaude: tool_use start: ${event.content_block.name}`);
-						toolCalls.set(event.content_block.id, {
-							name: mapToolName(event.content_block.name),
-							status: "running",
-						});
-					}
-					break;
+			const reduced = reduceSdkMessage(messageState, message);
+			if (reduced.textDelta !== undefined) {
+				responseText = messageState.streamedText;
+				options?.onStreamUpdate?.(responseText);
+			}
+			if (reduced.toolUseStarted) {
+				debug(`askClaude: tool_use start: ${reduced.toolUseStarted.name}`);
+				toolCalls.set(reduced.toolUseStarted.id, {
+					name: mapToolName(reduced.toolUseStarted.name),
+					status: "running",
+				});
+			}
+			for (const toolUse of reduced.toolUsesCompleted ?? []) {
+				toolCalls.set(toolUse.id, {
+					name: mapToolName(toolUse.name),
+					status: "complete",
+					rawInput: toolUse.input,
+				});
+			}
+			if (reduced.result) {
+				resultSubtype = reduced.result.subtype;
+				const result = message as SDKMessage & {
+					result?: unknown;
+					usage?: {
+						input_tokens?: number;
+						output_tokens?: number;
+						cache_read_input_tokens?: number;
+						cache_creation_input_tokens?: number;
+					};
+					num_turns?: number;
+				};
+				if (result.usage) {
+					debug(`askClaude: result usage: in=${result.usage.input_tokens} out=${result.usage.output_tokens} cacheRead=${result.usage.cache_read_input_tokens ?? 0} cacheWrite=${result.usage.cache_creation_input_tokens ?? 0} turns=${result.num_turns ?? "?"}`);
 				}
-				case "assistant": {
-					// Update tool calls with full input for action summary
-					for (const block of (message as any).message?.content ?? []) {
-						if (block.type === "tool_use") {
-							toolCalls.set(block.id, {
-								name: mapToolName(block.name),
-								status: "complete",
-								rawInput: block.input,
-							});
-						}
-					}
-					break;
-				}
-				case "result": {
-					resultSubtype = message.subtype;
-					const r = message as any;
-					if (r.usage) {
-						debug(`askClaude: result usage: in=${r.usage.input_tokens} out=${r.usage.output_tokens} cacheRead=${r.usage.cache_read_input_tokens ?? 0} cacheWrite=${r.usage.cache_creation_input_tokens ?? 0} turns=${r.num_turns ?? "?"}`);
-					}
-					if (!responseText && message.subtype === "success" && message.result) {
-						responseText = message.result;
-					}
-					break;
+				const resultText = typeof result.result === "string" ? result.result : "";
+				if (!responseText && reduced.result.successful && resultText) {
+					responseText = resultText;
 				}
 			}
 		}
@@ -1570,7 +1544,7 @@ async function promptAndWait(
 		const stopReason = wasAborted ? "cancelled" : "stop";
 		debug(`askClaude: done`,
 			`stopReason=${stopReason} resultSubtype=${resultSubtype ?? "none"}`,
-			`sdkMessages=${sdkMessageCount} textDeltas=${textDeltaCount} responseLen=${responseText.length}`,
+			`sdkMessages=${sdkMessageCount} textDeltas=${messageState.textDeltaCount} responseLen=${responseText.length}`,
 			`toolCalls=${toolCalls.size}`);
 		return { responseText, stopReason };
 	} finally {
