@@ -37,25 +37,28 @@ export function createRpcHarness(opts) {
 	// Strip any local node_modules from PATH so we use the globally-installed `pi`.
 	const cleanPath = process.env.PATH.split(":").filter((p) => !p.includes("node_modules")).join(":");
 
-	let pi, rpcLog;
+	let pi, piClosePromise, rpcLog;
 	let buffer = "";
 	let listeners = [];
 	let reqId = 0;
 
 	function start() {
+		buffer = "";
 		// Truncate the debug log on each run so test assertions that grep the
 		// log see only this run's output, not accumulated history from prior
 		// failing runs. RPC log is still append so cross-run comparisons work.
 		writeFileSync(DEBUG_LOG, "");
 		rpcLog = createWriteStream(RPC_LOG, { flags: "a" });
+		const currentLog = rpcLog;
 		const spawnArgs = ["--no-session", "-ne", "-e", DIR, "--mode", "rpc", ...args];
 		pi = spawn("pi", spawnArgs, {
 			cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 			env: { ...process.env, PATH: cleanPath, CLAUDE_BRIDGE_DEBUG: "1", CLAUDE_BRIDGE_DEBUG_PATH: DEBUG_LOG, ...env },
 		});
+		piClosePromise = new Promise((resolveClose) => pi.once("close", resolveClose));
 
-		pi.stderr.on("data", (d) => rpcLog.write(d));
+		pi.stderr.on("data", (d) => currentLog.write(d));
 
 		const decoder = new StringDecoder("utf8");
 		pi.stdout.on("data", (chunk) => {
@@ -67,7 +70,7 @@ export function createRpcHarness(opts) {
 				buffer = buffer.slice(i + 1);
 				try {
 					const msg = JSON.parse(line);
-					rpcLog.write(`< ${line}\n`);
+					currentLog.write(`< ${line}\n`);
 					for (const fn of [...listeners]) fn(msg);
 				} catch {}
 			}
@@ -75,13 +78,27 @@ export function createRpcHarness(opts) {
 	}
 
 	async function startAndWait(ms = 2000) {
+		if (pi) await stop();
 		start();
 		await new Promise((r) => setTimeout(r, ms));
 	}
 
-	function stop() {
-		pi?.kill();
-		return new Promise((r) => rpcLog?.end(r));
+	async function stop() {
+		const child = pi;
+		const closed = piClosePromise;
+		const log = rpcLog;
+
+		if (child?.exitCode === null) child.kill();
+		if (closed) await closed;
+		if (log && !log.writableEnded) {
+			await new Promise((resolveEnd) => log.end(resolveEnd));
+		}
+
+		if (pi === child) {
+			pi = undefined;
+			piClosePromise = undefined;
+			rpcLog = undefined;
+		}
 	}
 
 	function addListener(fn) {

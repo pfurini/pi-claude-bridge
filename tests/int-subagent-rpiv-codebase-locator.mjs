@@ -21,12 +21,23 @@ const RPIV_LOCATOR_FIXTURE = resolve(DIR, "tests/fixtures/rpiv-pi-v0.6.0-agents/
 const REENTRANT_MARKER = /provider: active query user-only call treated as reentrant fresh query/g;
 const STUCK_MARKER = /MCP handlers still waiting after delivering 0 results|tool handler\(s\) still waiting|currentPiStream overwritten/;
 
-assert.ok(existsSync(SUBAGENTS_DIR), `missing pinned pi-subagents checkout: ${SUBAGENTS_DIR}`);
-const subagentsPackage = JSON.parse(readFileSync(join(SUBAGENTS_DIR, "package.json"), "utf8"));
-assert.equal(
-	subagentsPackage.version,
-	"0.6.3",
-	`expected ../pi-subagents to be pinned at 0.6.3, got ${subagentsPackage.version}`,
+const subagentsManifest = join(SUBAGENTS_DIR, "package.json");
+if (!existsSync(subagentsManifest)) {
+	console.log(`SKIP: missing pinned pi-subagents 0.6.3 checkout at ${SUBAGENTS_DIR}`);
+	process.exit(0);
+}
+const subagentsPackage = JSON.parse(readFileSync(subagentsManifest, "utf8"));
+if (subagentsPackage.version !== "0.6.3") {
+	console.log(
+		`SKIP: ../pi-subagents is ${subagentsPackage.version}; ` +
+		"this regression fixture requires the pinned 0.6.3 checkout",
+	);
+	process.exit(0);
+}
+const [subagentsEntry] = subagentsPackage.pi?.extensions ?? [];
+assert.ok(
+	subagentsEntry && existsSync(resolve(SUBAGENTS_DIR, subagentsEntry)),
+	`pi-subagents extension entry is missing: ${String(subagentsEntry)}`,
 );
 assert.ok(existsSync(RPIV_LOCATOR_FIXTURE), `missing rpiv codebase-locator fixture: ${RPIV_LOCATOR_FIXTURE}`);
 
