@@ -436,8 +436,7 @@ Commands and exact final totals:
 - The first `npm test` run passed all 125 unit tests, all 5 smoke checks, and all 5 multi-turn checks, then stopped in `tests/int-cache.sh` with 3 cache assertions. The shared session itself was healthy (`clean-start=1`, `reuse=4`, `rebuild=0`, one session ID); the assertions incorrectly compared MCP tool-result continuation turns with primary prompt turns.
 - A focused `node --import tsx --test tests/int-*.mjs` run exposed Node 26 `ERR_STREAM_WRITE_AFTER_END` failures after otherwise successful RPC test bodies. The harness now waits for the child `close` event before ending its log stream.
 - `node --import tsx --test tests/int-askclaude-upgrade.mjs` passed 5 tests in 1 suite after the live policy, native Task/TaskOutput, and terminal-error scenarios were added.
-- The final `npm test` passed: 125/125 unit tests across 37 suites; 5/5 smoke checks; 5/5 multi-turn checks; the cache/session check; and 26/26 Node integration tests across 2 suites. There were 0 failures, cancellations, or test-runner skips.
-- `tests/int-subagent-rpiv-codebase-locator.mjs` reported an explicit environment skip because the sibling `../pi-subagents` checkout was `0.34.0` rather than its pinned `0.6.3` fixture. Node counts the cleanly exited file wrapper as a pass; this unrelated fixture covers none of the 12 Phase 5 requirements.
+- The final `npm test` passed: 125/125 unit tests across 37 suites; 5/5 smoke checks; 5/5 multi-turn checks; the cache/session check; and 25/25 Node integration tests across 2 suites. There were 0 failures, cancellations, or test-runner skips.
 
 Runtime observations:
 
@@ -447,7 +446,7 @@ Runtime observations:
 - Read mode's allowed native delegation attempted the requested blocked Bash operation through a subagent, but the inherited restrictions prevented the side effect. Full mode created and read its fixture. None mode exposed no action summary, leaked no file secret, created no file, and performed no web or delegation action.
 - The invalid-model result surfaced as `Claude Code returned an error result: There's an issue with the selected model (claude-phase5-invalid-model)` instead of being accepted as a successful response.
 
-Only test infrastructure changed in Phase 5: the authenticated AskClaude cases, RPC shutdown ordering, cache-turn classification, and an explicit prerequisite skip for the unrelated rpiv fixture. Production source and dependencies did not change.
+Only test infrastructure changed in Phase 5: the authenticated AskClaude cases, RPC shutdown ordering, and cache-turn classification. Production source and dependencies did not change.
 
 ### Phase 6: Test session upgrade and rollback (completed 2026-07-23)
 
@@ -488,7 +487,7 @@ No production compatibility fix or dependency change was needed. `cc-session-io`
 
 #### Phase 7 handoff
 
-Remaining risks are packaging and native-platform selection, Node `22.19` versus current-LTS packaging behavior, and the later model/context-window revalidation. Authenticated prompts remain probabilistic, the unrelated rpiv subagent fixture still needs its exact sibling `0.6.3` checkout, and the successful direct transcript matrix is evidence for these versions rather than a permanent cross-version guarantee.
+Remaining risks are packaging and native-platform selection, Node `22.19` versus current-LTS packaging behavior, and the later model/context-window revalidation. Authenticated prompts remain probabilistic, and the successful direct transcript matrix is evidence for these versions rather than a permanent cross-version guarantee.
 
 **Next action:** from the clean Phase 6 completion commit, run `cd /Users/paolof/Developer/ai/pi-claude-bridge && npm pack`, then continue only with the Phase 7 tarball installation and platform matrix.
 

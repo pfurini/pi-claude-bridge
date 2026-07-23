@@ -4,6 +4,7 @@
 
 - **Bump: upgrade Claude Agent SDK and aligned peers** — pin Agent SDK `0.3.218` (bundled Claude Code `2.1.218`) and align `@anthropic-ai/sdk` `0.113.0`, MCP SDK `1.29.0`, and Zod `4.4.3`; add the required bypass acknowledgement, typed strict MCP, eager Pi MCP loading, updated AskClaude policies, and terminal `is_error` propagation.
 - **Tests: add Agent SDK upgrade compatibility contracts** — establish the Pi `0.80.3` and Node `>=22.19.0` baseline; cover SDK initialization, MCP tools, AskClaude policies, terminal and abort paths, configuration sources, synthetic sessions, and executable resolution offline; then verify authenticated provider, cache, compaction, native subagent, cross-version transcript/API, and restart-and-rebuild rollback behavior.
+- **Remove: drop the RPIV subagent regression fixture** — remove the integration test and agent fixture that depended on a separately cloned, pinned `../pi-subagents` repository.
 
 ## 0.6.2 — 2026-07-06
 
