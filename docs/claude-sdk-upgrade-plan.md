@@ -1,16 +1,16 @@
 # Claude Agent SDK and Claude Code Upgrade Assessment
 
-**Assessment date:** 2026-07-22  
+**Assessment and execution dates:** 2026-07-22 to 2026-07-23
 **Project:** `pi-claude-bridge`  
-**Status:** Phases 1-4 complete; Phase 5 authenticated compatibility testing is next
+**Status:** Phases 1-6 complete; Phase 7 packaging and platform verification is next
 
 ## Executive summary
 
 Upgrade the bridge in a dedicated compatibility change to `@anthropic-ai/claude-agent-sdk` `0.3.218`, which bundles Claude Code `2.1.218`. Do not add `@anthropic-ai/claude-code` as a separate dependency because the Agent SDK already provides the matching platform binary.
 
-The source appears compatible with the target SDK. A clean-install rehearsal of `0.3.218`, after aligning the Pi development dependencies, passed all 99 unit tests and typechecking. However, those results are not enough to approve the upgrade because the existing suite does not directly test SDK query construction, SDK message shapes, MCP initialization, AskClaude tool policy, or authenticated session compatibility.
+Phases 1-6 now pass on the selected dependency set. Typechecking, 125 offline unit contracts, the authenticated provider/tool/cache/compaction suite, live AskClaude policy and native-subagent checks, and deterministic terminal-error propagation all passed with the target SDK.
 
-The pre-upgrade assessment proved that the SDK session APIs could parse and list a generated session offline, but authenticated resume, rebuild, compaction, abort, and cross-version rollback behavior remain unverified because the local Claude OAuth session was expired during this assessment.
+Separate authenticated `0.2.141`/`2.1.141` and `0.3.218`/`2.1.218` installations could read and directly resume each other's tested transcripts in both directions. The supported rollback path also passed: after downgrade and Pi restart, the old bridge rebuilt a usable Claude session from persisted Pi history. No production compatibility fix or `cc-session-io` change was required. Packaging, platform, and model-behavior work remains in Phases 7-9.
 
 The upgrade should be completed before implementing the proposed Claude configuration isolation. Keeping the two changes separate will make failures attributable and will let the isolation work target the current SDK behavior.
 
@@ -407,47 +407,90 @@ Offline verification after the adaptations:
 - All 125 unit tests passed (37 suites, 0 failures) without Claude credentials.
 - The bundled target-binary inventory and all three AskClaude policies were exercised without a Claude login.
 
-### Phase 5: Run authenticated compatibility tests
+### Phase 5: Run authenticated compatibility tests (completed 2026-07-23)
 
-Reauthenticate Claude and run the smoke suite outside the sandbox because it needs local Claude settings and authentication.
+The authenticated suite ran on Darwin arm64 with Node `v26.5.0`, npm `11.17.0`, and the system Pi CLI `0.81.1`. The package itself retained the exact Pi `0.80.3` development baseline. The installed Agent SDK was `0.3.218`, its metadata and bundled executable both reported Claude Code `2.1.218`, and the executable resolved from `@anthropic-ai/claude-agent-sdk-darwin-arm64` rather than `PATH`.
 
-#### Phase 5 handoff
+#### Scenario coverage
 
-- **Selected versions:** Agent SDK `0.3.218`, bundled Claude Code `2.1.218`, Anthropic SDK `0.113.0`, MCP SDK `1.29.0`, Zod `4.4.3`, `cc-session-io` `0.3.1`, and Pi development packages `0.80.3`.
-- **Dependency-only result:** typecheck and all 122 unit tests passed; `npm ls` reported no invalid peers or duplicate effective Pi versions.
-- **Final offline result:** typecheck and all 125 unit tests passed without Claude credentials.
-- **Adaptations:** dangerous-bypass acknowledgement, typed strict MCP, always-loaded Pi MCP tools, current/transitional AskClaude tool policies, and `is_error` terminal propagation with diagnostics.
-- **Remaining risks:** authenticated provider/tool behavior, first-turn Pi MCP execution and cache overhead, resume/rebuild/abort/compaction, live AskClaude delegation and policy enforcement, and cross-version session upgrade/rollback are unverified.
-- **Next action:** reauthenticate Claude Code, then run `cd /Users/paolof/Developer/ai/pi-claude-bridge && npm test` outside the sandbox.
+| Required scenario | Authenticated coverage | Result |
+| --- | --- | --- |
+| Basic provider completion | `tests/int-smoke.sh`; `tests/int-served-window.mjs` | Passed; provider print modes returned responses and the served window was `200000` |
+| First-turn custom Pi tool | First case in `tests/int-tool-message.mjs` | Passed; the first provider prompt invoked `SlowTool` and received its result |
+| Parallel custom tools and result delivery | `tests/int-tool-message.mjs`; `tests/int-multi-turn.sh` | Passed; three parallel `SlowTool` calls survived a steer and all three results reached Claude |
+| Multi-turn cache reuse | `tests/int-cache.sh`; `tests/int-cursor-after-tools.mjs` | Passed; one clean start, four reuses, zero rebuilds, one session ID, and `98-99%` cache hits on resumed primary prompts |
+| Resume from a generated session | `tests/int-session-rebuild.mjs` | Passed; target Claude resumed `cc-session-io` sessions after create, clear/replace, and delete/recreate |
+| Rebuild after rewritten Pi history | `tests/int-session-compact.mjs`; Case 4 in `tests/int-session-resume.mjs` | Passed; post-compact history forced an in-place rebuild, and provider-switch history was rebuilt and recalled |
+| Abort during tool execution and recovery | `tests/int-tool-message.mjs`; `tests/int-session-resume.mjs` | Passed; abort drained the active tool turn, rotated once, and the next prompt recovered with prior context |
+| Isolated compaction and summaries | `tests/int-compact-*.mjs`; `tests/int-session-compact.mjs` | Passed; manual, split-turn, repeated, and threshold compaction returned summaries and continued cleanly |
+| AskClaude shared and isolated context | Turns 7-8 in `tests/int-session-resume.mjs` | Passed; shared mode recalled the non-provider phrase and isolated mode returned `UNKNOWN` |
+| AskClaude native background subagent | `tests/int-askclaude-upgrade.mjs` | Passed; the Task wire path was rendered as Agent, completed through `TaskOutput`, and returned the subagent's fixture phrase |
+| Read/full/none real-prompt policy | `tests/int-askclaude-upgrade.mjs` | Passed; read mode read but could not create, full mode used Bash and Read, and none mode produced no actions or side effects |
+| Deterministic terminal error | `tests/int-askclaude-upgrade.mjs` | Passed; invalid model `claude-phase5-invalid-model` returned an `Error:` containing the model diagnostic and no success marker |
 
-Required scenarios:
+#### Phase 5 completion record
 
-1. Basic provider completion.
-2. First-turn custom Pi tool execution.
-3. Parallel custom tools and result delivery.
-4. Multi-turn cache reuse.
-5. Resume from a generated session.
-6. Rebuild after rewritten Pi history.
-7. Abort during tool execution and clean recovery.
-8. Isolated compaction and summary generation.
-9. AskClaude shared and isolated context.
-10. AskClaude native subagent completion after the background-default change.
-11. Read, full, and none policy enforcement through real prompts.
-12. Error propagation for an invalid model or another deterministic terminal failure.
+Commands and exact final totals:
 
-### Phase 6: Test session upgrade and rollback
+- `npm run typecheck` passed before authenticated testing.
+- The first `npm test` run passed all 125 unit tests, all 5 smoke checks, and all 5 multi-turn checks, then stopped in `tests/int-cache.sh` with 3 cache assertions. The shared session itself was healthy (`clean-start=1`, `reuse=4`, `rebuild=0`, one session ID); the assertions incorrectly compared MCP tool-result continuation turns with primary prompt turns.
+- A focused `node --import tsx --test tests/int-*.mjs` run exposed Node 26 `ERR_STREAM_WRITE_AFTER_END` failures after otherwise successful RPC test bodies. The harness now waits for the child `close` event before ending its log stream.
+- `node --import tsx --test tests/int-askclaude-upgrade.mjs` passed 5 tests in 1 suite after the live policy, native Task/TaskOutput, and terminal-error scenarios were added.
+- The final `npm test` passed: 125/125 unit tests across 37 suites; 5/5 smoke checks; 5/5 multi-turn checks; the cache/session check; and 26/26 Node integration tests across 2 suites. There were 0 failures, cancellations, or test-runner skips.
+- `tests/int-subagent-rpiv-codebase-locator.mjs` reported an explicit environment skip because the sibling `../pi-subagents` checkout was `0.34.0` rather than its pinned `0.6.3` fixture. Node counts the cleanly exited file wrapper as a pass; this unrelated fixture covers none of the 12 Phase 5 requirements.
 
-Use isolated profile directories and separate installations for the current and target versions.
+Runtime observations:
 
-1. Generate and resume a session with `0.2.141` and Claude Code `2.1.141`.
-2. Resume equivalent synthetic history with `0.3.218` and Claude Code `2.1.218`.
-3. Let the new binary append records, then test whether the old binary can read them.
-4. Let the old binary append records, then test whether the new binary can read them.
-5. Restart Pi and prove that the bridge can rebuild a fresh session from Pi history after a downgrade.
+- The final cache run recorded resumed primary-prompt hit rates of `99%`, `98%`, `99%`, and `98%`, with nondecreasing primary cache reads. The first MCP continuation used a separate `66%` cache shape and a later continuation hit `98%`; this is why continuation turns are now reported but not compared with adjacent prompt turns.
+- The always-loaded Pi MCP inventory remained available on the first provider turn. No authenticated MCP startup race occurred.
+- Threshold compaction performed at least two isolated summary spawns, preserved both read-file records, returned a non-empty split-turn summary, and continued with a normal provider answer.
+- Read mode's allowed native delegation attempted the requested blocked Bash operation through a subagent, but the inherited restrictions prevented the side effect. Full mode created and read its fixture. None mode exposed no action summary, leaked no file secret, created no file, and performed no web or delegation action.
+- The invalid-model result surfaced as `Claude Code returned an error result: There's an issue with the selected model (claude-phase5-invalid-model)` instead of being accepted as a successful response.
 
-Cross-version direct resume is useful evidence but does not have to become a permanent runtime guarantee. Restart-and-rebuild is the supported rollback path.
+Only test infrastructure changed in Phase 5: the authenticated AskClaude cases, RPC shutdown ordering, cache-turn classification, and an explicit prerequisite skip for the unrelated rpiv fixture. Production source and dependencies did not change.
 
-If latest resume fails, fix or update `cc-session-io`. Avoid adding ad hoc JSONL transformations to `src/index.ts` because they would create a second session-format implementation.
+### Phase 6: Test session upgrade and rollback (completed 2026-07-23)
+
+Phase 6 used separate installations and authenticated profiles under ignored `.test-output/phase6` paths:
+
+- Old installation: Agent SDK `0.2.141`, bundled Claude Code `2.1.141`, `CLAUDE_CONFIG_DIR=.test-output/phase6/profiles/old`.
+- Target installation: Agent SDK `0.3.218`, bundled Claude Code `2.1.218`, `CLAUDE_CONFIG_DIR=.test-output/phase6/profiles/target`.
+- The old and target binaries each reported their expected version. Neither profile pointed to the normal `~/.claude` directory.
+- The first isolated target authentication probe returned `Not logged in`; testing paused as required. After both isolated profiles were authenticated, old and target probes passed without copying or printing credentials.
+
+#### Direct transcript and SDK API matrix
+
+`node tests/phase6-cross-version.mjs` passed with these results:
+
+| Check | SDK session API readability | Direct binary resume | Result |
+| --- | --- | --- | --- |
+| Old-generated session resumed by old | Old generation produced a session ID | Claude Code `2.1.141` recalled the generated phrase | Passed |
+| Target synthetic `cc-session-io 0.3.1` history | Target APIs returned 2 messages and listed the session | Claude Code `2.1.218` recalled the synthetic phrase | Passed |
+| Target appends, then old reads copied transcript | Old `getSessionMessages` returned 5 messages and `listSessions` found it | Claude Code `2.1.141` recalled both target-written phrases | Passed |
+| Old appends, then target reads copied transcript | Target `getSessionMessages` returned 5 messages and `listSessions` found it | Claude Code `2.1.218` recalled both old-written phrases | Passed |
+
+The transcript was copied between the two isolated profiles only after the writing binary exited. Each SDK always spawned the native binary bundled with its own separate installation. This distinguishes raw transcript compatibility and SDK API readability from the supported rollback procedure.
+
+#### Supported restart-and-rebuild rollback
+
+The rollback check used the pre-upgrade bridge commit `be34786905f433321cb81bd3d2226a68bc6f456c` in a detached worktree with Agent SDK `0.2.141`. The target bridge first wrote a persistent Pi session, then exited. A new Pi process loaded that same Pi session with the old bridge and the separate old Claude profile.
+
+`PHASE6_OLD_BRIDGE_DIR="$PWD/.test-output/phase6/old-bridge-worktree" tests/phase6-restart-rollback.sh` passed. The old bridge log showed:
+
+- `Case 2: first turn with 4 prior messages`.
+- A new old-profile synthetic Claude session containing 4 rebuilt records.
+- `syncResult: path=rebuild ... first`.
+- Successful recall of the target-run rollback phrase.
+
+The supported downgrade path therefore passed: revert to the old bridge/dependencies, restart Pi to clear in-memory state, and rebuild from Pi history. It did not rely on the old binary directly resuming the target binary's active session, although direct resume also passed in both tested directions.
+
+No production compatibility fix or dependency change was needed. `cc-session-io` remains `0.3.1`, and no Claude JSONL transformation was added to `src/index.ts`.
+
+#### Phase 7 handoff
+
+Remaining risks are packaging and native-platform selection, Node `22.19` versus current-LTS packaging behavior, and the later model/context-window revalidation. Authenticated prompts remain probabilistic, the unrelated rpiv subagent fixture still needs its exact sibling `0.6.3` checkout, and the successful direct transcript matrix is evidence for these versions rather than a permanent cross-version guarantee.
+
+**Next action:** from the clean Phase 6 completion commit, run `cd /Users/paolof/Developer/ai/pi-claude-bridge && npm pack`, then continue only with the Phase 7 tarball installation and platform matrix.
 
 ### Phase 7: Packaging and platform verification
 
