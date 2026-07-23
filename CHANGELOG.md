@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Bump: upgrade Claude Agent SDK and aligned peers** — pin Agent SDK `0.3.218` (bundled Claude Code `2.1.218`) and align `@anthropic-ai/sdk` `0.113.0`, MCP SDK `1.29.0`, and Zod `4.4.3`.
 - **Tests: add offline Agent SDK upgrade compatibility contracts** — establish the Pi `0.80.3` and Node `>=22.19.0` baseline, then cover SDK initialization, MCP schemas and tools, AskClaude policies, terminal and abort paths, configuration sources, synthetic sessions, and executable resolution without Claude credentials.
 
 ## 0.6.2 — 2026-07-06
