@@ -2,15 +2,15 @@
 
 **Assessment and execution dates:** 2026-07-22 to 2026-07-23
 **Project:** `pi-claude-bridge`  
-**Status:** Phases 1-6 complete; Phase 7 packaging and platform verification is next
+**Status:** Phases 1-7 complete; Phase 8 model-behavior revalidation is next
 
 ## Executive summary
 
 Upgrade the bridge in a dedicated compatibility change to `@anthropic-ai/claude-agent-sdk` `0.3.218`, which bundles Claude Code `2.1.218`. Do not add `@anthropic-ai/claude-code` as a separate dependency because the Agent SDK already provides the matching platform binary.
 
-Phases 1-6 now pass on the selected dependency set. Typechecking, 125 offline unit contracts, the authenticated provider/tool/cache/compaction suite, live AskClaude policy and native-subagent checks, and deterministic terminal-error propagation all passed with the target SDK.
+Phases 1-7 now pass on the selected dependency set. Typechecking, 125 offline unit contracts, the authenticated provider/tool/cache/compaction suite, live AskClaude policy and native-subagent checks, deterministic terminal-error propagation, clean tarball installation, and the supported native-package resolution matrix all passed with the target SDK.
 
-Separate authenticated `0.2.141`/`2.1.141` and `0.3.218`/`2.1.218` installations could read and directly resume each other's tested transcripts in both directions. The supported rollback path also passed: after downgrade and Pi restart, the old bridge rebuilt a usable Claude session from persisted Pi history. No production compatibility fix or `cc-session-io` change was required. Packaging, platform, and model-behavior work remains in Phases 7-9.
+Separate authenticated `0.2.141`/`2.1.141` and `0.3.218`/`2.1.218` installations could read and directly resume each other's tested transcripts in both directions. The supported rollback path also passed: after downgrade and Pi restart, the old bridge rebuilt a usable Claude session from persisted Pi history. No production compatibility fix or `cc-session-io` change was required. Model-behavior revalidation and release work remain in Phases 8-9.
 
 The upgrade should be completed before implementing the proposed Claude configuration isolation. Keeping the two changes separate will make failures attributable and will let the isolation work target the current SDK behavior.
 
@@ -491,17 +491,201 @@ Remaining risks are packaging and native-platform selection, Node `22.19` versus
 
 **Next action:** from the clean Phase 6 completion commit, run `cd /Users/paolof/Developer/ai/pi-claude-bridge && npm pack`, then continue only with the Phase 7 tarball installation and platform matrix.
 
-### Phase 7: Packaging and platform verification
+### Phase 7: Packaging and platform verification (completed 2026-07-23)
 
-1. Run `npm pack`.
-2. Install the tarball into a clean consumer project.
-3. Start a query and assert `system:init.claude_code_version` is `2.1.218`.
-4. Verify the bundled executable runs without relying on a `claude` binary from `PATH`.
-5. Verify `pathToClaudeCodeExecutable` still overrides the bundle.
-6. Test Node 22.19, the package's corrected minimum, and the current Node LTS.
-7. Test native package resolution on Linux x64, macOS arm64, and Windows if those platforms remain supported.
+1. [x] Ran `npm pack` and inspected the complete archive inventory.
+2. [x] Installed the tarball into clean consumer projects outside the repository.
+3. [x] Started authenticated queries and asserted `system:init.claude_code_version === "2.1.218"`.
+4. [x] Proved the SDK selected its installed platform package while a sanitized `PATH` could not resolve `claude`.
+5. [x] Proved `pathToClaudeCodeExecutable` selected and invoked an external wrapper.
+6. [x] Tested the declared minimum Node `22.19.0` and current Node LTS `24.18.0`.
+7. [x] Checked every platform package declared by Agent SDK `0.3.218`, using runtime execution where available and clean target-resolution installs elsewhere.
 
-The repository currently has no GitHub Actions workflow. If CI is added, keep authenticated tests on trusted manual, scheduled, or protected runs so credentials are never exposed to untrusted pull requests.
+#### Phase 7 completion record
+
+The packaging host was Darwin arm64. The repository started at `c481062bf473a0316952a958933dbfd2ebdbf3fd` with only the unrelated, untracked `docs/claude-config-isolation.md`. The installed SDK metadata and native executable reported Agent SDK `0.3.218` and Claude Code `2.1.218`.
+
+The live [Node.js releases page](https://nodejs.org/en/about/previous-releases) reported Node `24.18.0` (Krypton) as LTS on 2026-07-23; Node `26.5.0` was Current rather than LTS. Official Darwin arm64 archives for `22.19.0` and `24.18.0` were downloaded from `nodejs.org`, verified against each release's `SHASUMS256.txt`, and extracted under `/tmp/pi-claude-bridge-phase7-runtimes`.
+
+##### Package creation and inventory
+
+The package was created and inspected with:
+
+```sh
+rm -rf .test-output/phase7/package
+mkdir -p .test-output/phase7/package
+npm pack --json --pack-destination .test-output/phase7/package | tee .test-output/phase7/npm-pack.json
+shasum -a 256 .test-output/phase7/package/pi-claude-bridge-0.6.2.tgz
+tar -tzf .test-output/phase7/package/pi-claude-bridge-0.6.2.tgz | tee .test-output/phase7/tar-inventory.txt
+```
+
+`npm pack` produced:
+
+- Tarball: `pi-claude-bridge-0.6.2.tgz`.
+- Packed size: `201630` bytes.
+- Unpacked size: `292592` bytes.
+- Entries: `18`.
+- npm SHA-1: `3947d75fa7e262b1a5f8dbdc66b7db261a153489`.
+- npm integrity: `sha512-BihuA3rpbUQQx86eIhePLB5OayenGy5ZpqNgYY//z+uJCqOPglAz7R6lUpZd7V7MmV25k3o3Nntx8gHtPTQyEw==`.
+- Independent SHA-256: `6233392579f893f9094a471b365144e0a91926c27b6c7cc09c4637669cd006dd`.
+
+Complete archive inventory:
+
+```text
+package/LICENSE
+package/package.json
+package/README.md
+package/assets/claude-bridge1.png
+package/assets/claude-bridge2.png
+package/src/agents-md.ts
+package/src/askclaude-ui.ts
+package/src/config.ts
+package/src/convert.ts
+package/src/extract-tool-results.ts
+package/src/index.ts
+package/src/models.ts
+package/src/query-state.ts
+package/src/sdk-messages.ts
+package/src/sdk-options.ts
+package/src/session-verify.ts
+package/src/skills.ts
+package/src/typebox-to-zod.ts
+```
+
+The archive contains every file selected by the package's `files` allowlist (`src`, `README.md`, `LICENSE`, and `assets`) plus npm's required `package.json`. It contains no tests, local environment files, `.test-output` artifacts, repository metadata, upgrade documents, or configuration-isolation material. The archived manifest retains Node `>=22.19.0`, exact Agent SDK `0.3.218`, and no standalone `@anthropic-ai/claude-code` dependency.
+
+##### Clean consumer and authenticated executable checks
+
+The primary consumer was created outside the repository at `/tmp/pi-claude-bridge-phase7-consumer-node24`. The minimum-Node consumer used the equivalent path ending in `node22`. The clean-install procedure was:
+
+```sh
+TARBALL=/Users/paolof/Developer/ai/pi-claude-bridge/.test-output/phase7/package/pi-claude-bridge-0.6.2.tgz
+CONSUMER=/tmp/pi-claude-bridge-phase7-consumer-node24
+NODE_HOME=/tmp/pi-claude-bridge-phase7-runtimes/node-v24.18.0-darwin-arm64
+rm -rf "$CONSUMER" && mkdir -p "$CONSUMER" && cd "$CONSUMER"
+export PATH="$NODE_HOME/bin:/usr/bin:/bin"
+npm init -y
+npm install "$TARBALL" \
+  @earendil-works/pi-ai@0.80.3 \
+  @earendil-works/pi-coding-agent@0.80.3 \
+  @earendil-works/pi-tui@0.80.3
+npm ls --all --json > npm-ls-all.json
+npm ls pi-claude-bridge @anthropic-ai/claude-agent-sdk \
+  @anthropic-ai/claude-agent-sdk-darwin-arm64 @anthropic-ai/sdk \
+  @modelcontextprotocol/sdk zod cc-session-io \
+  @earendil-works/pi-ai @earendil-works/pi-coding-agent @earendil-works/pi-tui
+```
+
+Both Darwin arm64 consumers returned `npm-ls-problems=[]`. They resolved bridge `0.6.2`, Agent SDK `0.3.218`, the matching `@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.218`, Anthropic SDK `0.113.0`, MCP SDK `1.29.0`, Zod `4.4.3`, `cc-session-io 0.3.1`, and all three Pi peers at `0.80.3`. Unmatched SDK platform packages remained normal omitted optional dependencies rather than invalid relationships.
+
+A temporary consumer-local harness imported the Agent SDK dependency installed by the tarball, used `spawnClaudeCodeProcess` to capture the selected command, set the query's `PATH` to `/usr/bin:/bin`, and first asserted that `claude --version` failed with `ENOENT` under that path. The authenticated command was:
+
+```sh
+cd /tmp/pi-claude-bridge-phase7-consumer-node24
+PATH=/tmp/pi-claude-bridge-phase7-runtimes/node-v24.18.0-darwin-arm64/bin:/usr/bin:/bin \
+  node phase7-auth-query.mjs
+```
+
+The query returned the requested marker, a successful terminal result, and `system:init.claude_code_version === "2.1.218"`. The captured executable was `/private/tmp/pi-claude-bridge-phase7-consumer-node24/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude`, which matched the installed optional platform package by real path. No `claude` executable was available from the query's `PATH`.
+
+The override check used a consumer-local executable wrapper that wrote a non-secret invocation marker and then executed the bundled binary. It ran with:
+
+```sh
+node phase7-auth-query.mjs \
+  /tmp/pi-claude-bridge-phase7-consumer-node24/phase7-claude-override \
+  /tmp/pi-claude-bridge-phase7-consumer-node24/phase7-override-invoked.txt
+```
+
+The spawn hook selected the wrapper, the marker contained `invoked`, the wrapped authenticated query succeeded, and `system:init` still reported `2.1.218`. This proves `pathToClaudeCodeExecutable` takes precedence over the bundle.
+
+The clean install also reported 10 npm audit advisories (9 moderate and 1 high) in the transitive consumer graph. `npm ls` remained valid. No audit fix was applied because it would change the exact SDK/Pi compatibility baseline and was not a packaging-resolution fix.
+
+##### Node runtime matrix
+
+| Node runtime | npm | Clean install and `npm ls` | Authenticated installed-tarball query | Result |
+| --- | ---: | --- | --- | --- |
+| `22.19.0` (declared minimum) | `10.9.3` | Passed; `327` packages installed and no `npm ls` problems | Passed natively on Darwin arm64; bundled selection and `system:init 2.1.218` asserted with no `claude` on sanitized `PATH` | Passed |
+| `24.18.0` (current LTS) | `11.16.0` | Passed; `335` packages installed and no `npm ls` problems | Passed natively on Darwin arm64; bundled selection, override, and `system:init 2.1.218` asserted | Passed |
+
+##### Platform package matrix
+
+For Linux, clean containers used `node:24.18.0-bookworm-slim` for glibc and `node:24.18.0-alpine` for musl. Each container created `/consumer`, installed the tarball and exact Pi `0.80.3` peers, required an empty `npm ls --all --json` problems array, ran the selected native binary with `--version`, and started an unauthenticated SDK query with no `claude` on `PATH`. The query emitted `system:init 2.1.218` from the selected package before the expected not-logged-in terminal error. Credentials were not copied into containers.
+
+The four Linux checks used these exact target, image, and package combinations with a common clean-container command body:
+
+```sh
+TARBALL="$PWD/.test-output/phase7/package/pi-claude-bridge-0.6.2.tgz"
+PROBE="$PWD/.test-output/phase7/platform-probe.mjs"
+
+run_linux_target() {
+  TARGET="$1"
+  IMAGE="$2"
+  PLATFORM_PACKAGE="$3"
+  docker run --rm --platform "$TARGET" \
+    -v "$TARBALL:/artifact/package.tgz:ro" \
+    -v "$PROBE:/artifact/probe.mjs:ro" \
+    -e PHASE7_PLATFORM_PACKAGE="$PLATFORM_PACKAGE" \
+    "$IMAGE" sh -lc '
+      set -eu
+      mkdir /consumer && cd /consumer
+      npm init -y >/dev/null
+      npm install --loglevel=error /artifact/package.tgz \
+        @earendil-works/pi-ai@0.80.3 \
+        @earendil-works/pi-coding-agent@0.80.3 \
+        @earendil-works/pi-tui@0.80.3
+      npm ls --all --json > /tmp/npm-ls-all.json
+      node -e "const x=require(\"/tmp/npm-ls-all.json\"); if ((x.problems??[]).length) throw Error(JSON.stringify(x.problems))"
+      npm ls pi-claude-bridge @anthropic-ai/claude-agent-sdk "$PHASE7_PLATFORM_PACKAGE"
+      node /artifact/probe.mjs
+    '
+}
+
+run_linux_target linux/arm64 node:24.18.0-bookworm-slim @anthropic-ai/claude-agent-sdk-linux-arm64
+run_linux_target linux/amd64 node:24.18.0-bookworm-slim @anthropic-ai/claude-agent-sdk-linux-x64
+run_linux_target linux/arm64 node:24.18.0-alpine @anthropic-ai/claude-agent-sdk-linux-arm64-musl
+run_linux_target linux/amd64 node:24.18.0-alpine @anthropic-ai/claude-agent-sdk-linux-x64-musl
+```
+
+Windows target checks used clean Node `24.18.0` containers. The exact npm target-resolution commands inside fresh `/consumer` directories were:
+
+```sh
+npm install --os=win32 --cpu=x64 /artifact/package.tgz \
+  @earendil-works/pi-ai@0.80.3 \
+  @earendil-works/pi-coding-agent@0.80.3 \
+  @earendil-works/pi-tui@0.80.3
+npm ls --all --json --os=win32 --cpu=x64
+npm ls --os=win32 --cpu=x64 \
+  pi-claude-bridge @anthropic-ai/claude-agent-sdk \
+  @anthropic-ai/claude-agent-sdk-win32-x64
+
+npm install --os=win32 --cpu=arm64 /artifact/package.tgz \
+  @earendil-works/pi-ai@0.80.3 \
+  @earendil-works/pi-coding-agent@0.80.3 \
+  @earendil-works/pi-tui@0.80.3
+npm ls --all --json --os=win32 --cpu=arm64
+npm ls --os=win32 --cpu=arm64 \
+  pi-claude-bridge @anthropic-ai/claude-agent-sdk \
+  @anthropic-ai/claude-agent-sdk-win32-arm64
+```
+
+Separate temporary metadata probes verified the selected package metadata, the presence of `claude.exe`, and its `MZ` PE header without executing it.
+
+| Declared SDK target | Selected optional package | Clean installation resolution | Runtime evidence |
+| --- | --- | --- | --- |
+| macOS arm64 | `@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.218` | Passed on Node `22.19.0` and `24.18.0`; peers valid | Native `--version`, offline initialization, and authenticated SDK queries passed; `system:init 2.1.218` |
+| macOS x64 | `@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.218` | Passed in a clean x64 Node `24.18.0` consumer under Rosetta; no `npm ls` problems | Not claimed. The bundled Bun executable warned that Rosetta did not expose required AVX support and timed out, so physical Intel macOS execution remains unavailable |
+| Linux arm64 glibc | `@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.218` | Passed in clean `linux/arm64` Docker | Native Docker execution passed; `--version` and SDK-selected `system:init 2.1.218` |
+| Linux x64 glibc | `@anthropic-ai/claude-agent-sdk-linux-x64@0.3.218` | Passed in clean `linux/amd64` Docker | Emulated Docker execution passed; `--version` and SDK-selected `system:init 2.1.218` |
+| Linux arm64 musl | `@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.218` | Passed in clean Alpine `linux/arm64` Docker | Native Docker execution passed; `--version` and SDK-selected `system:init 2.1.218` |
+| Linux x64 musl | `@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.218` | Passed in clean Alpine `linux/amd64` Docker | Emulated Docker execution passed; `--version` and SDK-selected `system:init 2.1.218` |
+| Windows x64 | `@anthropic-ai/claude-agent-sdk-win32-x64@0.3.218` | Passed with clean npm target resolution; `claude.exe` was `263931552` bytes with an `MZ` header | Not executed; no Windows runtime was available |
+| Windows arm64 | `@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.218` | Passed with clean npm target resolution; `claude.exe` was `258307232` bytes with an `MZ` header | Not executed; no Windows arm64 runtime was available |
+
+All eight optional native packages declared by Agent SDK `0.3.218` resolved at the exact SDK version. Runtime execution is not claimed for macOS x64 or either Windows architecture. Linux x64 results used Docker emulation rather than x64 hardware. These are environment limitations, not observed package-resolution failures.
+
+No production source, package manifest, lockfile, dependency, or persistent test change was needed in Phase 7. The repository currently has no GitHub Actions workflow. If CI is added, keep authenticated tests on trusted manual, scheduled, or protected runs so credentials are never exposed to untrusted pull requests.
+
+**Phase 8 session handoff:** Confirm the active subscription tier and Extra Usage state, keep `ANTHROPIC_API_KEY` unset, then start model-behavior revalidation with `cd /Users/paolof/Developer/ai/pi-claude-bridge && env -u ANTHROPIC_API_KEY node diag/context-size.mjs pro` (replace `pro` only if the authenticated profile is on another documented tier). Do not alter Claude configuration or begin configuration-isolation work as part of that measurement.
 
 ### Phase 8: Revalidate model behavior
 
