@@ -2,7 +2,7 @@
 
 **Assessment date:** 2026-07-22  
 **Project:** `pi-claude-bridge`  
-**Status:** Phase 1 complete; Phase 2 offline compatibility contracts are next
+**Status:** Phases 1-2 complete; Phase 3 dependency upgrade is next
 
 ## Executive summary
 
@@ -291,18 +291,43 @@ Verification completed on 2026-07-22:
 
 **Phase 2 session handoff:** Keep the current dependency versions until the offline contracts are complete. Extend the fake executable and the extracted builders/reducer to cover MCP initialization, generated Zod schemas, AskClaude mode inventories, terminal error and abort paths, configuration-source isolation, synthetic session APIs, and executable resolution. Do not apply the Agent SDK upgrade until Phase 3.
 
-### Phase 2: Add offline compatibility contracts (next)
+### Phase 2: Add offline compatibility contracts (completed 2026-07-23)
 
-Add tests that run without credentials:
+Tests run without Claude credentials:
 
-1. Assert the SDK-reported Claude Code version in `system:init`.
-2. Assert MCP connection status and custom tool visibility.
-3. Exercise a custom Zod tool schema generated from TypeBox.
-4. Assert AskClaude tool policies for read, full, and none modes.
-5. Exercise success, terminal error, abort, and unknown-message fixtures.
-6. Verify `CLAUDE_CONFIG_DIR` and `settingSources` with temporary directories.
-7. Create a synthetic session and read it through the SDK session APIs.
-8. Assert bundled executable resolution and external executable override behavior.
+1. [x] Assert the SDK-reported Claude Code version in `system:init`.
+2. [x] Assert MCP connection status and custom tool visibility.
+3. [x] Exercise a custom Zod tool schema generated from TypeBox.
+4. [x] Assert AskClaude tool policies for read, full, and none modes.
+5. [x] Exercise success, terminal error, abort, and unknown-message fixtures.
+6. [x] Verify `CLAUDE_CONFIG_DIR` and `settingSources` with temporary directories.
+7. [x] Create a synthetic session and read it through the SDK session APIs.
+8. [x] Assert bundled executable resolution and external executable override behavior.
+
+#### Phase 2 completion record
+
+Implemented coverage:
+
+- `tests/fixtures/fake-claude-cli.mjs` now supports MCP initialization and tool calls, native tool filtering, terminal errors, unknown messages, and an abortable query.
+- `tests/unit-sdk-runtime-contract.mjs` covers `system:init`, the generated TypeBox-to-Zod MCP schema and handler, all three AskClaude modes, success/error/abort/unknown paths, and executable selection.
+- `tests/unit-sdk-storage-contract.mjs` covers relocated settings sources and SDK reads of a synthetic `cc-session-io` transcript.
+- `src/sdk-options.ts`, `src/sdk-messages.ts`, and `src/typebox-to-zod.ts` expose the production policy, initialization, and schema-adaptation seams used by those tests.
+
+Verification completed on 2026-07-23:
+
+- The runtime remains on Agent SDK `0.2.141`; `package.json` and `package-lock.json` were unchanged.
+- `npm run typecheck` passed.
+- All 122 unit tests passed (the 110-test Phase 1 baseline plus 12 additional Phase 2 contract tests/subtests).
+- The offline runtime tests explicitly remove Claude credential environment variables, use temporary configuration and session directories, and require no Claude login.
+- Diagnostics and `git diff --check` passed.
+
+Remaining risks:
+
+- The fake process validates the SDK transport boundary, but authenticated model behavior, target-binary MCP startup timing, resume/compaction, and the target `system:init.tools` inventory still require later phases.
+- Phase 4 still owns dangerous-bypass acknowledgement, typed strict MCP adaptation, `alwaysLoad`, tool-policy changes for new delegation names, and `result.is_error` semantics.
+- Cross-platform native package selection remains a Phase 7 matrix concern.
+
+**Phase 3 session handoff:** First run `npm view @anthropic-ai/claude-agent-sdk dist-tags`. If `latest` differs from `0.3.218`, update the Agent SDK and bundled Claude Code targets throughout this plan and repeat the clean-install rehearsal. Then apply only the Phase 3 dependency changes, regenerate `package-lock.json` from a clean install, and run these 122 offline contracts before making any Phase 4 behavior adaptations.
 
 > **Scope justification for Phases 1-2.** Building a fake Claude CLI and extracting testable option and message builders is deliberately heavy for a one-time upgrade whose follow-up rehearsal already passed 99 unit tests and typechecking. It is worth it here for one reason: the actual bottleneck during the assessment was that expired Claude OAuth blocked every authenticated check, so there is currently no way to gate SDK behavior offline. This harness is what lets future SDK bumps run in CI without credentials, which is a stated goal of this plan (reviewed automated dependency PRs, see "Pinning policy" and Phase 9). Treat Phases 1-2 as durable regression infrastructure for recurring upgrades, not as one-shot scaffolding. If the project decides it will *not* pursue recurring automated SDK bumps, reconsider this scope, because for a single upgrade it is over-engineered.
 

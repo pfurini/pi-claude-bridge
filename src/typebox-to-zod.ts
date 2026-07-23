@@ -9,6 +9,7 @@
 // their schemas. If this breaks after an SDK update, check whether `Z0()`
 // detection changed or createSdkMcpServer now accepts raw JSON Schema.
 
+import type { SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
 export function jsonSchemaPropertyToZod(prop: Record<string, unknown>): z.ZodTypeAny {
@@ -39,4 +40,26 @@ export function jsonSchemaToZodShape(schema: unknown): Record<string, z.ZodTypeA
 		shape[key] = required.has(key) ? zodProp : zodProp.optional();
 	}
 	return shape;
+}
+
+export interface TypeBoxToolDescriptor {
+	name: string;
+	description: string;
+	parameters: unknown;
+}
+
+type SdkMcpToolHandler = SdkMcpToolDefinition<
+	Record<string, z.ZodTypeAny>
+>["handler"];
+
+export function typeBoxToolToSdkMcpTool(
+	tool: TypeBoxToolDescriptor,
+	handler: SdkMcpToolHandler,
+): SdkMcpToolDefinition<Record<string, z.ZodTypeAny>> {
+	return {
+		name: tool.name,
+		description: tool.description,
+		inputSchema: jsonSchemaToZodShape(tool.parameters),
+		handler,
+	};
 }

@@ -1,6 +1,62 @@
-import type { EffortLevel, Options, SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import type {
+	EffortLevel,
+	Options,
+	SettingSource,
+} from "@anthropic-ai/claude-agent-sdk";
 
 export type CliDebugOptions = Pick<Options, "debug" | "debugFile" | "stderr">;
+
+export type AskClaudeMode = "full" | "read" | "none";
+
+// These lists intentionally preserve the current AskClaude policy. Phase 4 of the
+// SDK upgrade plan owns any policy changes for new Claude Code tool names.
+const ASKCLAUDE_ALWAYS_BLOCKED = [
+	"AskUserQuestion",
+	"EnterPlanMode",
+	"ExitPlanMode",
+	"ToolSearch",
+	"ScheduleWakeup",
+];
+
+const ASKCLAUDE_DISALLOWED_TOOLS: Record<AskClaudeMode, string[]> = {
+	full: [...ASKCLAUDE_ALWAYS_BLOCKED],
+	read: [
+		...ASKCLAUDE_ALWAYS_BLOCKED,
+		"Write",
+		"Edit",
+		"Bash",
+		"NotebookEdit",
+		"EnterWorktree",
+		"ExitWorktree",
+		"CronCreate",
+		"CronDelete",
+		"TeamCreate",
+		"TeamDelete",
+	],
+	none: [
+		...ASKCLAUDE_ALWAYS_BLOCKED,
+		"Read",
+		"Write",
+		"Edit",
+		"Glob",
+		"Grep",
+		"Bash",
+		"Agent",
+		"NotebookEdit",
+		"EnterWorktree",
+		"ExitWorktree",
+		"CronCreate",
+		"CronDelete",
+		"TeamCreate",
+		"TeamDelete",
+		"WebFetch",
+		"WebSearch",
+	],
+};
+
+export function getAskClaudeDisallowedTools(mode: AskClaudeMode): string[] {
+	return [...ASKCLAUDE_DISALLOWED_TOOLS[mode]];
+}
 
 export interface ProviderQueryOptionsInput {
 	cwd: string;
@@ -16,7 +72,9 @@ export interface ProviderQueryOptionsInput {
 	debugOptions?: CliDebugOptions;
 }
 
-export function buildProviderQueryOptions(input: ProviderQueryOptionsInput): Options {
+export function buildProviderQueryOptions(
+	input: ProviderQueryOptionsInput,
+): Options {
 	const extraArgs: Record<string, string | null> = { model: input.cliModel };
 	if (input.strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	if (input.effort) extraArgs["thinking-display"] = "summarized";
@@ -41,7 +99,9 @@ export function buildProviderQueryOptions(input: ProviderQueryOptionsInput): Opt
 		...(input.settingSources ? { settingSources: input.settingSources } : {}),
 		...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
 		...(input.resumeSessionId ? { resume: input.resumeSessionId } : {}),
-		...(input.claudeExecutable ? { pathToClaudeCodeExecutable: input.claudeExecutable } : {}),
+		...(input.claudeExecutable
+			? { pathToClaudeCodeExecutable: input.claudeExecutable }
+			: {}),
 		...input.debugOptions,
 	};
 }
@@ -59,7 +119,9 @@ export interface AskClaudeQueryOptionsInput {
 	debugOptions?: CliDebugOptions;
 }
 
-export function buildAskClaudeQueryOptions(input: AskClaudeQueryOptionsInput): Options {
+export function buildAskClaudeQueryOptions(
+	input: AskClaudeQueryOptionsInput,
+): Options {
 	const extraArgs: Record<string, string | null> = {
 		"strict-mcp-config": null,
 		model: input.cliModel,
@@ -74,7 +136,9 @@ export function buildAskClaudeQueryOptions(input: AskClaudeQueryOptionsInput): O
 			DISABLE_AUTO_COMPACT: "1",
 		},
 		permissionMode: "bypassPermissions",
-		...(input.disallowedTools.length ? { disallowedTools: input.disallowedTools } : {}),
+		...(input.disallowedTools.length
+			? { disallowedTools: input.disallowedTools }
+			: {}),
 		...(input.effort ? { effort: input.effort } : {}),
 		systemPrompt: input.skillsBlock
 			? { type: "preset", preset: "claude_code", append: input.skillsBlock }
@@ -83,7 +147,9 @@ export function buildAskClaudeQueryOptions(input: AskClaudeQueryOptionsInput): O
 		extraArgs,
 		...(input.resumeSessionId ? { resume: input.resumeSessionId } : {}),
 		...(input.isolated ? { persistSession: false } : {}),
-		...(input.claudeExecutable ? { pathToClaudeCodeExecutable: input.claudeExecutable } : {}),
+		...(input.claudeExecutable
+			? { pathToClaudeCodeExecutable: input.claudeExecutable }
+			: {}),
 		...input.debugOptions,
 	};
 }
@@ -97,7 +163,9 @@ export interface IsolatedSummaryQueryOptionsInput {
 	debugOptions?: CliDebugOptions;
 }
 
-export function buildIsolatedSummaryQueryOptions(input: IsolatedSummaryQueryOptionsInput): Options {
+export function buildIsolatedSummaryQueryOptions(
+	input: IsolatedSummaryQueryOptionsInput,
+): Options {
 	return {
 		cwd: input.cwd,
 		env: {
@@ -113,7 +181,9 @@ export function buildIsolatedSummaryQueryOptions(input: IsolatedSummaryQueryOpti
 		systemPrompt: input.systemPrompt,
 		model: input.cliModel,
 		maxTurns: 1,
-		...(input.claudeExecutable ? { pathToClaudeCodeExecutable: input.claudeExecutable } : {}),
+		...(input.claudeExecutable
+			? { pathToClaudeCodeExecutable: input.claudeExecutable }
+			: {}),
 		...input.debugOptions,
 	};
 }

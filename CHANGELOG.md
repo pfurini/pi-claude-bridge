@@ -2,7 +2,7 @@
 
 ## UNRELEASED
 
-- **Tests: add a measurable Agent SDK upgrade baseline** — align Pi development packages at `0.80.3`, require Node `>=22.19.0`, extract SDK option and message contracts, and add an unauthenticated fake Claude stream-json runtime for offline tests.
+- **Tests: add offline Agent SDK upgrade compatibility contracts** — establish the Pi `0.80.3` and Node `>=22.19.0` baseline, then cover SDK initialization, MCP schemas and tools, AskClaude policies, terminal and abort paths, configuration sources, synthetic sessions, and executable resolution without Claude credentials.
 
 ## 0.6.2 — 2026-07-06
 

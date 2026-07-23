@@ -6,6 +6,13 @@ export interface ReducedToolUse {
 	input?: Record<string, unknown>;
 }
 
+export interface SdkSystemInit {
+	sessionId: string;
+	claudeCodeVersion?: string;
+	tools: string[];
+	mcpServers: Array<{ name: string; status: string }>;
+}
+
 export interface SdkTerminalResult {
 	subtype: string;
 	successful: boolean;
@@ -20,6 +27,7 @@ export interface SdkMessageState {
 	textDeltaCount: number;
 	result?: SdkTerminalResult;
 	sessionId?: string;
+	systemInit?: SdkSystemInit;
 	unknownMessageTypes: string[];
 }
 
@@ -30,6 +38,7 @@ export interface SdkMessageReduction {
 	toolUsesCompleted?: ReducedToolUse[];
 	result?: SdkTerminalResult;
 	sessionId?: string;
+	systemInit?: SdkSystemInit;
 	rateLimitInfo?: Record<string, unknown>;
 	unknown?: boolean;
 }
@@ -43,8 +52,53 @@ export function createSdkMessageState(): SdkMessageState {
 	};
 }
 
-export function resultErrorText(message: SDKMessage, failureLabel = "Claude Code query"): string {
-	const result = message as SDKMessage & { subtype?: string; errors?: unknown; error?: unknown };
+export function parseSdkSystemInit(
+	message: SDKMessage,
+): SdkSystemInit | undefined {
+	if (message.type !== "system") return undefined;
+	const system = message as SDKMessage & {
+		subtype?: string;
+		session_id?: unknown;
+		claude_code_version?: unknown;
+		tools?: unknown;
+		mcp_servers?: unknown;
+	};
+	if (system.subtype !== "init" || typeof system.session_id !== "string") {
+		return undefined;
+	}
+
+	const tools = Array.isArray(system.tools)
+		? system.tools.filter((tool): tool is string => typeof tool === "string")
+		: [];
+	const mcpServers = Array.isArray(system.mcp_servers)
+		? system.mcp_servers.flatMap((server) => {
+			if (!server || typeof server !== "object") return [];
+			const { name, status } = server as { name?: unknown; status?: unknown };
+			return typeof name === "string" && typeof status === "string"
+				? [{ name, status }]
+				: [];
+		})
+		: [];
+
+	return {
+		sessionId: system.session_id,
+		...(typeof system.claude_code_version === "string"
+			? { claudeCodeVersion: system.claude_code_version }
+			: {}),
+		tools,
+		mcpServers,
+	};
+}
+
+export function resultErrorText(
+	message: SDKMessage,
+	failureLabel = "Claude Code query",
+): string {
+	const result = message as SDKMessage & {
+		subtype?: string;
+		errors?: unknown;
+		error?: unknown;
+	};
 	if (Array.isArray(result.errors)) return result.errors.map(String).join("\n");
 	if (typeof result.error === "string") return result.error;
 	return `${failureLabel} failed: ${result.subtype ?? "unknown result"}`;
@@ -69,7 +123,9 @@ export function parseSdkResult(
 		successful,
 		isError: result.is_error === true,
 		text: resultText || fallbackText,
-		...(successful ? {} : { errorText: resultErrorText(message, failureLabel) }),
+		...(successful
+			? {}
+			: { errorText: resultErrorText(message, failureLabel) }),
 	};
 }
 
@@ -82,20 +138,29 @@ export function reduceSdkMessage(
 	const reduction: SdkMessageReduction = { type };
 
 	if (type === "stream_event") {
-		const event = (message as SDKMessage & {
-			event?: {
-				type?: string;
-				delta?: { type?: string; text?: unknown };
-				content_block?: { type?: string; id?: unknown; name?: unknown };
-			};
-		}).event;
-		if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
-			const delta = typeof event.delta.text === "string" ? event.delta.text : "";
+		const event = (
+			message as SDKMessage & {
+				event?: {
+					type?: string;
+					delta?: { type?: string; text?: unknown };
+					content_block?: { type?: string; id?: unknown; name?: unknown };
+				};
+			}
+		).event;
+		if (
+			event?.type === "content_block_delta" &&
+			event.delta?.type === "text_delta"
+		) {
+			const delta =
+				typeof event.delta.text === "string" ? event.delta.text : "";
 			state.streamedText += delta;
 			state.textDeltaCount++;
 			reduction.textDelta = delta;
 		}
-		if (event?.type === "content_block_start" && event.content_block?.type === "tool_use") {
+		if (
+			event?.type === "content_block_start" &&
+			event.content_block?.type === "tool_use"
+		) {
 			reduction.toolUseStarted = {
 				id: String(event.content_block.id),
 				name: String(event.content_block.name),
@@ -127,19 +192,27 @@ export function reduceSdkMessage(
 		}
 		if (completed.length > 0) reduction.toolUsesCompleted = completed;
 	} else if (type === "result") {
-		const result = parseSdkResult(message, state.assistantText, options.failureLabel);
+		const result = parseSdkResult(
+			message,
+			state.assistantText,
+			options.failureLabel,
+		);
 		if (result) {
 			state.result = result;
 			reduction.result = result;
 		}
 	} else if (type === "system") {
-		const system = message as SDKMessage & { subtype?: string; session_id?: unknown };
-		if (system.subtype === "init" && typeof system.session_id === "string") {
-			state.sessionId = system.session_id;
-			reduction.sessionId = system.session_id;
+		const systemInit = parseSdkSystemInit(message);
+		if (systemInit) {
+			state.sessionId = systemInit.sessionId;
+			state.systemInit = systemInit;
+			reduction.sessionId = systemInit.sessionId;
+			reduction.systemInit = systemInit;
 		}
 	} else if (type === "rate_limit_event") {
-		const info = (message as SDKMessage & { rate_limit_info?: Record<string, unknown> }).rate_limit_info;
+		const info = (
+			message as SDKMessage & { rate_limit_info?: Record<string, unknown> }
+		).rate_limit_info;
 		if (info && typeof info === "object") reduction.rateLimitInfo = info;
 	} else if (type !== "user") {
 		state.unknownMessageTypes.push(type);

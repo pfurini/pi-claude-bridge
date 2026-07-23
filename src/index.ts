@@ -18,9 +18,9 @@ import { extractAllToolResults as _extractAllToolResults, type McpResult } from 
 import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, type Config } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
-import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
-import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions } from "./sdk-options.js";
-import { createSdkMessageState, parseSdkResult, reduceSdkMessage } from "./sdk-messages.js";
+import { typeBoxToolToSdkMcpTool } from "./typebox-to-zod.js";
+import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions, getAskClaudeDisallowedTools } from "./sdk-options.js";
+import { createSdkMessageState, parseSdkResult, parseSdkSystemInit, reduceSdkMessage } from "./sdk-messages.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
@@ -140,31 +140,6 @@ function errorMessage(err: unknown): string {
 	return String(err);
 }
 
-// AskClaude mode presets — controls which CC tools are blocked per mode.
-// Only block tools that can't work (no pi TUI for user interaction).
-// Other CC tools (Agent, SendMessage, RemoteTrigger, Tasks, etc.) are intentionally not blocked.
-const ASKCLAUDE_ALWAYS_BLOCKED = [
-	"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
-	"ToolSearch", // probes for blocked tools, wastes tokens
-	"ScheduleWakeup", // no harness to fire wakeup from inside a delegated subagent
-];
-const MODE_DISALLOWED_TOOLS: Record<string, string[]> = {
-	full: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-	],
-	read: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-		"Write", "Edit", "Bash", "NotebookEdit",
-		"EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "TeamCreate", "TeamDelete",
-	],
-	none: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-		"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent",
-		"NotebookEdit", "EnterWorktree", "ExitWorktree",
-		"CronCreate", "CronDelete", "TeamCreate", "TeamDelete",
-		"WebFetch", "WebSearch",
-	],
-};
 
 // --- Session persistence ---
 
@@ -684,11 +659,8 @@ function resolveMcpTools(context: Context, excludeToolName?: string): {
 // correct query's state while multiple queries run concurrently.
 function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, ReturnType<typeof createSdkMcpServer>> | undefined {
 	if (!tools.length) return undefined;
-	const mcpTools = tools.map((tool) => ({
-		name: tool.name,
-		description: tool.description,
-		inputSchema: jsonSchemaToZodShape(tool.parameters),
-		handler: async () => {
+	const mcpTools = tools.map((tool) =>
+		typeBoxToolToSdkMcpTool(tool, async () => {
 			const toolCallId = queryCtx.turnToolCallIds[queryCtx.nextHandlerIdx++];
 			if (!toolCallId) debug(`WARNING: mcp handler ${tool.name} has no toolCallId (idx=${queryCtx.nextHandlerIdx - 1}, available=${queryCtx.turnToolCallIds.length})`);
 			if (toolCallId && queryCtx.pendingResults.has(toolCallId)) {
@@ -701,8 +673,8 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 			return new Promise<McpResult>((resolve) => {
 				queryCtx.pendingToolCalls.set(toolCallId, { toolName: tool.name, resolve });
 			});
-		},
-	}));
+		}),
+	);
 	const server = createSdkMcpServer({ name: MCP_SERVER_NAME, version: "1.0.0", tools: mcpTools });
 	return { [MCP_SERVER_NAME]: server };
 }
@@ -996,8 +968,7 @@ function processTerminalResultMessage(message: SDKMessage, model: Model<any>, qu
 }
 
 function systemInitSessionId(message: SDKMessage): string | undefined {
-	const system = message as SDKMessage & { subtype?: string; session_id?: unknown };
-	return system.subtype === "init" && typeof system.session_id === "string" ? system.session_id : undefined;
+	return parseSdkSystemInit(message)?.sessionId;
 }
 
 function processRateLimitMessage(message: SDKMessage): void {
@@ -1447,7 +1418,7 @@ async function promptAndWait(
 	}
 
 	// Mode → disallowed tools
-	const disallowedTools = MODE_DISALLOWED_TOOLS[mode] ?? [];
+	const disallowedTools = getAskClaudeDisallowedTools(mode);
 
 	// Skills append
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt

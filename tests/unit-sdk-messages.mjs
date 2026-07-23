@@ -14,14 +14,26 @@ function message(value) {
 describe("SDK message reduction", () => {
 	it("accumulates streamed text and reports each delta", () => {
 		const state = createSdkMessageState();
-		const first = reduceSdkMessage(state, message({
-			type: "stream_event",
-			event: { type: "content_block_delta", delta: { type: "text_delta", text: "hello " } },
-		}));
-		const second = reduceSdkMessage(state, message({
-			type: "stream_event",
-			event: { type: "content_block_delta", delta: { type: "text_delta", text: "world" } },
-		}));
+		const first = reduceSdkMessage(
+			state,
+			message({
+				type: "stream_event",
+				event: {
+					type: "content_block_delta",
+					delta: { type: "text_delta", text: "hello " },
+				},
+			}),
+		);
+		const second = reduceSdkMessage(
+			state,
+			message({
+				type: "stream_event",
+				event: {
+					type: "content_block_delta",
+					delta: { type: "text_delta", text: "world" },
+				},
+			}),
+		);
 
 		assert.equal(first.textDelta, "hello ");
 		assert.equal(second.textDelta, "world");
@@ -31,57 +43,87 @@ describe("SDK message reduction", () => {
 
 	it("captures tool starts and completed tool inputs", () => {
 		const state = createSdkMessageState();
-		const started = reduceSdkMessage(state, message({
-			type: "stream_event",
-			event: {
-				type: "content_block_start",
-				content_block: { type: "tool_use", id: "tool-1", name: "Read" },
-			},
-		}));
-		const completed = reduceSdkMessage(state, message({
-			type: "assistant",
-			message: {
-				content: [
-					{ type: "text", text: "done" },
-					{ type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "README.md" } },
-				],
-			},
-		}));
+		const started = reduceSdkMessage(
+			state,
+			message({
+				type: "stream_event",
+				event: {
+					type: "content_block_start",
+					content_block: { type: "tool_use", id: "tool-1", name: "Read" },
+				},
+			}),
+		);
+		const completed = reduceSdkMessage(
+			state,
+			message({
+				type: "assistant",
+				message: {
+					content: [
+						{ type: "text", text: "done" },
+						{
+							type: "tool_use",
+							id: "tool-1",
+							name: "Read",
+							input: { file_path: "README.md" },
+						},
+					],
+				},
+			}),
+		);
 
 		assert.deepEqual(started.toolUseStarted, { id: "tool-1", name: "Read" });
-		assert.deepEqual(completed.toolUsesCompleted, [{
-			id: "tool-1",
-			name: "Read",
-			input: { file_path: "README.md" },
-		}]);
+		assert.deepEqual(completed.toolUsesCompleted, [
+			{
+				id: "tool-1",
+				name: "Read",
+				input: { file_path: "README.md" },
+			},
+		]);
 		assert.equal(state.assistantText, "done");
 	});
 
-	it("captures session initialization without depending on the full init shape", () => {
+	it("captures the functional system initialization contract", () => {
 		const state = createSdkMessageState();
-		const reduced = reduceSdkMessage(state, message({
-			type: "system",
-			subtype: "init",
-			session_id: "session-1",
-			tools: ["Read"],
-		}));
+		const reduced = reduceSdkMessage(
+			state,
+			message({
+				type: "system",
+				subtype: "init",
+				session_id: "session-1",
+				claude_code_version: "2.1.test",
+				tools: ["Read", "mcp__custom-tools__echo"],
+				mcp_servers: [{ name: "custom-tools", status: "connected" }],
+			}),
+		);
 
 		assert.equal(reduced.sessionId, "session-1");
-		assert.equal(state.sessionId, "session-1");
+		assert.deepEqual(reduced.systemInit, {
+			sessionId: "session-1",
+			claudeCodeVersion: "2.1.test",
+			tools: ["Read", "mcp__custom-tools__echo"],
+			mcpServers: [{ name: "custom-tools", status: "connected" }],
+		});
+		assert.deepEqual(state.systemInit, reduced.systemInit);
 	});
 
 	it("uses completed assistant text when a success result omits result text", () => {
 		const state = createSdkMessageState();
-		reduceSdkMessage(state, message({
-			type: "assistant",
-			message: { content: [{ type: "text", text: "assistant fallback" }] },
-		}));
-		const reduced = reduceSdkMessage(state, message({
-			type: "result",
-			subtype: "success",
-			is_error: false,
-			result: "",
-		}));
+		reduceSdkMessage(
+			state,
+			message({
+				type: "assistant",
+				message: { content: [{ type: "text", text: "assistant fallback" }] },
+			}),
+		);
+		const reduced = reduceSdkMessage(
+			state,
+			message({
+				type: "result",
+				subtype: "success",
+				is_error: false,
+				result: "",
+			}),
+		);
 
 		assert.equal(reduced.result.successful, true);
 		assert.equal(reduced.result.isError, false);
@@ -89,22 +131,35 @@ describe("SDK message reduction", () => {
 	});
 
 	it("preserves terminal error detail for non-success results", () => {
-		const result = parseSdkResult(message({
-			type: "result",
-			subtype: "error_during_execution",
-			is_error: true,
-			errors: ["first failure", "second failure"],
-		}), "", "Claude Code summary");
+		const result = parseSdkResult(
+			message({
+				type: "result",
+				subtype: "error_during_execution",
+				is_error: true,
+				errors: ["first failure", "second failure"],
+			}),
+			"",
+			"Claude Code summary",
+		);
 
 		assert.equal(result.successful, false);
 		assert.equal(result.isError, true);
 		assert.equal(result.errorText, "first failure\nsecond failure");
-		assert.equal(resultErrorText(message({ type: "result", subtype: "timeout" }), "Claude Code summary"), "Claude Code summary failed: timeout");
+		assert.equal(
+			resultErrorText(
+				message({ type: "result", subtype: "timeout" }),
+				"Claude Code summary",
+			),
+			"Claude Code summary failed: timeout",
+		);
 	});
 
 	it("marks unknown future message types without throwing", () => {
 		const state = createSdkMessageState();
-		const reduced = reduceSdkMessage(state, message({ type: "future_message", payload: 1 }));
+		const reduced = reduceSdkMessage(
+			state,
+			message({ type: "future_message", payload: 1 }),
+		);
 
 		assert.equal(reduced.unknown, true);
 		assert.deepEqual(state.unknownMessageTypes, ["future_message"]);
