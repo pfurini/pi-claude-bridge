@@ -2,17 +2,17 @@
 
 **Assessment and execution dates:** 2026-07-22 to 2026-07-23
 **Project:** `pi-claude-bridge`  
-**Status:** Phases 1-8 complete; Phase 9 documentation and release work is next
+**Status:** Phases 1-9 complete; the local release candidate is verified but not published
 
 ## Executive summary
 
 Upgrade the bridge in a dedicated compatibility change to `@anthropic-ai/claude-agent-sdk` `0.3.218`, which bundles Claude Code `2.1.218`. Do not add `@anthropic-ai/claude-code` as a separate dependency because the Agent SDK already provides the matching platform binary.
 
-Phases 1-8 now pass on the selected dependency set. Typechecking, 126 offline unit contracts, the authenticated provider/tool/cache/compaction suite, live AskClaude policy and native-subagent checks, deterministic terminal-error propagation, clean tarball installation, the supported native-package resolution matrix, and Pro model/context behavior with Extra Usage disabled and enabled all passed with the target SDK.
+Phases 1-9 pass on the selected dependency set. Typechecking, 126 offline unit contracts, the authenticated provider/tool/cache/compaction suite, live AskClaude policy and native-subagent checks, deterministic terminal-error propagation, cross-version rollback, the supported native-package resolution matrix, Pro model/context behavior with Extra Usage disabled and enabled, and a final clean-consumer candidate installation all passed with the target SDK.
 
-Separate authenticated `0.2.141`/`2.1.141` and `0.3.218`/`2.1.218` installations could read and directly resume each other's tested transcripts in both directions. The supported rollback path also passed: after downgrade and Pi restart, the old bridge rebuilt a usable Claude session from persisted Pi history. Phase 8 found one production compatibility issue: Fable 5 is no longer available on Pro when Extra Usage is disabled. The bridge now hides or rejects that ineligible model while preserving configured Max and Pro/Extra-on behavior. Release documentation and release work remain in Phase 9.
+Separate authenticated `0.2.141`/`2.1.141` and `0.3.218`/`2.1.218` installations could read and directly resume each other's tested transcripts in both directions. The supported rollback path also passed: after downgrade and Pi restart, the old bridge rebuilt a usable Claude session from persisted Pi history. Phase 8 found one production compatibility issue: Fable 5 is no longer available on Pro when Extra Usage is disabled. The bridge now hides or rejects that ineligible model while preserving configured Max and Pro/Extra-on behavior. Phase 9 updated the target-binary documentation and verified a local package candidate; nothing was published.
 
-The upgrade should be completed before implementing the proposed Claude configuration isolation. Keeping the two changes separate will make failures attributable and will let the isolation work target the current SDK behavior.
+The SDK upgrade and the proposed Claude configuration isolation remain separate changes. Phase 9 updated the isolation design for the target SDK but did not implement profile relocation or any other configuration-isolation behavior.
 
 ## Recommended dependency target
 
@@ -850,21 +850,164 @@ No dependency, package manifest, lockfile, standalone Claude Code package, `cc-s
 
 **Next action:** from the clean Phase 8 completion commit, update `diag/CONTEXT-SIZE.md` from the three raw reports listed above before changing release or configuration-isolation documentation. Then complete the remaining Phase 9 documentation and local candidate-package checks. Do not publish until those Phase 9 checks pass.
 
-### Phase 9: Documentation and release
+### Phase 9: Documentation and release-candidate verification (completed 2026-07-23)
 
-Update:
+1. [x] Updated `diag/CONTEXT-SIZE.md` first from the three Phase 8 target-binary reports.
+2. [x] Separated directly measured, inferred, user-reported, historical, and untested model/account states.
+3. [x] Replaced stale current-behavior claims from Claude Code `2.1.141` with Agent SDK `0.3.218` and bundled Claude Code `2.1.218` results.
+4. [x] Read and updated the pre-existing untracked `docs/claude-config-isolation.md` without implementing its design.
+5. [x] Corrected the non-interactive `/config key=value` assessment: it was added in Claude Code `2.1.181` and is supported by the bundled `2.1.218`; interactive configuration interfaces still require a terminal.
+6. [x] Reviewed the existing `CHANGELOG.md` `## UNRELEASED` section. It already covers the SDK upgrade, Fable fix, and compatibility tests, so no duplicate section or docs-only entry was added.
+7. [x] Built and completely inspected a local npm candidate archive.
+8. [x] Installed the tarball in a clean consumer outside the repository and passed an unauthenticated installed-tarball provider smoke test.
+9. [x] Re-ran dependency, type, unit, LSP, lens, archive, manifest, clean-consumer, and diff checks.
+10. [x] Confirmed that no package was published and no registry or publishing configuration changed.
 
-- `docs/claude-config-isolation.md`
-- `diag/CONTEXT-SIZE.md`
-- `CHANGELOG.md` under a new `## UNRELEASED` section
+#### Phase 9 documentation results
 
-The configuration-isolation design remains valid under the target SDK. The following details in its current assessment must change:
+- `diag/CONTEXT-SIZE.md` now records the complete Claude Code `2.1.218` Pro matrix for Extra Usage disabled and enabled, the enabled-state alias mapping, bridge served-window parity, raw artifact names, error shapes, and evidence boundaries.
+- Direct Phase 8 coverage remains Pro subscription OAuth only, with `ANTHROPIC_API_KEY` unset and Extra Usage measured both disabled and enabled.
+- Disabled-state alias behavior is inferred rather than directly measured. The user-reported Max Fable behavior remains labeled as user-reported.
+- Max, Team, Enterprise, API-key authentication, other accounts, aliases with Extra Usage disabled, and near-limit payload behavior remain untested.
+- `docs/claude-config-isolation.md` now targets Agent SDK `0.3.218` and Claude Code `2.1.218`, records the passing 126-test baseline, removes the obsolete bundled-binary skew assessment, and distinguishes supported non-interactive `/config key=value` from terminal-only interfaces.
+- Configuration isolation remains design and documentation only. No `CLAUDE_CONFIG_DIR` default, profile relocation, session-path change, or configuration command was implemented.
+- `CHANGELOG.md` was reviewed but left unchanged because its existing single `## UNRELEASED` section already describes the significant release behavior and Phase 9 itself changed documentation only.
 
-- Current and target version references.
-- Version-skew warnings tied to `2.1.141`.
-- The statement that the bundled Claude Code lacks non-interactive `/config`, which was introduced after the currently bundled version.
+#### Exact Phase 9 verification commands
 
-Package the candidate and test it locally before publishing. Keep the Agent SDK exact-pinned after release and use reviewed automated dependency PRs for future updates.
+Initial state, dependency, and baseline checks:
+
+```sh
+cd /Users/paolof/Developer/ai/pi-claude-bridge
+git branch --show-current
+git rev-parse HEAD
+git status --short
+npm ls @anthropic-ai/claude-agent-sdk @anthropic-ai/sdk \
+  @modelcontextprotocol/sdk zod cc-session-io \
+  @earendil-works/pi-ai @earendil-works/pi-coding-agent \
+  @earendil-works/pi-tui
+node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude --version
+npm ls @anthropic-ai/claude-code --all
+npm run typecheck
+npm run test:unit
+```
+
+These confirmed branch `feat/upgrade-sdk`, starting commit `c4ebc22f25838dc0b5a9ba2721c44ab513e14727`, and the expected initial status containing only `?? docs/claude-config-isolation.md`. The Agent SDK was exact `0.3.218`, the selected bundled binary reported `2.1.218`, the aligned runtime peers remained `0.113.0`, `1.29.0`, and `4.4.3`, `cc-session-io` remained `0.3.1`, all three Pi development packages remained `0.80.3`, and no standalone Claude Code package was installed. Typechecking passed and all 126 unit tests passed across 37 suites with 0 failures.
+
+Candidate creation and complete archive inspection:
+
+```sh
+ROOT=/Users/paolof/Developer/ai/pi-claude-bridge
+OUT="$ROOT/.test-output/phase9/package"
+rm -rf "$ROOT/.test-output/phase9" /tmp/pi-claude-bridge-phase9-consumer
+mkdir -p "$OUT" "$ROOT/.test-output/phase9/extracted"
+cd "$ROOT"
+npm pack --json --pack-destination "$OUT" | tee "$ROOT/.test-output/phase9/npm-pack.json"
+TARBALL="$OUT/pi-claude-bridge-0.6.2.tgz"
+shasum -a 256 "$TARBALL"
+tar -tzvf "$TARBALL" | tee "$ROOT/.test-output/phase9/tar-inventory.txt"
+tar -xzf "$TARBALL" -C "$ROOT/.test-output/phase9/extracted"
+node /tmp/pi-claude-bridge-phase9-manifest-check.mjs
+```
+
+The temporary manifest assertion script read the extracted `package/package.json` and required `engines.node === ">=22.19.0"`, `dependencies["@anthropic-ai/claude-agent-sdk"] === "0.3.218"`, and no `dependencies["@anthropic-ai/claude-code"]`. All assertions passed.
+
+`npm pack` produced:
+
+- Tarball: `pi-claude-bridge-0.6.2.tgz`.
+- Packed size: `201941` bytes.
+- Unpacked size: `293661` bytes.
+- Entries: `18`.
+- npm SHA-1: `bc2dcb0ef5193a5f09ea7afab006fb1407268dcc`.
+- npm integrity: `sha512-arf2+PNxThWKnJorDTnXXr2N7cYjlj7ONKmBrfE3kP1u2G5kbyBLPj2nnoHoH/Egmbo104OT9vbIoBvkJZaYLA==`.
+- Independent SHA-256: `aa63ce00407f307161cdb9113415580f455740c44283fa57e42d9311c2917e05`.
+
+Complete archive inventory:
+
+```text
+package/LICENSE
+package/package.json
+package/README.md
+package/assets/claude-bridge1.png
+package/assets/claude-bridge2.png
+package/src/agents-md.ts
+package/src/askclaude-ui.ts
+package/src/config.ts
+package/src/convert.ts
+package/src/extract-tool-results.ts
+package/src/index.ts
+package/src/models.ts
+package/src/query-state.ts
+package/src/sdk-messages.ts
+package/src/sdk-options.ts
+package/src/session-verify.ts
+package/src/skills.ts
+package/src/typebox-to-zod.ts
+```
+
+The archive contains the package allowlist plus npm's required manifest. It contains no tests, upgrade or isolation documents, `.test-output` artifacts, environment files, repository metadata, or secrets.
+
+Clean consumer installation and offline tarball smoke:
+
+```sh
+ROOT=/Users/paolof/Developer/ai/pi-claude-bridge
+TARBALL="$ROOT/.test-output/phase9/package/pi-claude-bridge-0.6.2.tgz"
+CONSUMER=/tmp/pi-claude-bridge-phase9-consumer
+rm -rf "$CONSUMER"
+mkdir -p "$CONSUMER"
+cd "$CONSUMER"
+npm init -y
+npm install "$TARBALL" \
+  @earendil-works/pi-ai@0.80.3 \
+  @earendil-works/pi-coding-agent@0.80.3 \
+  @earendil-works/pi-tui@0.80.3
+npm ls --all --json > npm-ls-all.json
+node -e 'const x=require("./npm-ls-all.json"); const p=x.problems??[]; console.log(`npm-ls-problems=${JSON.stringify(p)}`); if(p.length) process.exit(1)'
+npm ls pi-claude-bridge @anthropic-ai/claude-agent-sdk \
+  @anthropic-ai/claude-agent-sdk-darwin-arm64 @anthropic-ai/sdk \
+  @modelcontextprotocol/sdk zod cc-session-io \
+  @earendil-works/pi-ai @earendil-works/pi-coding-agent \
+  @earendil-works/pi-tui
+npm ls @anthropic-ai/claude-code --all || true
+node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude --version
+```
+
+The clean consumer installed 335 packages and reported `npm-ls-problems=[]`. It resolved bridge `0.6.2`, Agent SDK and Darwin arm64 package `0.3.218`, Anthropic SDK `0.113.0`, MCP SDK `1.29.0`, Zod `4.4.3`, `cc-session-io 0.3.1`, and all three Pi packages at `0.80.3`. The standalone Claude Code query was empty, and the bundled executable reported `2.1.218`. npm reported the same 10 transitive advisories seen in Phase 7 (9 moderate and 1 high); no audit fix was applied because it would change the verified dependency baseline.
+
+The first clean-consumer script used `set -e` and stopped after the expected-empty standalone `npm ls` returned exit status 1. Installation and `npm-ls-problems=[]` had already passed. The command was repeated with `|| true`, then the bundled-version and smoke checks passed. This was a shell expectation issue, not a package-resolution failure.
+
+The installed-tarball smoke created a temporary project configuration pointing `provider.pathToClaudeCodeExecutable` at `tests/fixtures/fake-claude-cli.mjs`, then ran:
+
+```sh
+cd /tmp/pi-claude-bridge-phase9-consumer/smoke-project
+env -u ANTHROPIC_API_KEY \
+  FAKE_CLAUDE_VERSION=2.1.218 \
+  FAKE_CLAUDE_RESPONSE=phase9-candidate-smoke \
+  /tmp/pi-claude-bridge-phase9-consumer/node_modules/.bin/pi \
+    --no-session -ne \
+    -e /tmp/pi-claude-bridge-phase9-consumer/node_modules/pi-claude-bridge \
+    --model claude-bridge/claude-haiku-4-5 \
+    -p 'Return the configured offline smoke marker.'
+```
+
+The installed extension returned `phase9-candidate-smoke`. This test was unauthenticated, kept `ANTHROPIC_API_KEY` unset, and could not consume Extra Usage.
+
+Final repository checks:
+
+```sh
+cd /Users/paolof/Developer/ai/pi-claude-bridge
+npm run typecheck
+npm run test:unit
+npm ls
+npm ls @anthropic-ai/claude-code --all
+node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude --version
+git diff --check
+git status --short
+```
+
+Typechecking passed. Unit tests passed 126/126 across 37 suites. `npm ls` was valid and retained the exact upgrade baseline, the standalone Claude Code tree was empty, and the bundled executable remained `2.1.218`. The primary TypeScript LSP scanned all 13 source files and reported no diagnostics. Markdown LSP checks confirmed two changed documents without findings; `diag/CONTEXT-SIZE.md` remained unconfirmed after a 60-second timeout, with no auxiliary findings. The scoped full lens check found no issues across the two documents it diagnosed and reported the same context-document LSP timeout; the final `mode=all` lens check found no issues across 14 files diagnosed in the session. `git diff --check` passed.
+
+No authenticated or metered probe ran in Phase 9. Extra Usage remained enabled at handoff from Phase 8, but Phase 9 did not inspect or change that account setting. No package was published.
 
 ## Acceptance criteria
 
