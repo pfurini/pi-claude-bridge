@@ -76,6 +76,49 @@ function terminalResult(messages) {
   return messages.find((message) => message.type === "result");
 }
 
+async function captureBundledSystemInit(mode) {
+  const configDir = mkdtempSync(join(tmpdir(), "claude-sdk-init-"));
+  const baseEnv = credentialFreeEnv({
+    CLAUDE_CONFIG_DIR: configDir,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  });
+  const policyOptions = mode
+    ? buildAskClaudeQueryOptions({
+        cwd: process.cwd(),
+        baseEnv,
+        cliModel: "fake-claude",
+        disallowedTools: getAskClaudeDisallowedTools(mode),
+        allowedTools: mode === "read" ? ["Read", "Grep", "Glob"] : [],
+        isolated: true,
+      })
+    : {};
+  const sdkQuery = query({
+    prompt: "offline initialization inventory",
+    options: {
+      cwd: process.cwd(),
+      settingSources: [],
+      persistSession: false,
+      strictMcpConfig: true,
+      maxTurns: 1,
+      ...policyOptions,
+      env: credentialFreeEnv({
+        ...policyOptions.env,
+        CLAUDE_CONFIG_DIR: configDir,
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      }),
+    },
+  });
+  try {
+    for await (const message of sdkQuery) {
+      if (message.type === "system" && message.subtype === "init") return message;
+    }
+    return undefined;
+  } finally {
+    sdkQuery.close();
+    rmSync(configDir, { recursive: true, force: true });
+  }
+}
+
 describe("offline Agent SDK process contracts", () => {
   it("reports the Claude Code version and reduces a successful stream-json query", {
     timeout: 10_000,
@@ -115,6 +158,7 @@ describe("offline Agent SDK process contracts", () => {
     const server = createSdkMcpServer({
       name: MCP_SERVER_NAME,
       version: "1.0.0",
+      alwaysLoad: true,
       tools: [
         typeBoxToolToSdkMcpTool(
           {
@@ -169,6 +213,7 @@ describe("offline Agent SDK process contracts", () => {
       const [advertisedTool] =
         listResponse.value.response.response.mcp_response.result.tools;
       assert.equal(advertisedTool.name, "phase2_echo");
+      assert.equal(advertisedTool._meta["anthropic/alwaysLoad"], true);
       assert.equal(
         advertisedTool.inputSchema.properties.message.description,
         "Message to echo",
@@ -186,7 +231,7 @@ describe("offline Agent SDK process contracts", () => {
     }
   });
 
-  it("preserves the current AskClaude read, full, and none tool policies", {
+  it("enforces the upgraded AskClaude read, full, and none tool policies", {
     timeout: 10_000,
   }, async (t) => {
     const inventories = {};
@@ -197,6 +242,7 @@ describe("offline Agent SDK process contracts", () => {
           baseEnv: credentialFreeEnv(),
           cliModel: "fake-claude",
           disallowedTools: getAskClaudeDisallowedTools(mode),
+          allowedTools: mode === "read" ? ["Read", "Grep", "Glob"] : [],
           isolated: true,
           claudeExecutable: fakeClaude,
         });
@@ -215,10 +261,26 @@ describe("offline Agent SDK process contracts", () => {
       assert.ok(!inventories.read.has(tool), `read mode should block ${tool}`);
     }
 
-    for (const tool of ["Read", "Write", "Bash", "WebSearch", "Agent"]) {
+    for (const tool of [
+      "Read",
+      "Write",
+      "Bash",
+      "WebSearch",
+      "Agent",
+      "Task",
+      "TaskCreate",
+      "Workflow",
+      "ReportFindings",
+      "SendMessage",
+    ]) {
       assert.ok(inventories.full.has(tool), `full mode should expose ${tool}`);
     }
-    for (const tool of ["AskUserQuestion", "ToolSearch"]) {
+    for (const tool of [
+      "AskUserQuestion",
+      "ToolSearch",
+      "ScheduleWakeup",
+      "RemoteTrigger",
+    ]) {
       assert.ok(!inventories.full.has(tool), `all modes should block ${tool}`);
     }
 
@@ -231,13 +293,26 @@ describe("offline Agent SDK process contracts", () => {
       "WebFetch",
       "WebSearch",
       "Agent",
+      "Task",
+      "TaskCreate",
+      "TaskGet",
+      "TaskList",
+      "TaskOutput",
+      "TaskStop",
+      "TaskUpdate",
+      "Workflow",
+      "ReportFindings",
+      "SendMessage",
     ]) {
       assert.ok(!inventories.none.has(tool), `none mode should block ${tool}`);
     }
-    assert.ok(
-      inventories.none.has("Workflow") && inventories.none.has("TaskCreate"),
-      "Phase 2 records the current policy; Phase 4 owns new delegation-tool restrictions",
-    );
+    const nonePolicy = new Set(getAskClaudeDisallowedTools("none"));
+    for (const transitionalName of ["Agent", "RemoteTrigger"]) {
+      assert.ok(
+        nonePolicy.has(transitionalName),
+        `none mode should retain transitional block for ${transitionalName}`,
+      );
+    }
   });
 
   it("surfaces a terminal error result without credentials", {
@@ -250,7 +325,31 @@ describe("offline Agent SDK process contracts", () => {
     assert.equal(state.result.subtype, "error_during_execution");
     assert.equal(state.result.successful, false);
     assert.equal(state.result.isError, true);
-    assert.equal(state.result.errorText, "offline terminal failure");
+    assert.equal(
+      state.result.errorText,
+      "offline terminal failure (session_id=00000000-0000-4000-8000-000000000001)",
+    );
+    assert.equal(
+      state.result.sessionId,
+      "00000000-0000-4000-8000-000000000001",
+    );
+  });
+
+  it("rejects is_error even when the SDK result subtype is success", {
+    timeout: 10_000,
+  }, async () => {
+    const messages = await runFakeQuery({ scenario: "success-is-error" });
+    const state = createSdkMessageState();
+    for (const message of messages) reduceSdkMessage(state, message);
+
+    assert.equal(state.result.subtype, "success");
+    assert.equal(state.result.successful, false);
+    assert.equal(state.result.isError, true);
+    assert.equal(state.result.terminalReason, "api_error");
+    assert.equal(
+      state.result.errorText,
+      "offline success-subtype failure (terminal_reason=api_error, session_id=00000000-0000-4000-8000-000000000001)",
+    );
   });
 
   it("accepts an unknown future message without failing the query", {
@@ -369,6 +468,79 @@ describe("Claude Code executable resolution", () => {
     });
     assert.equal(version.status, 0, version.stderr);
     assert.match(version.stdout, new RegExp(metadata.claudeCodeVersion));
+  });
+
+  it("reports the selected bundled Claude Code inventory and policies without credentials", {
+    timeout: 30_000,
+  }, async () => {
+    const init = await captureBundledSystemInit();
+    assert.ok(init);
+
+    const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
+    const metadata = JSON.parse(
+      readFileSync(join(dirname(sdkEntry), "package.json"), "utf8"),
+    );
+    assert.equal(init.claude_code_version, metadata.claudeCodeVersion);
+    for (const tool of [
+      "Task",
+      "TaskCreate",
+      "TaskGet",
+      "TaskList",
+      "TaskOutput",
+      "TaskStop",
+      "TaskUpdate",
+      "Workflow",
+      "ReportFindings",
+      "SendMessage",
+    ]) {
+      assert.ok(init.tools.includes(tool), `target inventory should expose ${tool}`);
+    }
+    for (const transitionalName of ["Agent", "RemoteTrigger"]) {
+      assert.ok(
+        !init.tools.includes(transitionalName),
+        `target inventory should not expose legacy ${transitionalName}`,
+      );
+    }
+
+    const inventories = {};
+    for (const mode of ["read", "full", "none"]) {
+      const modeInit = await captureBundledSystemInit(mode);
+      assert.ok(modeInit);
+      inventories[mode] = new Set(modeInit.tools);
+    }
+    for (const tool of ["Read", "Grep", "Glob"]) {
+      assert.ok(inventories.read.has(tool), `target read mode should expose ${tool}`);
+    }
+    for (const tool of ["Write", "Edit", "Bash"]) {
+      assert.ok(!inventories.read.has(tool), `target read mode should block ${tool}`);
+    }
+    for (const tool of ["Read", "Write", "Bash", "Task", "Workflow"]) {
+      assert.ok(inventories.full.has(tool), `target full mode should expose ${tool}`);
+    }
+    for (const tool of ["ToolSearch", "ScheduleWakeup"]) {
+      assert.ok(!inventories.full.has(tool), `target full mode should block ${tool}`);
+    }
+    for (const tool of [
+      "Read",
+      "Write",
+      "Grep",
+      "Glob",
+      "Bash",
+      "WebFetch",
+      "WebSearch",
+      "Task",
+      "TaskCreate",
+      "TaskGet",
+      "TaskList",
+      "TaskOutput",
+      "TaskStop",
+      "TaskUpdate",
+      "Workflow",
+      "ReportFindings",
+      "SendMessage",
+    ]) {
+      assert.ok(!inventories.none.has(tool), `target none mode should block ${tool}`);
+    }
   });
 
   it("honors pathToClaudeCodeExecutable for an external script", {

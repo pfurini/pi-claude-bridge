@@ -11,19 +11,40 @@ const fakeVersion = process.env.FAKE_CLAUDE_VERSION ?? "0.0.0-fake";
 const scenario = process.env.FAKE_CLAUDE_SCENARIO ?? "success";
 
 const DEFAULT_NATIVE_TOOLS = [
-  "Read",
-  "Write",
-  "Edit",
-  "Glob",
-  "Grep",
+  // Claude Code 2.1.218 default SDK inventory.
+  "Task",
   "Bash",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "Edit",
+  "EnterWorktree",
+  "ExitWorktree",
+  "NotebookEdit",
+  "Read",
+  "ReportFindings",
+  "ScheduleWakeup",
+  "SendMessage",
+  "Skill",
+  "TaskCreate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "TaskUpdate",
+  "ToolSearch",
   "WebFetch",
   "WebSearch",
-  "Agent",
   "Workflow",
-  "TaskCreate",
+  "Write",
+  // Transitional names retained to exercise explicit policy compatibility.
+  "Agent",
+  "RemoteTrigger",
   "AskUserQuestion",
-  "ToolSearch",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "TeamCreate",
+  "TeamDelete",
 ];
 
 function argumentValue(name) {
@@ -36,13 +57,16 @@ function parseCsv(value) {
 }
 
 const disallowedTools = new Set(parseCsv(argumentValue("--disallowedTools")));
+const allowedTools = parseCsv(argumentValue("--allowedTools"));
 const requestedTools = argumentValue("--tools");
-const nativeTools = (requestedTools === ""
+const baseTools = requestedTools === ""
   ? []
   : requestedTools
     ? parseCsv(requestedTools)
-    : DEFAULT_NATIVE_TOOLS
- ).filter((toolName) => !disallowedTools.has(toolName));
+    : DEFAULT_NATIVE_TOOLS;
+const nativeTools = [...new Set([...baseTools, ...allowedTools])].filter(
+  (toolName) => !disallowedTools.has(toolName),
+);
 
 if (process.argv.includes("--version")) {
   process.stdout.write(`${fakeVersion} (Claude Code)\n`);
@@ -301,6 +325,25 @@ function emitTerminalError() {
   });
 }
 
+function emitSuccessSubtypeError() {
+  emit({
+    type: "result",
+    subtype: "success",
+    duration_ms: 1,
+    duration_api_ms: 0,
+    is_error: true,
+    num_turns: 0,
+    result: "offline success-subtype failure",
+    terminal_reason: "api_error",
+    session_id: SESSION_ID,
+    total_cost_usd: 0,
+    usage: { input_tokens: 0, output_tokens: 0 },
+    modelUsage: {},
+    permission_denials: [],
+    uuid: RESULT_UUID,
+  });
+}
+
 function maybeEmitConversation() {
   if (!userReceived || !mcpComplete || conversationEmitted) return;
   conversationEmitted = true;
@@ -312,6 +355,10 @@ function maybeEmitConversation() {
   }
   if (scenario === "terminal-error") {
     emitTerminalError();
+    return;
+  }
+  if (scenario === "success-is-error") {
+    emitSuccessSubtypeError();
     return;
   }
 

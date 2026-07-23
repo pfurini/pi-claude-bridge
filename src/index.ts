@@ -675,7 +675,12 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 			});
 		}),
 	);
-	const server = createSdkMcpServer({ name: MCP_SERVER_NAME, version: "1.0.0", tools: mcpTools });
+	const server = createSdkMcpServer({
+		name: MCP_SERVER_NAME,
+		version: "1.0.0",
+		tools: mcpTools,
+		alwaysLoad: true,
+	});
 	return { [MCP_SERVER_NAME]: server };
 }
 
@@ -773,11 +778,16 @@ function finalizeCurrentStream(c: QueryContext, stopReason?: string): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
 	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: c.turnOutput!.stopReason, error: c.turnOutput!.errorMessage})}`);
 	if (!c.turnStarted) ensureTurnStarted(c);
-	const reason = stopReason === "length" ? "length" : "stop";
 	const stream = c.currentPiStream;
-	stream!.push({ type: "done", reason, message: c.turnOutput });
+	const isError = stopReason === "error" || c.turnOutput.stopReason === "error";
+	if (isError) {
+		stream.push({ type: "error", reason: "error", error: c.turnOutput });
+	} else {
+		const reason = stopReason === "length" ? "length" : "stop";
+		stream.push({ type: "done", reason, message: c.turnOutput });
+	}
 	markStreamComplete(stream);
-	stream!.end();
+	stream.end();
 	c.currentPiStream = null;
 }
 
@@ -953,10 +963,19 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	}
 }
 
-function processTerminalResultMessage(message: SDKMessage, model: Model<any>, queryCtx: QueryContext): void {
+function processTerminalResultMessage(message: SDKMessage, model: Model<any>, queryCtx: QueryContext) {
 	logServedContextWindow("result", message, model);
 	const terminalResult = parseSdkResult(message);
-	if (queryCtx.turnSawStreamEvent || !terminalResult?.successful) return;
+	if (!terminalResult) return undefined;
+	if (!terminalResult.successful) {
+		ensureTurnStarted(queryCtx);
+		if (queryCtx.turnOutput) {
+			queryCtx.turnOutput.stopReason = "error";
+			queryCtx.turnOutput.errorMessage = terminalResult.errorText;
+		}
+		return terminalResult;
+	}
+	if (queryCtx.turnSawStreamEvent) return terminalResult;
 
 	ensureTurnStarted(queryCtx);
 	const text = terminalResult.text;
@@ -965,6 +984,7 @@ function processTerminalResultMessage(message: SDKMessage, model: Model<any>, qu
 	queryCtx.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: queryCtx.turnOutput });
 	queryCtx.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: queryCtx.turnOutput });
 	queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
+	return terminalResult;
 }
 
 function systemInitSessionId(message: SDKMessage): string | undefined {
@@ -1015,9 +1035,11 @@ async function consumeQuery(
 			case "assistant":
 				processAssistantMessage(message, model, customToolNameToPi, queryCtx);
 				break;
-			case "result":
-				processTerminalResultMessage(message, model, queryCtx);
+			case "result": {
+				const terminalResult = processTerminalResultMessage(message, model, queryCtx);
+				capturedSessionId = terminalResult?.sessionId ?? capturedSessionId;
 				break;
+			}
 			case "system":
 				capturedSessionId = systemInitSessionId(message) ?? capturedSessionId;
 				break;
@@ -1175,9 +1197,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
 	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
-	// token overhead. --strict-mcp-config tells the binary to use ONLY mcpServers passed
-	// programmatically and ignore filesystem MCP entries — applied unconditionally because
-	// settingSources=undefined does NOT give isolation (the CC default loads all sources).
+	// token overhead. The typed strictMcpConfig option tells the binary to use only
+	// programmatic mcpServers and ignore filesystem MCP entries. It is enabled by
+	// default because settingSources=undefined still loads Claude Code defaults.
 	const settingSources: SettingSource[] | undefined = appendSystemPrompt
 		? undefined
 		: providerSettings.settingSources ?? ["user", "project"];
@@ -1198,11 +1220,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
 
-	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
-	// when the user is logged into Anthropic). These are a separate code path from
-	// filesystem MCP and are NOT blocked by --strict-mcp-config or settingSources=undefined.
-	// The native CC binary gates them on env var ENABLE_CLAUDEAI_MCP_SERVERS: setting it
-	// to "0"/"false"/"no"/"off" makes the loader return early before any cloud fetch.
+	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth).
+	// strictMcpConfig blocks them in the target SDK; the environment switch remains as
+	// defense in depth for older executable overrides and alternate loading paths.
 	// DISABLE_AUTO_COMPACT=1: pi owns context-management and propagates its own
 	// /compact via session_compact (see handler in default export). Letting CC
 	// also autocompact would double-flush the prompt cache and races pi's
@@ -1417,8 +1437,10 @@ async function promptAndWait(
 		}
 	}
 
-	// Mode → disallowed tools
+	// Read mode names Grep and Glob explicitly because native Claude Code builds no
+	// longer include the dedicated tools in the default inventory.
 	const disallowedTools = getAskClaudeDisallowedTools(mode);
+	const allowedTools = mode === "read" ? ["Read", "Grep", "Glob"] : [];
 
 	// Skills append
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
@@ -1443,6 +1465,7 @@ async function promptAndWait(
 			baseEnv: process.env,
 			cliModel,
 			disallowedTools,
+			allowedTools,
 			effort,
 			skillsBlock,
 			resumeSessionId,
@@ -1510,6 +1533,12 @@ async function promptAndWait(
 					responseText = resultText;
 				}
 			}
+		}
+
+		if (!wasAborted && messageState.result && !messageState.result.successful) {
+			const failure = messageState.result.errorText ?? `Claude Code query failed: ${messageState.result.subtype}`;
+			debug(`askClaude: terminal error ${failure}`);
+			throw new Error(failure);
 		}
 
 		const stopReason = wasAborted ? "cancelled" : "stop";

@@ -8,20 +8,38 @@ export type CliDebugOptions = Pick<Options, "debug" | "debugFile" | "stderr">;
 
 export type AskClaudeMode = "full" | "read" | "none";
 
-// These lists intentionally preserve the current AskClaude policy. Phase 4 of the
-// SDK upgrade plan owns any policy changes for new Claude Code tool names.
-const ASKCLAUDE_ALWAYS_BLOCKED = [
+// AskClaude cannot satisfy interactive or delayed workflows through Pi's tool call.
+// RemoteTrigger is retained for wire-name compatibility even though Claude Code
+// 2.1.218 does not expose it in the default SDK inventory.
+const ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS = [
 	"AskUserQuestion",
 	"EnterPlanMode",
 	"ExitPlanMode",
 	"ToolSearch",
 	"ScheduleWakeup",
+	"RemoteTrigger",
+];
+
+// None mode must block both the current Task/Workflow family and transitional
+// delegation names. Read and full modes intentionally retain delegation access.
+const ASKCLAUDE_DELEGATION_TOOLS = [
+	"Agent",
+	"Task",
+	"TaskCreate",
+	"TaskGet",
+	"TaskList",
+	"TaskOutput",
+	"TaskStop",
+	"TaskUpdate",
+	"Workflow",
+	"ReportFindings",
+	"SendMessage",
 ];
 
 const ASKCLAUDE_DISALLOWED_TOOLS: Record<AskClaudeMode, string[]> = {
-	full: [...ASKCLAUDE_ALWAYS_BLOCKED],
+	full: [...ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS],
 	read: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
+		...ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS,
 		"Write",
 		"Edit",
 		"Bash",
@@ -34,14 +52,14 @@ const ASKCLAUDE_DISALLOWED_TOOLS: Record<AskClaudeMode, string[]> = {
 		"TeamDelete",
 	],
 	none: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
+		...ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS,
 		"Read",
 		"Write",
 		"Edit",
 		"Glob",
 		"Grep",
 		"Bash",
-		"Agent",
+		...ASKCLAUDE_DELEGATION_TOOLS,
 		"NotebookEdit",
 		"EnterWorktree",
 		"ExitWorktree",
@@ -76,7 +94,6 @@ export function buildProviderQueryOptions(
 	input: ProviderQueryOptionsInput,
 ): Options {
 	const extraArgs: Record<string, string | null> = { model: input.cliModel };
-	if (input.strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	if (input.effort) extraArgs["thinking-display"] = "summarized";
 
 	return {
@@ -88,6 +105,8 @@ export function buildProviderQueryOptions(
 		},
 		tools: [],
 		permissionMode: "bypassPermissions",
+		allowDangerouslySkipPermissions: true,
+		strictMcpConfig: input.strictMcpConfigEnabled,
 		includePartialMessages: true,
 		systemPrompt: {
 			type: "preset",
@@ -111,6 +130,7 @@ export interface AskClaudeQueryOptionsInput {
 	baseEnv: NodeJS.ProcessEnv;
 	cliModel: string;
 	disallowedTools: string[];
+	allowedTools: string[];
 	effort?: EffortLevel;
 	skillsBlock?: string;
 	resumeSessionId?: string | null;
@@ -122,10 +142,7 @@ export interface AskClaudeQueryOptionsInput {
 export function buildAskClaudeQueryOptions(
 	input: AskClaudeQueryOptionsInput,
 ): Options {
-	const extraArgs: Record<string, string | null> = {
-		"strict-mcp-config": null,
-		model: input.cliModel,
-	};
+	const extraArgs: Record<string, string | null> = { model: input.cliModel };
 	if (input.effort) extraArgs["thinking-display"] = "summarized";
 
 	return {
@@ -136,6 +153,11 @@ export function buildAskClaudeQueryOptions(
 			DISABLE_AUTO_COMPACT: "1",
 		},
 		permissionMode: "bypassPermissions",
+		allowDangerouslySkipPermissions: true,
+		strictMcpConfig: true,
+		...(input.allowedTools.length
+			? { allowedTools: input.allowedTools }
+			: {}),
 		...(input.disallowedTools.length
 			? { disallowedTools: input.disallowedTools }
 			: {}),

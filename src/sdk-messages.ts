@@ -19,6 +19,8 @@ export interface SdkTerminalResult {
 	isError: boolean;
 	text: string;
 	errorText?: string;
+	terminalReason?: string;
+	sessionId?: string;
 }
 
 export interface SdkMessageState {
@@ -96,12 +98,36 @@ export function resultErrorText(
 ): string {
 	const result = message as SDKMessage & {
 		subtype?: string;
+		is_error?: boolean;
+		result?: unknown;
 		errors?: unknown;
 		error?: unknown;
+		terminal_reason?: unknown;
+		session_id?: unknown;
 	};
-	if (Array.isArray(result.errors)) return result.errors.map(String).join("\n");
-	if (typeof result.error === "string") return result.error;
-	return `${failureLabel} failed: ${result.subtype ?? "unknown result"}`;
+	let errorText: string;
+	if (Array.isArray(result.errors) && result.errors.length > 0) {
+		errorText = result.errors.map(String).join("\n");
+	} else if (typeof result.error === "string" && result.error) {
+		errorText = result.error;
+	} else if (
+		result.is_error === true &&
+		typeof result.result === "string" &&
+		result.result
+	) {
+		errorText = result.result;
+	} else {
+		errorText = `${failureLabel} failed: ${result.subtype ?? "unknown result"}`;
+	}
+
+	const context: string[] = [];
+	if (typeof result.terminal_reason === "string") {
+		context.push(`terminal_reason=${result.terminal_reason}`);
+	}
+	if (typeof result.session_id === "string") {
+		context.push(`session_id=${result.session_id}`);
+	}
+	return context.length > 0 ? `${errorText} (${context.join(", ")})` : errorText;
 }
 
 export function parseSdkResult(
@@ -114,18 +140,27 @@ export function parseSdkResult(
 		subtype?: string;
 		is_error?: boolean;
 		result?: unknown;
+		terminal_reason?: unknown;
+		session_id?: unknown;
 	};
 	const subtype = result.subtype ?? "unknown";
-	const successful = subtype === "success";
+	const isError = result.is_error === true;
+	const successful = subtype === "success" && !isError;
 	const resultText = typeof result.result === "string" ? result.result : "";
 	return {
 		subtype,
 		successful,
-		isError: result.is_error === true,
+		isError,
 		text: resultText || fallbackText,
-		...(successful
-			? {}
-			: { errorText: resultErrorText(message, failureLabel) }),
+		...(!successful
+			? { errorText: resultErrorText(message, failureLabel) }
+			: {}),
+		...(typeof result.terminal_reason === "string"
+			? { terminalReason: result.terminal_reason }
+			: {}),
+		...(typeof result.session_id === "string"
+			? { sessionId: result.session_id }
+			: {}),
 	};
 }
 
@@ -200,6 +235,10 @@ export function reduceSdkMessage(
 		if (result) {
 			state.result = result;
 			reduction.result = result;
+			if (result.sessionId) {
+				state.sessionId = result.sessionId;
+				reduction.sessionId = result.sessionId;
+			}
 		}
 	} else if (type === "system") {
 		const systemInit = parseSdkSystemInit(message);

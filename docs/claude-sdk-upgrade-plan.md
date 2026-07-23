@@ -2,7 +2,7 @@
 
 **Assessment date:** 2026-07-22  
 **Project:** `pi-claude-bridge`  
-**Status:** Phases 1-2 complete; Phase 3 dependency upgrade is next
+**Status:** Phases 1-4 complete; Phase 5 authenticated compatibility testing is next
 
 ## Executive summary
 
@@ -192,7 +192,7 @@ These tests should remain the central authenticated regression suite.
 
 ### SDK option construction
 
-There is no direct test of the complete SDK options passed by the provider, continuation, AskClaude, or isolated compaction paths. A field rename or changed default can therefore pass the unit suite unnoticed.
+Phases 1-4 added focused option-builder tests for provider, AskClaude, and isolated compaction paths. They now cover the target SDK's dangerous-bypass acknowledgement, typed strict MCP setting, tool policies, environment overlays, persistence, resume, skills, and executable override behavior.
 
 Required assertions include:
 
@@ -210,33 +210,26 @@ Required assertions include:
 
 ### SDK message handling
 
-There are no focused fixtures for:
+The offline message fixtures now cover:
 
 - `system:init`.
 - `stream_event`.
 - Completed `assistant` messages.
-- `result.is_error`.
-- New terminal reasons.
-- Aborted assistant messages.
-- Rate-limit events.
+- `result.is_error`, including `subtype: "success"`.
+- Terminal reasons and session IDs.
+- Abort behavior.
 - Unknown future message types.
 
-`runIsolatedSummary` currently accepts `subtype: "success"` without also checking `is_error`. This should be corrected as part of the compatibility work.
+Authenticated rate-limit, aborted-assistant, and model-error semantics remain Phase 5 concerns.
+`runIsolatedSummary`, the main provider consumer, and AskClaude now all reject terminal results when `is_error` is true, even if the subtype is `success`.
 
 ### MCP readiness and schemas
 
-The current tool-loop integrations do not assert the MCP status received in `system:init`, the advertised tool schema, or first-turn availability under non-blocking startup.
+The offline contracts now assert MCP status, generated TypeBox-to-Zod schemas, handler execution, `alwaysLoad` metadata, and target-binary initialization. Authenticated first-turn execution with Pi's complete tool inventory remains unverified.
 
 ### AskClaude policy
 
-The AskClaude smoke test proves basic text completion but does not verify:
-
-- Read, full, and none tool inventories.
-- Filesystem and web restrictions.
-- Task and Workflow policy.
-- Native foreground and background subagents.
-- Action-summary rendering for the new task events.
-
+The offline fake and target-binary probes now verify read, full, and none inventories, filesystem and web restrictions, current Task/Workflow names, and transitional Agent/RemoteTrigger policy. Native foreground/background subagent completion and action-summary rendering for live task events remain authenticated gaps.
 ### Packaging and native binaries
 
 There is no install matrix proving that npm selects the correct optional native package on supported operating systems and architectures.
@@ -331,16 +324,34 @@ Remaining risks:
 
 > **Scope justification for Phases 1-2.** Building a fake Claude CLI and extracting testable option and message builders is deliberately heavy for a one-time upgrade whose follow-up rehearsal already passed 99 unit tests and typechecking. It is worth it here for one reason: the actual bottleneck during the assessment was that expired Claude OAuth blocked every authenticated check, so there is currently no way to gate SDK behavior offline. This harness is what lets future SDK bumps run in CI without credentials, which is a stated goal of this plan (reviewed automated dependency PRs, see "Pinning policy" and Phase 9). Treat Phases 1-2 as durable regression infrastructure for recurring upgrades, not as one-shot scaffolding. If the project decides it will *not* pursue recurring automated SDK bumps, reconsider this scope, because for a single upgrade it is over-engineered.
 
-### Phase 3: Apply the dependency upgrade
+### Phase 3: Apply the dependency upgrade (completed 2026-07-23)
 
-1. Re-run `npm view @anthropic-ai/claude-agent-sdk dist-tags`. If `latest` is no longer `0.3.218`, update every target SDK and bundled Claude Code reference in this plan and repeat the clean-install rehearsal before proceeding.
-2. Update `package.json` to the recommended runtime dependency versions.
-3. Regenerate `package-lock.json` from a clean installation.
-4. Confirm `npm ls` has no invalid peer dependency relationships.
-5. Do not add standalone `@anthropic-ai/claude-code`.
-6. Keep `cc-session-io` unchanged unless authenticated compatibility fails.
+1. [x] Re-ran `npm view @anthropic-ai/claude-agent-sdk dist-tags`; `latest` remained `0.3.218`, so no replacement rehearsal was required.
+2. [x] Updated `package.json` to the selected runtime dependency versions.
+3. [x] Regenerated `package-lock.json` from a clean installation.
+4. [x] Confirmed `npm ls` has no invalid peer dependency relationships.
+5. [x] Confirmed there is no standalone `@anthropic-ai/claude-code` dependency.
+6. [x] Kept `cc-session-io` at `0.3.1`.
 
-### Phase 4: Adapt behavior deliberately
+#### Phase 3 completion record
+
+Selected versions:
+
+- `@anthropic-ai/claude-agent-sdk` `0.3.218` (bundled Claude Code `2.1.218`).
+- `@anthropic-ai/sdk` `0.113.0`.
+- `@modelcontextprotocol/sdk` `1.29.0`.
+- Zod `4.4.3`.
+- `cc-session-io` `0.3.1`.
+- All three Pi development packages `0.80.3`.
+
+Dependency-only verification completed before any Phase 4 production adaptation:
+
+- `npm run typecheck` passed.
+- All 122 unit tests passed (37 suites, 0 failures) without Claude credentials.
+- `npm ls` resolved the Agent SDK peers correctly, found only Pi `0.80.3` as the effective Pi version, and found no standalone Claude Code package.
+- The dependency-only commit is `1d6d28c`.
+
+### Phase 4: Adapt behavior deliberately (completed 2026-07-23)
 
 #### Permission bypass
 
@@ -378,9 +389,36 @@ Treat `result.is_error` as an error in every query path, even when the result su
 
 Continue ignoring or debug-logging unknown message types instead of throwing. Add a fixture so forward-compatible behavior is intentional.
 
+#### Phase 4 completion record
+
+Implemented adaptations:
+
+- Added `allowDangerouslySkipPermissions: true` to every intentional SDK bypass-permissions query and the existing direct SDK integration-test queries.
+- Replaced raw strict-MCP arguments with typed `strictMcpConfig`, preserving the provider configuration switch and AskClaude's strict default.
+- Set `alwaysLoad: true` on the in-process Pi MCP server and kept the TypeBox-to-Zod schema adapter covered.
+- Probed Claude Code `2.1.218` directly: the current inventory uses `Task`, `TaskCreate`, `TaskGet`, `TaskList`, `TaskOutput`, `TaskStop`, `TaskUpdate`, `Workflow`, `ReportFindings`, and `SendMessage`; legacy `Agent` and `RemoteTrigger` are absent.
+- Made AskClaude policy explicit for current and transitional delegation names. Read mode exposes Read/Grep/Glob while blocking writes and shell, none mode blocks filesystem/shell/web/delegation, and full mode retains current delegation tools while blocking unsupported interactive tools.
+- Changed provider, AskClaude, and isolated-summary terminal handling so every `result.is_error === true` is a failure while retaining terminal reason, error text, and session ID.
+- Retained forward-compatible ignore/debug behavior for unknown SDK messages.
+
+Offline verification after the adaptations:
+
+- `npm run typecheck` passed.
+- All 125 unit tests passed (37 suites, 0 failures) without Claude credentials.
+- The bundled target-binary inventory and all three AskClaude policies were exercised without a Claude login.
+
 ### Phase 5: Run authenticated compatibility tests
 
 Reauthenticate Claude and run the smoke suite outside the sandbox because it needs local Claude settings and authentication.
+
+#### Phase 5 handoff
+
+- **Selected versions:** Agent SDK `0.3.218`, bundled Claude Code `2.1.218`, Anthropic SDK `0.113.0`, MCP SDK `1.29.0`, Zod `4.4.3`, `cc-session-io` `0.3.1`, and Pi development packages `0.80.3`.
+- **Dependency-only result:** typecheck and all 122 unit tests passed; `npm ls` reported no invalid peers or duplicate effective Pi versions.
+- **Final offline result:** typecheck and all 125 unit tests passed without Claude credentials.
+- **Adaptations:** dangerous-bypass acknowledgement, typed strict MCP, always-loaded Pi MCP tools, current/transitional AskClaude tool policies, and `is_error` terminal propagation with diagnostics.
+- **Remaining risks:** authenticated provider/tool behavior, first-turn Pi MCP execution and cache overhead, resume/rebuild/abort/compaction, live AskClaude delegation and policy enforcement, and cross-version session upgrade/rollback are unverified.
+- **Next action:** reauthenticate Claude Code, then run `cd /Users/paolof/Developer/ai/pi-claude-bridge && npm test` outside the sandbox.
 
 Required scenarios:
 

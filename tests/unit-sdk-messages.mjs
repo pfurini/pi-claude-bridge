@@ -154,6 +154,31 @@ describe("SDK message reduction", () => {
 		);
 	});
 
+	it("rejects success subtypes when is_error is true and preserves diagnostics", () => {
+		const state = createSdkMessageState();
+		const reduced = reduceSdkMessage(
+			state,
+			message({
+				type: "result",
+				subtype: "success",
+				is_error: true,
+				result: "offline success-subtype failure",
+				terminal_reason: "api_error",
+				session_id: "session-terminal",
+			}),
+		);
+
+		assert.equal(reduced.result.successful, false);
+		assert.equal(reduced.result.isError, true);
+		assert.equal(reduced.result.terminalReason, "api_error");
+		assert.equal(reduced.result.sessionId, "session-terminal");
+		assert.equal(state.sessionId, "session-terminal");
+		assert.equal(
+			reduced.result.errorText,
+			"offline success-subtype failure (terminal_reason=api_error, session_id=session-terminal)",
+		);
+	});
+
 	it("marks unknown future message types without throwing", () => {
 		const state = createSdkMessageState();
 		const reduced = reduceSdkMessage(

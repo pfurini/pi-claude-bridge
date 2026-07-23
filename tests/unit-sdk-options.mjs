@@ -28,6 +28,8 @@ describe("provider SDK options", () => {
 		assert.equal(options.cwd, "/work/project");
 		assert.deepEqual(options.tools, []);
 		assert.equal(options.permissionMode, "bypassPermissions");
+		assert.equal(options.allowDangerouslySkipPermissions, true);
+		assert.equal(options.strictMcpConfig, true);
 		assert.equal(options.includePartialMessages, true);
 		assert.deepEqual(options.systemPrompt, {
 			type: "preset",
@@ -43,7 +45,7 @@ describe("provider SDK options", () => {
 		assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "0");
 		assert.equal(options.env.DISABLE_AUTO_COMPACT, "1");
 		assert.equal(options.extraArgs.model, "claude-test[1m]");
-		assert.equal(options.extraArgs["strict-mcp-config"], null);
+		assert.equal("strict-mcp-config" in options.extraArgs, false);
 		assert.equal(options.extraArgs["thinking-display"], "summarized");
 		assert.equal(options.debug, true);
 	});
@@ -60,6 +62,7 @@ describe("provider SDK options", () => {
 		assert.equal("mcpServers" in options, false);
 		assert.equal("resume" in options, false);
 		assert.equal("effort" in options, false);
+		assert.equal(options.strictMcpConfig, false);
 		assert.equal("strict-mcp-config" in options.extraArgs, false);
 		assert.equal(options.systemPrompt.append, undefined);
 	});
@@ -73,6 +76,7 @@ describe("AskClaude SDK options", () => {
 			baseEnv,
 			cliModel: "claude-opus-test",
 			disallowedTools: blocked,
+			allowedTools: ["Read", "Grep", "Glob"],
 			effort: "medium",
 			skillsBlock: "available skills",
 			resumeSessionId: "session-2",
@@ -81,7 +85,10 @@ describe("AskClaude SDK options", () => {
 		});
 
 		assert.deepEqual(options.disallowedTools, blocked);
+		assert.deepEqual(options.allowedTools, ["Read", "Grep", "Glob"]);
 		assert.equal(options.permissionMode, "bypassPermissions");
+		assert.equal(options.allowDangerouslySkipPermissions, true);
+		assert.equal(options.strictMcpConfig, true);
 		assert.equal(options.effort, "medium");
 		assert.deepEqual(options.systemPrompt, {
 			type: "preset",
@@ -93,7 +100,7 @@ describe("AskClaude SDK options", () => {
 		assert.equal(options.persistSession, false);
 		assert.equal(options.pathToClaudeCodeExecutable, "/opt/claude");
 		assert.equal(options.extraArgs.model, "claude-opus-test");
-		assert.equal(options.extraArgs["strict-mcp-config"], null);
+		assert.equal("strict-mcp-config" in options.extraArgs, false);
 		assert.equal(options.extraArgs["thinking-display"], "summarized");
 		assert.equal(options.env.KEEP_ME, "yes");
 		assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "0");
