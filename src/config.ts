@@ -26,10 +26,11 @@ export interface Config {
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
-		// Subscription plan tier. Setting to "max" enables Opus 4.6 at 1M context
+		// Subscription plan tier. Setting to "max" makes Fable 5 available and enables
+		// Opus 4.6 at 1M context.
 		plan?: "pro" | "max";
-		// Set to true to opt into metered 1M context usage ("extra usage" in
-		// Anthropic billing). Enables Sonnet 4.6 [1m] on every plan and Opus 4.6
+		// Set to true to opt into metered usage ("Extra Usage" in Anthropic billing).
+		// Enables Fable 5 on Pro, Sonnet 4.6 [1m] on every plan, and Opus 4.6
 		// [1m] on Pro.
 		longContextExtraUsage?: boolean;
 	};

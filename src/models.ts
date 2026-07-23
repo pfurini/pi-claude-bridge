@@ -44,9 +44,26 @@ export type ClaudeCodeRuntimeModel = {
 const TWO_HUNDRED_K_CONTEXT = 200_000;
 const ONE_M_CONTEXT = 1_000_000;
 
+const FABLE_MODEL_IDS = new Set(["fable", "claude-fable-5"]);
+
+export function isClaudeCodeModelAvailable(modelId: string, settings: LongContextSettings): boolean {
+	const bareModelId = modelId.toLowerCase().replace(/\[1m\]$/, "");
+	return !FABLE_MODEL_IDS.has(bareModelId) || settings.plan === "max" || settings.longContextExtraUsage;
+}
+
+export function assertClaudeCodeModelAvailable(modelId: string, settings: LongContextSettings): void {
+	if (isClaudeCodeModelAvailable(modelId, settings)) return;
+	throw new Error(
+		"Claude Fable 5 requires either a Max plan or Extra Usage on Pro. " +
+		"Set provider.plan to \"max\" when applicable, or enable Extra Usage and set " +
+		"provider.longContextExtraUsage to true.",
+	);
+}
+
 // Measured Claude Agent SDK subscription/OAuth behavior. Do not infer this from
-// pi-ai's advertised contextWindow: bare Opus 4.7 serves 1M, bare Opus 4.8 does
-// not, and [1m] entitlement differs by model. See diag/CONTEXT-SIZE.md.
+// pi-ai's advertised contextWindow: bare Opus 4.8, Opus 4.7, and Sonnet 5 now
+// serve 1M, while Fable 5 is unavailable on Pro without Extra Usage and [1m]
+// eligibility still differs by model. See the Phase 8 upgrade record.
 export function resolveClaudeCodeRuntimeModel(modelId: string, settings: LongContextSettings): ClaudeCodeRuntimeModel {
 	switch (modelId) {
 		case "claude-opus-4-8":
@@ -78,6 +95,7 @@ export function resolveClaudeCodeRuntimeModel(modelId: string, settings: LongCon
 }
 
 export function claudeCodeModelId(model: { id: string }, settings: LongContextSettings): string {
+	assertClaudeCodeModelAvailable(model.id, settings);
 	return resolveClaudeCodeRuntimeModel(model.id, settings).cliModelId;
 }
 
@@ -94,9 +112,10 @@ export function applyLongContext<T extends { id: string; name: string; contextWi
 	models: T[],
 	settings: LongContextSettings,
 ): T[] {
-	return models.map((m) => {
+	return models.flatMap((m) => {
+		if (!isClaudeCodeModelAvailable(m.id, settings)) return [];
 		const { contextWindow } = resolveClaudeCodeRuntimeModel(m.id, settings);
 		const name = contextWindow > TWO_HUNDRED_K_CONTEXT && !/\b1M\b/i.test(m.name) ? `${m.name} 1M` : m.name;
-		return contextWindow === m.contextWindow && name === m.name ? m : { ...m, contextWindow, name };
+		return [contextWindow === m.contextWindow && name === m.name ? m : { ...m, contextWindow, name }];
 	});
 }

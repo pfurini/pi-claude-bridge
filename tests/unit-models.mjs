@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MODEL_IDS_IN_ORDER, applyLongContext, buildModels, claudeCodeModelId, resolveClaudeCodeRuntimeModel, resolveModel } from "../src/models.js";
+import { MODEL_IDS_IN_ORDER, applyLongContext, assertClaudeCodeModelAvailable, buildModels, claudeCodeModelId, isClaudeCodeModelAvailable, resolveClaudeCodeRuntimeModel, resolveModel } from "../src/models.js";
 
 const PRO = { plan: "pro", longContextExtraUsage: false };
 const MAX = { plan: "max", longContextExtraUsage: false };
@@ -113,10 +113,28 @@ describe("claudeCodeModelId", () => {
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-7"), PRO), "claude-opus-4-7");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-6"), PRO), "claude-opus-4-6");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-6"), MAX), "claude-opus-4-6[1m]");
+		assert.equal(claudeCodeModelId(find(models, "claude-fable-5"), MAX), "claude-fable-5[1m]");
+		assert.equal(claudeCodeModelId(find(models, "claude-fable-5"), EXTRA), "claude-fable-5[1m]");
 		assert.equal(claudeCodeModelId(find(models, "claude-sonnet-4-6"), EXTRA), "claude-sonnet-4-6[1m]");
 		assert.equal(claudeCodeModelId(find(models, "claude-haiku-4-5"), EXTRA), "claude-haiku-4-5");
 	});
 
+	it("rejects Fable 5 on Pro without Extra Usage", () => {
+		const unavailable = /Claude Fable 5 requires either a Max plan or Extra Usage on Pro/;
+		assert.throws(
+			() => claudeCodeModelId(find(models, "claude-fable-5"), PRO),
+			unavailable,
+		);
+		assert.throws(
+			() => assertClaudeCodeModelAvailable("claude-fable-5[1m]", PRO),
+			unavailable,
+		);
+		for (const id of ["fable", "claude-fable-5", "claude-fable-5[1m]"]) {
+			assert.equal(isClaudeCodeModelAvailable(id, PRO), false);
+		}
+		assert.equal(isClaudeCodeModelAvailable("claude-fable-5", MAX), true);
+		assert.equal(isClaudeCodeModelAvailable("claude-fable-5", EXTRA), true);
+	});
 });
 
 describe("applyLongContext", () => {
@@ -127,21 +145,24 @@ describe("applyLongContext", () => {
 		assert.equal(find(registered, "claude-opus-4-8").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-opus-4-7").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-opus-4-6").contextWindow, 200000);
+		assert.equal(find(registered, "claude-fable-5"), undefined);
 		assert.equal(find(registered, "claude-sonnet-4-6").contextWindow, 200000);
 		assert.equal(find(registered, "claude-haiku-4-5").contextWindow, 200000);
 		// Does not mutate the source table used for id resolution.
 		assert.equal(find(models, "claude-opus-4-6").contextWindow, 1000000);
 	});
 
-	it("registers Max-plan Opus 4.6 at 1M but leaves Sonnet at 200K", () => {
+	it("registers Max-plan Fable and Opus 4.6 at 1M but leaves Sonnet 4.6 at 200K", () => {
 		const registered = applyLongContext(models, MAX);
 		assert.equal(find(registered, "claude-opus-4-6").contextWindow, 1000000);
+		assert.equal(find(registered, "claude-fable-5").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-sonnet-4-6").contextWindow, 200000);
 	});
 
-	it("registers extra-usage Opus 4.6 and Sonnet at 1M", () => {
+	it("registers extra-usage Fable, Opus 4.6, and Sonnet 4.6 at 1M", () => {
 		const registered = applyLongContext(models, EXTRA);
 		assert.equal(find(registered, "claude-opus-4-6").contextWindow, 1000000);
+		assert.equal(find(registered, "claude-fable-5").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-sonnet-4-6").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-haiku-4-5").contextWindow, 200000);
 	});

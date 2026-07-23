@@ -2,15 +2,15 @@
 
 **Assessment and execution dates:** 2026-07-22 to 2026-07-23
 **Project:** `pi-claude-bridge`  
-**Status:** Phases 1-7 complete; Phase 8 model-behavior revalidation is next
+**Status:** Phases 1-8 complete; Phase 9 documentation and release work is next
 
 ## Executive summary
 
 Upgrade the bridge in a dedicated compatibility change to `@anthropic-ai/claude-agent-sdk` `0.3.218`, which bundles Claude Code `2.1.218`. Do not add `@anthropic-ai/claude-code` as a separate dependency because the Agent SDK already provides the matching platform binary.
 
-Phases 1-7 now pass on the selected dependency set. Typechecking, 125 offline unit contracts, the authenticated provider/tool/cache/compaction suite, live AskClaude policy and native-subagent checks, deterministic terminal-error propagation, clean tarball installation, and the supported native-package resolution matrix all passed with the target SDK.
+Phases 1-8 now pass on the selected dependency set. Typechecking, 126 offline unit contracts, the authenticated provider/tool/cache/compaction suite, live AskClaude policy and native-subagent checks, deterministic terminal-error propagation, clean tarball installation, the supported native-package resolution matrix, and Pro model/context behavior with Extra Usage disabled and enabled all passed with the target SDK.
 
-Separate authenticated `0.2.141`/`2.1.141` and `0.3.218`/`2.1.218` installations could read and directly resume each other's tested transcripts in both directions. The supported rollback path also passed: after downgrade and Pi restart, the old bridge rebuilt a usable Claude session from persisted Pi history. No production compatibility fix or `cc-session-io` change was required. Model-behavior revalidation and release work remain in Phases 8-9.
+Separate authenticated `0.2.141`/`2.1.141` and `0.3.218`/`2.1.218` installations could read and directly resume each other's tested transcripts in both directions. The supported rollback path also passed: after downgrade and Pi restart, the old bridge rebuilt a usable Claude session from persisted Pi history. Phase 8 found one production compatibility issue: Fable 5 is no longer available on Pro when Extra Usage is disabled. The bridge now hides or rejects that ineligible model while preserving configured Max and Pro/Extra-on behavior. Release documentation and release work remain in Phase 9.
 
 The upgrade should be completed before implementing the proposed Claude configuration isolation. Keeping the two changes separate will make failures attributable and will let the isolation work target the current SDK behavior.
 
@@ -687,17 +687,168 @@ No production source, package manifest, lockfile, dependency, or persistent test
 
 **Phase 8 session handoff:** Confirm the active subscription tier and Extra Usage state, keep `ANTHROPIC_API_KEY` unset, then start model-behavior revalidation with `cd /Users/paolof/Developer/ai/pi-claude-bridge && env -u ANTHROPIC_API_KEY node diag/context-size.mjs pro` (replace `pro` only if the authenticated profile is on another documented tier). Do not alter Claude configuration or begin configuration-isolation work as part of that measurement.
 
-### Phase 8: Revalidate model behavior
+### Phase 8: Revalidate model behavior (completed 2026-07-23)
 
-Run the existing context-size diagnostics against the target binary for supported models and plan configurations.
+1. [x] Re-ran the existing context-size diagnostic first on the authenticated Pro profile with Extra Usage disabled.
+2. [x] Re-ran the complete bare versus `[1m]` matrix after the user enabled Extra Usage and accepted the metered-usage warning.
+3. [x] Measured the documented `fable`, `opus`, `sonnet`, and `haiku` aliases.
+4. [x] Verified bridge-level served-window parity for Haiku and for Fable with Pro Extra Usage enabled.
+5. [x] Compared the target results with the Claude Code `2.1.141` measurements instead of carrying old policy forward.
+6. [x] Added the focused Fable eligibility fix and regression coverage.
 
-Update measurements instead of carrying forward values observed under Claude Code `2.1.141`. At minimum, revalidate:
+#### Phase 8 environment and account state
 
-- Model ID aliases.
-- Default context windows.
-- Long-context eligibility.
-- Subscription-plan behavior.
-- Served input limits.
+- Host: Darwin arm64, Node `v26.5.0`, npm `11.17.0`.
+- Agent SDK: `@anthropic-ai/claude-agent-sdk` `0.3.218`.
+- Bundled and selected Claude Code: `2.1.218`.
+- Authentication: subscription OAuth with `ANTHROPIC_API_KEY` unset in every authenticated command.
+- Directly tested tier: Pro only.
+- Directly tested Extra Usage states: disabled, then enabled after explicit user confirmation.
+- Max, Team, Enterprise, API-key authentication, and other accounts were not tested.
+- The user's statement that Fable 5 works on Max was used only to preserve existing Max behavior. It is not recorded as a measured Max result.
+
+#### Exact commands
+
+Initial state and dependency checks:
+
+```sh
+cd /Users/paolof/Developer/ai/pi-claude-bridge
+git branch --show-current
+git rev-parse HEAD
+git status --short
+npm ls @anthropic-ai/claude-agent-sdk @anthropic-ai/sdk \
+  @modelcontextprotocol/sdk zod cc-session-io \
+  @earendil-works/pi-ai @earendil-works/pi-coding-agent \
+  @earendil-works/pi-tui
+node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude --version
+npm ls @anthropic-ai/claude-code --all
+npm run typecheck
+npm run test:unit
+```
+
+The first command below ran only after the user confirmed Pro with Extra Usage disabled. The second ran only after the user enabled Extra Usage and acknowledged that eligible calls could consume metered credits:
+
+```sh
+cd /Users/paolof/Developer/ai/pi-claude-bridge
+env -u ANTHROPIC_API_KEY node diag/context-size.mjs pro
+env -u ANTHROPIC_API_KEY node diag/context-size.mjs pro
+env -u ANTHROPIC_API_KEY node diag/model-aliases.mjs pro on
+env -u ANTHROPIC_API_KEY node --import tsx tests/int-served-window.mjs
+```
+
+The focused bridge-level Fable check used a temporary Pi project configuration and removed it on exit:
+
+```sh
+set -eu
+ROOT=/Users/paolof/Developer/ai/pi-claude-bridge
+WORK=$(mktemp -d /tmp/pi-claude-bridge-phase8-fable.XXXXXX)
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/.pi" "$ROOT/.test-output"
+printf '%s\n' '{"provider":{"plan":"pro","longContextExtraUsage":true}}' \
+  > "$WORK/.pi/claude-bridge.json"
+: > "$ROOT/.test-output/phase8-fable-debug.log"
+cd "$WORK"
+env -u ANTHROPIC_API_KEY \
+  CLAUDE_BRIDGE_DEBUG=1 \
+  CLAUDE_BRIDGE_DEBUG_PATH="$ROOT/.test-output/phase8-fable-debug.log" \
+  pi --no-session -ne -e "$ROOT" \
+  --model claude-bridge/claude-fable-5 \
+  -p 'Reply with just the word "yes".'
+grep 'result: served contextWindow=' \
+  "$ROOT/.test-output/phase8-fable-debug.log"
+```
+
+The final local verification commands are:
+
+```sh
+cd /Users/paolof/Developer/ai/pi-claude-bridge
+npm run typecheck
+npm run test:unit
+npm ls
+git diff --check
+git status --short
+```
+
+Pi LSP diagnostics reported no errors for the changed TypeScript/JavaScript files, and the final `lens_diagnostics mode=all` error query had no remaining error-level findings. A full advisory scan also surfaced pre-existing warnings in unchanged ranges, including five empty-catch findings in `src/index.ts`; those were deferred for this session rather than expanding Phase 8 into an unrelated cleanup.
+
+#### Direct measurements
+
+Raw reports were saved under the ignored `.test-output/context-size/` directory:
+
+- Pro, Extra Usage disabled: `pro-2026-07-23T21-22-19-695Z.{json,md}`.
+- Pro, Extra Usage enabled: `pro-2026-07-23T21-26-26-003Z.{json,md}`.
+- Pro alias resolution, Extra Usage enabled: `pro-extra-on-aliases-2026-07-23T21-38-11-147Z.{json,md}`.
+
+Every report recorded Agent SDK `0.3.218`, Claude Code `2.1.218`, and `ANTHROPIC_API_KEY=false`. Every alias row also reported `system:init.claude_code_version === "2.1.218"`. In the disabled run, rate-limit events reported `overageStatus: "rejected"` and `overageDisabledReason: "org_level_disabled"`. In the enabled run, overage was allowed; Fable reported `rateLimitType: "overage"` and `overageInUse: true`, directly confirming that its probes used the Extra Usage path.
+
+Values below are served input context / maximum output tokens. `429` means Extra Usage credits were required. `400` means that the requested long-context form was incompatible with subscription OAuth.
+
+| Requested model ID | Pro, Extra disabled | Pro, Extra enabled | Direct conclusion |
+| --- | ---: | ---: | --- |
+| `claude-opus-4-8` | 1M / 64K | 1M / 64K | Bare now serves 1M |
+| `claude-opus-4-8[1m]` | 1M / 64K | 1M / 64K | Explicit 1M remains valid |
+| `claude-opus-4-7` | 1M / 64K | 1M / 64K | Bare remains 1M |
+| `claude-opus-4-7[1m]` | 1M / 64K | 1M / 64K | Explicit 1M remains valid |
+| `claude-opus-4-6` | 200K / 64K | 200K / 64K | Bare remains 200K |
+| `claude-opus-4-6[1m]` | 429 | 1M / 64K | Extra Usage required on Pro |
+| `claude-fable-5` | 429 | 1M / 64K | Entire model requires Extra Usage on Pro |
+| `claude-fable-5[1m]` | 429 | 1M / 64K | Same gate; successful result canonicalizes to bare served ID |
+| `claude-sonnet-5` | 1M / 64K | 1M / 64K | Bare now serves 1M |
+| `claude-sonnet-5[1m]` | 1M / 64K | 1M / 64K | Explicit 1M remains valid |
+| `claude-sonnet-4-6` | 200K / 32K | 200K / 32K | Bare remains 200K |
+| `claude-sonnet-4-6[1m]` | 429 | 1M / 32K | Extra Usage required on Pro |
+| `claude-haiku-4-5` | 200K / 32K | 200K / 32K | Bare remains 200K |
+| `claude-haiku-4-5[1m]` | 400 | 400 | Not eligible for 1M through subscription OAuth |
+
+Direct alias results on Pro with Extra Usage enabled:
+
+| Requested alias | `system:init.model` and served model | Served input / max output |
+| --- | --- | ---: |
+| `fable` | `claude-fable-5` | 1M / 64K |
+| `opus` | `claude-opus-4-8` | 1M / 64K |
+| `sonnet` | `claude-sonnet-5` | 1M / 64K |
+| `haiku` | `claude-haiku-4-5-20251001` | 200K / 32K |
+
+The Haiku alias result also reported canonical model `claude-haiku-4-5`. Alias resolution with Extra Usage disabled was not directly tested. In particular, `fable` while Extra Usage was disabled is inferred to hit the same credit gate from the directly measured full-ID rejection and the enabled alias mapping; it is not presented as a direct measurement.
+
+Bridge-level served-window checks passed:
+
+- Existing authenticated check: `claude-haiku-4-5` reported served `200000`, registered `200000`, max output `32000`.
+- Focused Extra Usage check: `claude-fable-5` reported served `1000000`, registered `1000000`, max output `64000`.
+- The served input values come from `result.modelUsage[*].contextWindow`. Phase 8 did not send payloads close to each limit, so this is direct served-limit metadata rather than a boundary-size stress test.
+
+#### Differences from Claude Code 2.1.141
+
+- Bare Opus 4.8 changed from 200K to 1M on the tested Pro account.
+- Bare Sonnet 5 changed from 200K to 1M on the tested Pro account.
+- Fable 5 changed from available in the earlier Pro/no-Extra record to fully credit-gated in the current Pro/no-Extra measurement.
+- The bridge's existing `[1m]` requests for Opus 4.8 and Sonnet 5 still receive 1M, so those changes required no compatibility adaptation.
+- Opus 4.6, Sonnet 4.6, and Haiku long-context eligibility remained consistent with the prior Pro measurements.
+
+#### Focused implementation change
+
+The new Fable behavior exposed a real bridge defect: the Pro/no-Extra model picker registered Fable 5 even though every request failed with HTTP 429. Phase 8 made only these model/context changes:
+
+- `src/models.ts` now treats `fable`, `claude-fable-5`, and `claude-fable-5[1m]` as unavailable when configured for Pro without `longContextExtraUsage`.
+- Provider registration omits the ineligible Fable model. Shared model-ID conversion rejects stale or explicit ineligible Fable selections before spawning Claude Code.
+- `src/index.ts` applies the same guard to raw AskClaude model IDs that do not resolve through the registered model list.
+- Max behavior is preserved by policy, but remains unmeasured in this phase. Pro with Extra Usage enabled was directly verified at served and registered 1M.
+- `tests/unit-models.mjs` covers Pro rejection/filtering and preservation for Max and Pro/Extra-on policy, bringing the unit total to 126 tests across 37 suites.
+- `diag/model-aliases.mjs` provides a repeatable authenticated alias measurement with explicit tier/Extra labels, saved raw reports, per-row `system:init` versions, rate-limit details, and metered-use warning.
+- `src/config.ts` and `CHANGELOG.md` describe the new Fable eligibility rule.
+
+No dependency, package manifest, lockfile, standalone Claude Code package, `cc-session-io`, configuration-isolation, publishing, or release-preparation change was made.
+
+#### Measured, inferred, and unavailable coverage
+
+- Directly measured: Pro with Extra Usage disabled and enabled; every listed bare and `[1m]` ID; the four documented aliases with Extra Usage enabled; Haiku and Fable bridge-level served-window parity.
+- Inferred only: disabled-state alias behavior where a directly measured full ID and enabled-state alias resolve to the same canonical model.
+- Not tested: Max, Team, Enterprise, API-key authentication, other accounts, aliases with Extra Usage disabled, and near-limit payload boundary behavior.
+- Max Fable support is preserved because the user reported it and the bridge already allowed it, but Phase 8 makes no authenticated Max coverage claim.
+
+#### Phase 9 handoff
+
+**Next action:** from the clean Phase 8 completion commit, update `diag/CONTEXT-SIZE.md` from the three raw reports listed above before changing release or configuration-isolation documentation. Then complete the remaining Phase 9 documentation and local candidate-package checks. Do not publish until those Phase 9 checks pass.
 
 ### Phase 9: Documentation and release
 
