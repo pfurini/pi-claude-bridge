@@ -1,25 +1,27 @@
 # Claude Code Configuration Isolation Checkpoint
 
-**Status (2026-07-23):** Design and documentation only. Phase 9 revalidated this proposal against Claude Agent SDK `0.3.218` and bundled Claude Code `2.1.218`; no configuration-isolation behavior has been implemented.
+**Status (2026-07-24):** Design and documentation only. Phase 9 revalidated this proposal against Claude Agent SDK `0.3.218` and bundled Claude Code `2.1.218`; no configuration-isolation behavior has been implemented. Reviewed against `personal@fbb9e9f` on 2026-07-24: the mechanism and all cited call sites still hold, the profile path moved under `~/.pi/agent/`, and `provider.claudeConfigDir` was promoted into minimal scope.
 
 ## Decision
 
 Isolate the Claude Code user profile used by `pi-claude-bridge` under:
 
 ```text
-~/.pi/claude
+~/.pi/agent/claude
 ```
+
+The profile lives under `~/.pi/agent/` rather than at the `~/.pi/` root because the extension's other user-level state already lives there: `~/.pi/agent/claude-bridge.json` (global config, `src/config.ts`) and `~/.pi/agent/claude-bridge.log` (default debug log, `src/index.ts:37`). The `~/.pi/` root is Pi's own namespace (`agent/`, `dashboard/`, `knowledge/`), and an extension should not claim a sibling entry there.
 
 Implement this by passing the documented environment variable below to every Claude Code subprocess started by the extension:
 
 ```text
-CLAUDE_CONFIG_DIR=/absolute/path/to/$HOME/.pi/claude
+CLAUDE_CONFIG_DIR=/absolute/path/to/$HOME/.pi/agent/claude
 ```
 
 Do not mutate `process.env` globally. Compute one absolute configuration-directory path in the extension and use it consistently for:
 
 1. Every Agent SDK `query()` subprocess.
-2. Every `cc-session-io` create, delete, open, and diagnostic operation.
+2. Every `cc-session-io` create, delete, and diagnostic operation. The extension never calls `openSession`; only tests do.
 3. Provider turns, AskClaude calls, continuations, and isolated compaction summaries.
 
 This is Option 1: isolate Claude's user-level profile while preserving the extension's current project-settings behavior.
@@ -31,7 +33,7 @@ When Claude Code is invoked through Pi, it should not read from or write extensi
 The isolated profile should contain user-level Claude state such as:
 
 ```text
-~/.pi/claude/
+~/.pi/agent/claude/
 ├── settings.json
 ├── .claude.json
 ├── projects/
@@ -77,19 +79,19 @@ Sources:
 For the intended target:
 
 ```text
-CLAUDE_CONFIG_DIR=$HOME/.pi/claude
+CLAUDE_CONFIG_DIR=$HOME/.pi/agent/claude
 ```
 
 the user settings file is:
 
 ```text
-$HOME/.pi/claude/settings.json
+$HOME/.pi/agent/claude/settings.json
 ```
 
 It is not:
 
 ```text
-$HOME/.pi/claude/.claude/settings.json
+$HOME/.pi/agent/claude/.claude/settings.json
 ```
 
 This behavior was revalidated directly against the versions installed for the upgrade candidate:
@@ -111,6 +113,8 @@ const env = {
 ```
 
 The bridge already follows the inheritance pattern for other variables, so adding `CLAUDE_CONFIG_DIR` fits the existing design.
+
+`env` is the only supported lever. The installed SDK exposes no typed configuration-directory option: `sdk.d.ts` mentions `CLAUDE_CONFIG_DIR` only in prose, and the internal `resumeConfigDir` seen in the bundle is reachable only through the `sessionStore` code path, which this extension does not use. The bundle also confirms the replacement semantics directly — the child environment is built as `env ? {...env} : {...process.env}`, with no per-key merge.
 
 ### Filesystem setting sources remain independent
 
@@ -140,7 +144,9 @@ The extension currently inherits the Pi process environment for Claude Code subp
 
 ### Agent SDK spawn paths
 
-There are three independent spawn paths that must receive the isolated environment.
+There are three independent spawn paths that must receive the isolated environment, across four `query()` call sites. The fourth site is the continuation query, which is covered by the main provider path (see below).
+
+The permalinks in this section point at `c4ebc22`, the Phase 9 starting commit. `src/index.ts`, `src/config.ts`, and `src/sdk-options.ts` have all changed since then, so the quoted line ranges run roughly ten lines ahead of current `personal` HEAD. Every referenced construct still exists; only the offsets moved.
 
 #### 1. Isolated compaction summaries
 
@@ -177,7 +183,7 @@ buildProviderQueryOptions({
 });
 ```
 
-Continuation queries clone the same `queryOptions`, so adding the isolated environment in `buildProviderQueryOptions` also covers continuations.
+Continuation queries clone the same `queryOptions` — `const contOptions = { ...queryOptions, resume: resumeId, ...makeCliDebugOptions("continuation") }` — so adding the isolated environment in `buildProviderQueryOptions` also covers continuations. Neither overriding key touches `env`.
 
 Stable source reference:
 
@@ -207,7 +213,7 @@ The current behavior should remain unchanged for Option 1:
 - AskClaude: explicitly uses `settingSources: ["user", "project"]`.
 - Isolated compaction summaries: explicitly use `settingSources: []`.
 
-After Option 1, `user` resolves under `~/.pi/claude`, while project and local sources retain their normal repository paths.
+After Option 1, `user` resolves under `~/.pi/agent/claude`, while project and local sources retain their normal repository paths.
 
 ### Session-file coordination
 
@@ -228,11 +234,11 @@ deleteSession(sessionId, cwd, process.env.CLAUDE_CONFIG_DIR)
 If only the child environment is changed, the two sides diverge:
 
 - The bridge writes seeded sessions under `~/.claude/projects/`.
-- Claude Code searches under `~/.pi/claude/projects/`.
+- Claude Code searches under `~/.pi/agent/claude/projects/`.
 - `--resume` cannot find the seeded session.
 - Context synchronization and provider switching break.
 
-The same resolved `claudeConfigDir` must therefore be passed explicitly to every `cc-session-io` operation.
+The same resolved `claudeConfigDir` must therefore be passed explicitly to every `cc-session-io` operation. There are exactly three call sites that read `process.env.CLAUDE_CONFIG_DIR` today, all in `src/index.ts`: the rebuild-path `deleteSession`, the rebuild-path `createSession`, and the ephemeral-session cleanup after a synthetic query. `cc-session-io@0.3.1` already accepts the directory on both APIs (`deleteSession(sessionId, projectPath, claudeDir?)` and `CreateSessionOptions.claudeDir`), so no upstream change is needed.
 
 Relevant bridge source:
 
@@ -251,7 +257,7 @@ Current diagnostics print `process.env.CLAUDE_CONFIG_DIR`. Option 1 deliberately
 Update diagnostics to report the resolved extension path instead:
 
 ```text
-claudeConfigDir=/Users/<user>/.pi/claude
+claudeConfigDir=/Users/<user>/.pi/agent/claude
 ```
 
 This affects:
@@ -271,7 +277,7 @@ Compute the path once as an absolute path:
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const claudeConfigDir = join(homedir(), ".pi", "claude");
+const claudeConfigDir = join(homedir(), ".pi", "agent", "claude");
 ```
 
 Do not put a literal `~` in the environment. Shell tilde expansion does not occur when Node sets an environment-variable value programmatically.
@@ -327,13 +333,30 @@ The extension should not need to pre-create the complete directory tree:
 - Claude Code creates its own profile files as needed.
 - `cc-session-io` creates session parent directories when saving.
 
-Creating `~/.pi/claude` proactively is acceptable only if needed for a clear initialization or migration workflow. It is not required for the minimal implementation.
+Creating `~/.pi/agent/claude` proactively is acceptable only if needed for a clear initialization or migration workflow. It is not required for the minimal implementation.
+
+### Stop rewriting paths in `src/agents-md.ts`
+
+`sanitizeAgentsContent` rewrites AGENTS.md content before it is appended to the system prompt, using four ordered substitutions:
+
+1. `~/.pi` to `~/.claude`
+2. `.pi/` (after whitespace or a quote) to `.claude/`
+3. `.pi` (word-bounded) to `.claude`
+4. `pi` (word-bounded, case-insensitive) to `environment`
+
+Under isolation, rule 1 points the subprocess at the exact directory this feature exists to avoid — and `~/.claude` is not where the isolated profile lives either, so the rewritten path is wrong in both directions.
+
+The rewrite is already unsound today. "skills live in `~/.pi/skills`" becomes "`~/.claude/skills`", a directory that exists in neither layout. It never produced a resolvable path; isolation only makes that visible.
+
+**Do not fix rule 1 alone.** The rules interact. With rule 1 removed, `~/.pi/agent/AGENTS.md` falls through rules 2 and 3 (no whitespace boundary before `.pi/`, no word boundary before `.`) and is then caught by rule 4, which matches the bare `pi` between `.` and `/`. The output becomes `~/.environment/agent/AGENTS.md` — neither the real path nor `~/.claude`. Verified against the current implementation. A partial fix is silently undone by the rule it leaves in place.
+
+Minimal correct change: stop calling `sanitizeAgentsContent` and forward the raw AGENTS.md content under the existing `# CLAUDE.md` header. Real Pi paths then survive intact and Claude can read them through the bridged `read` tool. This removes mangling rather than adding behavior, so the risk is contained to prompt text. Do not retarget any substitution at `claudeConfigDir` — that would fabricate paths under a profile directory the extension owns and Pi does not populate.
+
+Scope note: this is a prompt-text correction, not a filesystem-isolation concern, so it does not gate the acceptance criteria below. If the team prefers to keep the isolation change free of prompt-output changes, defer the whole function to the follow-on replacement described under Critical Evaluation item 5 — but defer all four rules together, never a subset. What remains for the follow-on either way is the larger problem: `extractAgentsAppend` forwards only the nearest `AGENTS.md` rather than Pi's resolved rule hierarchy.
 
 ### Configuration policy
 
-The minimum implementation should make `~/.pi/claude` the extension default without depending on Pi's inherited environment.
-
-A future configuration field could allow advanced overrides:
+The minimum implementation makes `~/.pi/agent/claude` the extension default without depending on Pi's inherited environment, and ships one configuration field alongside it:
 
 ```json
 {
@@ -343,12 +366,22 @@ A future configuration field could allow advanced overrides:
 }
 ```
 
-That is not required to deliver Option 1. If added, define path validation and precedence explicitly. A safe precedence would be:
+Precedence:
 
 1. Explicit `provider.claudeConfigDir`.
-2. Extension default `~/.pi/claude`.
+2. Extension default `~/.pi/agent/claude`.
 
-Do not use inherited `process.env.CLAUDE_CONFIG_DIR` as an implicit middle layer if the feature's promise is isolation from the user's normal Claude installation.
+Do not use inherited `process.env.CLAUDE_CONFIG_DIR` as an implicit middle layer. The feature's promise is isolation from the user's normal Claude installation, and an inherited value would silently defeat it.
+
+Validation: the value must be a non-empty absolute path. A relative or non-string value should log a warning through the existing `loadConfig` warning pattern in `src/config.ts` and fall back to the default rather than throwing, so a bad config never prevents the extension from starting. The field slots into the existing `Config["provider"]` interface next to `pathToClaudeCodeExecutable`, and inherits `loadConfig`'s existing global-then-project merge.
+
+#### Why this field is in minimal scope, not deferred
+
+Rejecting inherited `CLAUDE_CONFIG_DIR` removes the only mechanism the repository currently has for pointing the extension at a non-default profile. `tests/phase6-restart-rollback.sh:52,69` depends on exactly that: it launches the real extension twice under `CLAUDE_CONFIG_DIR="$TARGET_PROFILE"` and `CLAUDE_CONFIG_DIR="$OLD_PROFILE"` to prove the downgrade path, and guards explicitly against `$HOME/.claude`. Without a replacement lever, both runs would silently share `~/.pi/agent/claude` and the harness would still pass while proving nothing.
+
+This is not a CI break — `npm test` runs `int-*`, not `phase6-*` — but the harness must migrate to `provider.claudeConfigDir` in the same change that lands the precedence rule. Shipping the precedence rule without the field would leave the rollback harness quietly non-isolating.
+
+The migration must target the **project** config path. `loadConfig` reads global config from a hardcoded `~/.pi/agent/claude-bridge.json` and project config from `join(cwd, CONFIG_DIR_NAME, "claude-bridge.json")`; it never consults `PI_CODING_AGENT_DIR`. Since the global path resolves inside the real `$HOME` — precisely what the harness's `$HOME/.claude` guard exists to prevent — the only isolated, readable target is `$WORKSPACE/<CONFIG_DIR_NAME>/claude-bridge.json`, written between the two launches while the bridge runs with `cwd=$WORKSPACE`.
 
 ## Migration and Authentication Effects
 
@@ -365,7 +398,7 @@ Do not automatically copy `~/.claude/settings.json` into the isolated profile. T
 Users who want selected settings can add them deliberately to:
 
 ```text
-~/.pi/claude/settings.json
+~/.pi/agent/claude/settings.json
 ```
 
 ### Authentication
@@ -383,10 +416,17 @@ An upstream issue documents the macOS Keychain limitation for users expecting mu
 
 Add focused tests for a pure path/environment helper:
 
-1. The default resolves to the absolute `$HOME/.pi/claude` path.
+1. The default resolves to the absolute `$HOME/.pi/agent/claude` path.
 2. The child environment preserves inherited variables such as `PATH`.
 3. The child environment overrides an inherited `CLAUDE_CONFIG_DIR`.
 4. Existing extra variables remain present.
+
+Add configuration-precedence tests alongside them, extending `tests/unit-config.mjs`:
+
+5. An absolute `provider.claudeConfigDir` wins over the default.
+6. A project `claude-bridge.json` overrides a global one, matching `loadConfig`'s existing merge.
+7. A relative or non-string value warns and falls back to the default.
+8. An inherited `CLAUDE_CONFIG_DIR` loses to both the configured value and the default.
 
 ### Session synchronization tests
 
@@ -401,13 +441,14 @@ Cover:
 
 ### Agent SDK settings test
 
-Use `resolveSettings()` with temporary directories to verify:
+Most of this already exists. `tests/unit-sdk-storage-contract.mjs` uses `resolveSettings()` against the installed SDK with temporary directories and already covers:
 
-1. `<config-dir>/settings.json` is the user source.
-2. `<config-dir>/.claude/settings.json` is not mistakenly treated as the user source.
-3. Project settings continue to merge when the current `settingSources` enables them.
+1. `<config-dir>/settings.json` is the user source, asserted on both the effective value and the reported source path.
+2. Project settings merge under `settingSources: ["user", "project"]`, and neither source loads under `settingSources: []`.
 
-This test should target the installed SDK version rather than assume the latest documentation matches the bundled binary.
+The gap is the negative case. The Phase 9 notes above claim a comparison against a competing `<config-dir>/.claude/settings.json`, but no committed test writes that file. Add it to the existing suite: write distinct values to `<config-dir>/settings.json` and `<config-dir>/.claude/settings.json`, then assert the resolved user source is the former. Without it, the "the value replaces `~/.claude`" claim rests on an unrecorded manual check.
+
+These tests target the installed SDK version rather than assuming the latest documentation matches the bundled binary.
 
 ### Integration tests
 
@@ -421,33 +462,43 @@ The strongest integration assertion is that the bridge and Claude Code agree on 
 
 Smoke and session-resume tests may require running outside a sandbox because they use local Pi and Claude authentication.
 
+### Rollback harness migration
+
+`tests/phase6-restart-rollback.sh` must move off inherited `CLAUDE_CONFIG_DIR` in the same change, since the precedence rule makes those two exports inert. Replace them by writing `{"provider":{"claudeConfigDir":"$TARGET_PROFILE"}}` and then `{"provider":{"claudeConfigDir":"$OLD_PROFILE"}}` into `$WORKSPACE/<CONFIG_DIR_NAME>/claude-bridge.json` between the two launches — the project config path, not the global one, which would write into the real `$HOME`. Keep the existing guard that rejects `$HOME/.claude` and requires the two profiles to differ; it is the assertion that makes the harness meaningful.
+
+Note that the old-bridge half of that test runs a pre-upgrade checkout that still honors inherited `CLAUDE_CONFIG_DIR` and knows nothing about `provider.claudeConfigDir`. Set both the environment variable and the config file for each launch so either bridge version lands on the intended profile.
+
 ## Acceptance Criteria
 
 Option 1 is complete when:
 
-- Every Claude Code subprocess started by the extension receives the same absolute `CLAUDE_CONFIG_DIR` under `~/.pi/claude`.
+- Every Claude Code subprocess started by the extension receives the same absolute `CLAUDE_CONFIG_DIR` under `~/.pi/agent/claude`.
 - Every bridge-managed session operation uses that same path explicitly.
+- `provider.claudeConfigDir` overrides the default, validates as an absolute path, and warns-and-falls-back otherwise.
+- An inherited `CLAUDE_CONFIG_DIR` never changes the effective path.
+- `tests/phase6-restart-rollback.sh` selects its old and target profiles through `provider.claudeConfigDir` and still refuses to run against `$HOME/.claude`.
 - Provider resume, provider switching, AskClaude shared sessions, compaction, and abort recovery continue to work.
-- User settings load from `~/.pi/claude/settings.json`.
+- User settings load from `~/.pi/agent/claude/settings.json`.
 - The normal `~/.claude/settings.json` is not loaded as the user source by extension-spawned Claude Code.
 - Diagnostics display the effective isolated path.
-- Unit tests and typechecking pass, apart from any separately documented pre-existing baseline failure.
+- Unit tests and typechecking pass against the baseline recorded below, apart from any separately documented pre-existing failure.
 - A significant implementation change adds an entry under `## UNRELEASED` in `CHANGELOG.md`.
 
 ## Follow-on Features for Brainstorming
 
 These are intentionally outside the first implementation but are natural extensions:
 
-1. **Configurable profile path:** Add `provider.claudeConfigDir` with absolute-path validation.
-2. **Named profiles:** Support profile names such as `default`, `work`, or `sandbox`, each rooted under `~/.pi/claude-profiles/<name>`.
-3. **Hermetic mode:** Set `settingSources: []` and supply only programmatic settings.
-4. **User-only mode:** Use `settingSources: ["user"]` to preserve isolated user preferences while rejecting repository Claude configuration.
-5. **Status command:** Show the effective profile path, setting sources, session directory, and authentication mode.
-6. **Initialization command:** Create an empty isolated `settings.json` and explain platform-specific authentication behavior.
-7. **Selective migration:** Offer an explicit, user-approved import of selected settings without copying sessions, plugins, or credentials.
-8. **Per-project profiles:** Derive a profile directory from the project root while keeping shared authentication behavior explicit.
-9. **Cleanup policy:** Manage accumulated extension-owned Claude sessions under `~/.pi/claude/projects/`.
-10. **Regression probe:** Add a diagnostic using `resolveSettings()` to detect upstream changes in `CLAUDE_CONFIG_DIR` semantics.
+1. **Named profiles:** Support profile names such as `default`, `work`, or `sandbox`, each rooted under `~/.pi/agent/claude-profiles/<name>`.
+2. **Hermetic mode:** Set `settingSources: []` and supply only programmatic settings.
+3. **User-only mode:** Use `settingSources: ["user"]` to preserve isolated user preferences while rejecting repository Claude configuration.
+4. **Status command:** Show the effective profile path, setting sources, session directory, and authentication mode.
+5. **Initialization command:** Create an empty isolated `settings.json` and explain platform-specific authentication behavior.
+6. **Selective migration:** Offer an explicit, user-approved import of selected settings without copying sessions, plugins, or credentials.
+7. **Per-project profiles:** Derive a profile directory from the project root while keeping shared authentication behavior explicit.
+8. **Cleanup policy:** Manage accumulated extension-owned Claude sessions under `~/.pi/agent/claude/projects/`.
+9. **Regression probe:** Add a diagnostic using `resolveSettings()` to detect upstream changes in `CLAUDE_CONFIG_DIR` semantics.
+
+The former "configurable profile path" item moved into minimal scope; see Configuration policy above.
 
 ## Phase 9 Repository Checkpoint
 
@@ -458,9 +509,20 @@ At the start of the Phase 9 documentation work:
 - Installed Agent SDK: exact `0.3.218`; bundled Claude Code: `2.1.218`.
 - The only initial working-tree entry was this untracked document.
 - No configuration-isolation implementation had been made.
-- Unit baseline: 126 passing tests across 37 suites.
+- Unit baseline at that commit: 126 passing tests across 37 suites.
 - Typecheck baseline: passing.
 - This document is now Phase 9 documentation scope. The design remains a separate future implementation and does not create a changelog entry by itself.
+
+### 2026-07-24 Review Checkpoint
+
+Re-measured on branch `personal` at `fbb9e9f`:
+
+- Unit baseline: **141 passing tests across 39 suites**, zero failures.
+- Typecheck: passing.
+- Installed Agent SDK: exact `0.3.218`; `cc-session-io`: `0.3.1`.
+- Still no configuration-isolation implementation. All three `process.env.CLAUDE_CONFIG_DIR` reads in the session path and all three diagnostic reads remain as described.
+
+Use 141/39 as the acceptance-criteria baseline, not the Phase 9 figure.
 
 ## Critical Evaluation and Design Directions
 
@@ -470,7 +532,7 @@ Keep Option 1 as the foundation, then build a small **profile control plane plus
 
 Separate three concerns:
 
-1. **Persistent Claude profile:** `~/.pi/claude`, owned by Claude Code.
+1. **Persistent Claude profile:** `~/.pi/agent/claude`, owned by Claude Code.
 2. **Bridge runtime policy:** Child environment, setting sources, inline settings, tools, and system prompt.
 3. **Dynamic Pi compatibility:** Pi rules, skills, tools, trust state, and subagents.
 
@@ -482,7 +544,7 @@ The path and session coordination design is correct. The missing risks are mostl
 
 #### 1. The extension already mutates Pi's global environment
 
-`src/index.ts:1569` currently sets:
+The extension's default export currently sets, as its first statement:
 
 ```typescript
 process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
@@ -546,6 +608,8 @@ This can corrupt package names, URLs, and instructions. It would also point isol
 
 It also forwards only the nearest project `AGENTS.md` or the global file, rather than Pi's complete resolved rule hierarchy. The bridge should use Pi's resolved prompt/context data and stop rewriting paths globally.
 
+The substitutions cannot be fixed one at a time; see "Stop rewriting paths in `src/agents-md.ts`" above for why, and for the recommendation to drop the whole `sanitizeAgentsContent` call inside Option 1. What stays in the follow-on replacement is the incomplete rule hierarchy: `extractAgentsAppend` forwards only the nearest `AGENTS.md` instead of Pi's resolved prompt/context data.
+
 #### 6. Profile mutations and active sessions can race
 
 Settings and plugin changes may occur while:
@@ -601,7 +665,7 @@ There are two reasonable interfaces:
    - This replaces the earlier checkpoint's unsupported-version limitation.
    - It covers only settings exposed by `/config` and must run through the provider's SDK-resolved executable.
 
-2. **Pi settings editor:** Open `~/.pi/claude/settings.json` through `ctx.ui.editor`, validate it, then replace it atomically.
+2. **Pi settings editor:** Open `~/.pi/agent/claude/settings.json` through `ctx.ui.editor`, validate it, then replace it atomically.
    - This works with arbitrary settings.
    - It requires locking, backup, validation, and preservation of unknown keys.
 
@@ -678,7 +742,7 @@ Add a central per-spawn policy builder that produces:
 - Curated Pi rules, skill catalog, and tool guidance.
 - A configuration fingerprint for session invalidation.
 
-Keep persistent user configuration in `~/.pi/claude`, and manage it through `/cc`. Keep Pi tools and Pi subagents routed through MCP rather than duplicating them natively.
+Keep persistent user configuration in `~/.pi/agent/claude`, and manage it through `/cc`. Keep Pi tools and Pi subagents routed through MCP rather than duplicating them natively.
 
 **Gains:** Strong Pi behavioral parity, clear ownership, manageable complexity, good diagnostics, and no generated profile drift.
 
@@ -700,9 +764,9 @@ Materialize Pi rules, skills, and agents as a generated Claude plugin/profile an
 
 Implement Direction 2 in stages:
 
-1. Deliver Option 1, including removal of the existing global environment mutation.
+1. Deliver Option 1, including `provider.claudeConfigDir`, the rollback-harness migration, removal of the existing global environment mutation, and dropping the `sanitizeAgentsContent` path rewrites.
 2. Add `/cc status` and non-interactive profile administration using the same executable as provider turns.
 3. Add safe settings editing and `resolveSettings()` provenance.
-4. Replace `src/agents-md.ts` rewriting with a curated Pi compatibility prompt.
+4. Replace the remaining `src/agents-md.ts` rewriting with a curated Pi compatibility prompt.
 5. Keep Pi's `Agent` tool as the main subagent bridge.
 6. Add native Pi skill mirroring only as an opt-in experiment.
