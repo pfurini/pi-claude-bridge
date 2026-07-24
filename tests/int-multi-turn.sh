@@ -10,6 +10,7 @@ echo "=== multi-turn-test.sh ==="
 require_command jq
 
 setup_test_env "multi-turn" ".ndjson"
+require_claude_auth
 
 TIMEOUT=180
 PASS=0

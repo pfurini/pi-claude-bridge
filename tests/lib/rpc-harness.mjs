@@ -7,6 +7,7 @@ import { createWriteStream, existsSync, mkdirSync, writeFileSync } from "node:fs
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
+import { assertClaudeAuthenticated } from "./claude-auth.mjs";
 
 const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -101,6 +102,7 @@ export function createRpcHarness(opts) {
 	let reqId = 0;
 
 	function start() {
+		assertClaudeAuthenticated();
 		buffer = "";
 		// Truncate the debug log on each run so test assertions that grep the
 		// log see only this run's output, not accumulated history from prior

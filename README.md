@@ -53,7 +53,13 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 
 Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config directory, usually `.pi/claude-bridge.json` (project; merged over global).
 
-Claude Code subprocesses use an isolated filesystem profile at `~/.pi/agent/claude` by default. This keeps bridge settings, plugins, skills, and session history separate from the normal interactive `~/.claude` profile. Existing Claude sessions and settings are not copied automatically. On Linux and Windows, the isolated profile may require separate authentication provisioning; macOS credentials remain shared through Keychain.
+Claude Code subprocesses use an isolated filesystem profile at `~/.pi/agent/claude` by default. This keeps bridge settings, plugins, skills, and session history separate from the normal interactive `~/.claude` profile. Existing Claude sessions and settings are not copied automatically. Linux and Windows store credentials inside the profile, while macOS stores OAuth credentials in Keychain but still keeps account metadata in the profile. A new isolated profile can therefore require a one-time login on every platform:
+
+```bash
+CLAUDE_CONFIG_DIR="$HOME/.pi/agent/claude" claude auth login
+```
+
+When `provider.pathToClaudeCodeExecutable` is configured, use that executable instead of the `claude` command above.
 
 ```json
 {
