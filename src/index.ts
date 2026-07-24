@@ -2,7 +2,7 @@ import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessage
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, keyHint, type CompactionEntry, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKRateLimitInfo, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -19,8 +19,8 @@ import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, type Config } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { typeBoxToolToSdkMcpTool } from "./typebox-to-zod.js";
-import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions, getAskClaudeDisallowedTools } from "./sdk-options.js";
-import { createSdkMessageState, parseSdkResult, parseSdkSystemInit, reduceSdkMessage } from "./sdk-messages.js";
+import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions } from "./sdk-options.js";
+import { createSdkMessageState, parseSdkResult, parseSdkSystemInit, rateLimitResetDate, rateLimitUtilizationPercent, reduceSdkMessage, type SdkTerminalResult } from "./sdk-messages.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
@@ -353,6 +353,9 @@ async function runIsolatedSummary(
 			return;
 		}
 
+		if (messageState.result && !messageState.result.successful) {
+			debugTerminalFailure("compact summary", messageState.result);
+		}
 		const text = messageState.result?.successful ? messageState.result.text : messageState.assistantText;
 		const errorText = messageState.result?.successful ? undefined : messageState.result?.errorText;
 		if (errorText || !text.trim()) {
@@ -963,11 +966,21 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	}
 }
 
+function debugTerminalFailure(label: string, result: SdkTerminalResult): void {
+	debug(
+		`${label}: terminal failure`,
+		`subtype=${result.subtype} isError=${result.isError}`,
+		`terminalReason=${result.terminalReason ?? "none"}`,
+		`session=${result.sessionId?.slice(0, 8) ?? "none"}`,
+	);
+}
+
 function processTerminalResultMessage(message: SDKMessage, model: Model<any>, queryCtx: QueryContext) {
 	logServedContextWindow("result", message, model);
 	const terminalResult = parseSdkResult(message);
 	if (!terminalResult) return undefined;
 	if (!terminalResult.successful) {
+		debugTerminalFailure("provider", terminalResult);
 		ensureTurnStarted(queryCtx);
 		if (queryCtx.turnOutput) {
 			queryCtx.turnOutput.stopReason = "error";
@@ -992,21 +1005,15 @@ function systemInitSessionId(message: SDKMessage): string | undefined {
 }
 
 function processRateLimitMessage(message: SDKMessage): void {
-	const rateLimit = message as SDKMessage & {
-		rate_limit_info?: {
-			status?: string;
-			resetsAt?: string | number;
-			rateLimitType?: string;
-			utilization?: number;
-		};
-	};
-	const info = rateLimit.rate_limit_info;
+	const info = (message as SDKMessage & { rate_limit_info?: SDKRateLimitInfo })
+		.rate_limit_info;
 	debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
 	if (info?.status === "rejected") {
-		const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
+		const resetsAt = rateLimitResetDate(info.resetsAt)?.toLocaleTimeString() ?? "unknown";
 		piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
 	} else if (info?.status === "allowed_warning") {
-		piUI?.notify(`Claude rate limit warning: ${Math.round(info.utilization ?? 0)}% used (${info.rateLimitType ?? ""})`, "warning");
+		const utilization = rateLimitUtilizationPercent(info.utilization);
+		piUI?.notify(`Claude rate limit warning: ${utilization}% used (${info.rateLimitType ?? ""})`, "warning");
 	}
 }
 
@@ -1406,7 +1413,6 @@ async function promptAndWait(
 	options?: {
 		systemPrompt?: string;
 		appendSkills?: boolean;
-		onStreamUpdate?: (responseText: string) => void;
 		model?: string;
 		thinking?: string;
 		isolated?: boolean;
@@ -1438,11 +1444,6 @@ async function promptAndWait(
 		}
 	}
 
-	// Read mode names Grep and Glob explicitly because native Claude Code builds no
-	// longer include the dedicated tools in the default inventory.
-	const disallowedTools = getAskClaudeDisallowedTools(mode);
-	const allowedTools = mode === "read" ? ["Read", "Grep", "Glob"] : [];
-
 	// Skills append
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
 		? extractSkillsBlock(options.systemPrompt) : undefined;
@@ -1465,8 +1466,7 @@ async function promptAndWait(
 			cwd,
 			baseEnv: process.env,
 			cliModel,
-			disallowedTools,
-			allowedTools,
+			mode,
 			effort,
 			skillsBlock,
 			resumeSessionId,
@@ -1498,7 +1498,6 @@ async function promptAndWait(
 			const reduced = reduceSdkMessage(messageState, message);
 			if (reduced.textDelta !== undefined) {
 				responseText = messageState.streamedText;
-				options?.onStreamUpdate?.(responseText);
 			}
 			if (reduced.toolUseStarted) {
 				debug(`askClaude: tool_use start: ${reduced.toolUseStarted.name}`);
@@ -1537,8 +1536,8 @@ async function promptAndWait(
 		}
 
 		if (!wasAborted && messageState.result && !messageState.result.successful) {
+			debugTerminalFailure("askClaude", messageState.result);
 			const failure = messageState.result.errorText ?? `Claude Code query failed: ${messageState.result.subtype}`;
-			debug(`askClaude: terminal error ${failure}`);
 			throw new Error(failure);
 		}
 

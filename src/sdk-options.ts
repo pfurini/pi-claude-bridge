@@ -36,44 +36,65 @@ const ASKCLAUDE_DELEGATION_TOOLS = [
 	"SendMessage",
 ];
 
-const ASKCLAUDE_DISALLOWED_TOOLS: Record<AskClaudeMode, string[]> = {
-	full: [...ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS],
-	read: [
-		...ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS,
-		"Write",
-		"Edit",
-		"Bash",
-		"NotebookEdit",
-		"EnterWorktree",
-		"ExitWorktree",
-		"CronCreate",
-		"CronDelete",
-		"TeamCreate",
-		"TeamDelete",
-	],
-	none: [
-		...ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS,
-		"Read",
-		"Write",
-		"Edit",
-		"Glob",
-		"Grep",
-		"Bash",
-		...ASKCLAUDE_DELEGATION_TOOLS,
-		"NotebookEdit",
-		"EnterWorktree",
-		"ExitWorktree",
-		"CronCreate",
-		"CronDelete",
-		"TeamCreate",
-		"TeamDelete",
-		"WebFetch",
-		"WebSearch",
-	],
-};
+const ASKCLAUDE_READ_RESTRICTIONS = [
+	"Write",
+	"Edit",
+	"Bash",
+	"NotebookEdit",
+	"EnterWorktree",
+	"ExitWorktree",
+	"CronCreate",
+	"CronDelete",
+	"TeamCreate",
+	"TeamDelete",
+];
+
+export interface AskClaudeToolPolicy {
+	allowedTools: string[];
+	disallowedTools: string[];
+	skills?: Options["skills"];
+}
+
+export function getAskClaudeToolPolicy(mode: unknown): AskClaudeToolPolicy {
+	const effectiveMode: AskClaudeMode =
+		mode === "full" || mode === "none" || mode === "read" ? mode : "read";
+	if (effectiveMode === "none") {
+		return {
+			allowedTools: [],
+			disallowedTools: [
+				...ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS,
+				"Read",
+				"Write",
+				"Edit",
+				"Glob",
+				"Grep",
+				"Bash",
+				...ASKCLAUDE_DELEGATION_TOOLS,
+				"NotebookEdit",
+				"EnterWorktree",
+				"ExitWorktree",
+				"CronCreate",
+				"CronDelete",
+				"TeamCreate",
+				"TeamDelete",
+				"WebFetch",
+				"WebSearch",
+				"Skill",
+			],
+			skills: [],
+		};
+	}
+	return {
+		allowedTools: ["Read", "Grep", "Glob"],
+		disallowedTools: [
+			...ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS,
+			...(effectiveMode === "read" ? ASKCLAUDE_READ_RESTRICTIONS : []),
+		],
+	};
+}
 
 export function getAskClaudeDisallowedTools(mode: AskClaudeMode): string[] {
-	return [...ASKCLAUDE_DISALLOWED_TOOLS[mode]];
+	return getAskClaudeToolPolicy(mode).disallowedTools;
 }
 
 export interface ProviderQueryOptionsInput {
@@ -129,10 +150,10 @@ export interface AskClaudeQueryOptionsInput {
 	cwd: string;
 	baseEnv: NodeJS.ProcessEnv;
 	cliModel: string;
-	disallowedTools: string[];
-	allowedTools: string[];
+	mode: AskClaudeMode;
 	effort?: EffortLevel;
 	skillsBlock?: string;
+	settingSources?: SettingSource[];
 	resumeSessionId?: string | null;
 	isolated?: boolean;
 	claudeExecutable?: string;
@@ -144,6 +165,7 @@ export function buildAskClaudeQueryOptions(
 ): Options {
 	const extraArgs: Record<string, string | null> = { model: input.cliModel };
 	if (input.effort) extraArgs["thinking-display"] = "summarized";
+	const policy = getAskClaudeToolPolicy(input.mode);
 
 	return {
 		cwd: input.cwd,
@@ -155,17 +177,19 @@ export function buildAskClaudeQueryOptions(
 		permissionMode: "bypassPermissions",
 		allowDangerouslySkipPermissions: true,
 		strictMcpConfig: true,
-		...(input.allowedTools.length
-			? { allowedTools: input.allowedTools }
+		includePartialMessages: true,
+		...(policy.allowedTools.length
+			? { allowedTools: policy.allowedTools }
 			: {}),
-		...(input.disallowedTools.length
-			? { disallowedTools: input.disallowedTools }
+		...(policy.disallowedTools.length
+			? { disallowedTools: policy.disallowedTools }
 			: {}),
+		...(policy.skills !== undefined ? { skills: policy.skills } : {}),
 		...(input.effort ? { effort: input.effort } : {}),
 		systemPrompt: input.skillsBlock
 			? { type: "preset", preset: "claude_code", append: input.skillsBlock }
 			: undefined,
-		settingSources: ["user", "project"],
+		settingSources: input.settingSources ?? ["user", "project"],
 		extraArgs,
 		...(input.resumeSessionId ? { resume: input.resumeSessionId } : {}),
 		...(input.isolated ? { persistSession: false } : {}),

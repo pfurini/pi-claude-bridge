@@ -1,8 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai";
 import {
 	createSdkMessageState,
 	parseSdkResult,
+	rateLimitResetDate,
+	rateLimitUtilizationPercent,
 	reduceSdkMessage,
 	resultErrorText,
 } from "../src/sdk-messages.js";
@@ -154,7 +157,7 @@ describe("SDK message reduction", () => {
 		);
 	});
 
-	it("rejects success subtypes when is_error is true and preserves diagnostics", () => {
+	it("keeps terminal metadata structured and out of retry-classified error text", () => {
 		const state = createSdkMessageState();
 		const reduced = reduceSdkMessage(
 			state,
@@ -162,21 +165,23 @@ describe("SDK message reduction", () => {
 				type: "result",
 				subtype: "success",
 				is_error: true,
-				result: "offline success-subtype failure",
+				result: "Credit balance is too low",
 				terminal_reason: "api_error",
-				session_id: "session-terminal",
+				session_id: "00000000-0504-4000-8000-000000000000",
 			}),
 		);
 
 		assert.equal(reduced.result.successful, false);
 		assert.equal(reduced.result.isError, true);
 		assert.equal(reduced.result.terminalReason, "api_error");
-		assert.equal(reduced.result.sessionId, "session-terminal");
-		assert.equal(state.sessionId, "session-terminal");
-		assert.equal(
-			reduced.result.errorText,
-			"offline success-subtype failure (terminal_reason=api_error, session_id=session-terminal)",
-		);
+		assert.equal(reduced.result.sessionId, "00000000-0504-4000-8000-000000000000");
+		assert.equal(state.sessionId, "00000000-0504-4000-8000-000000000000");
+		assert.equal(reduced.result.errorText, "Credit balance is too low");
+		assert.doesNotMatch(reduced.result.errorText, /504|session_id/);
+		assert.equal(isRetryableAssistantError({
+			stopReason: "error",
+			errorMessage: reduced.result.errorText,
+		}), false);
 	});
 
 	it("marks unknown future message types without throwing", () => {
@@ -188,5 +193,22 @@ describe("SDK message reduction", () => {
 
 		assert.equal(reduced.unknown, true);
 		assert.deepEqual(state.unknownMessageTypes, ["future_message"]);
+	});
+});
+
+describe("rate-limit display conversions", () => {
+	it("converts SDK epoch seconds to JavaScript milliseconds", () => {
+		assert.equal(rateLimitResetDate(1_700_000_000).getTime(), 1_700_000_000_000);
+		assert.equal(rateLimitResetDate(undefined), undefined);
+		assert.equal(rateLimitResetDate(Number.NaN), undefined);
+		assert.equal(rateLimitResetDate(Number.POSITIVE_INFINITY), undefined);
+	});
+
+	it("formats SDK utilization fractions as floored percentages", () => {
+		assert.equal(rateLimitUtilizationPercent(undefined), 0);
+		assert.equal(rateLimitUtilizationPercent(0), 0);
+		assert.equal(rateLimitUtilizationPercent(0.7), 70);
+		assert.equal(rateLimitUtilizationPercent(0.85), 85);
+		assert.equal(rateLimitUtilizationPercent(1), 100);
 	});
 });

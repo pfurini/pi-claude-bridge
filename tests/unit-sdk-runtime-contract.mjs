@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -10,7 +10,7 @@ import { createSdkMcpServer, query } from "@anthropic-ai/claude-agent-sdk";
 import { Type } from "typebox";
 import {
   buildAskClaudeQueryOptions,
-  getAskClaudeDisallowedTools,
+  getAskClaudeToolPolicy,
 } from "../src/sdk-options.js";
 import {
   createSdkMessageState,
@@ -77,36 +77,35 @@ function terminalResult(messages) {
 }
 
 async function captureBundledSystemInit(mode) {
-  const configDir = mkdtempSync(join(tmpdir(), "claude-sdk-init-"));
+  const tempRoot = mkdtempSync(join(tmpdir(), "claude-sdk-init-"));
+  const configDir = join(tempRoot, "config");
+  const workspace = join(tempRoot, "workspace");
+  mkdirSync(configDir);
+  mkdirSync(workspace);
   const baseEnv = credentialFreeEnv({
     CLAUDE_CONFIG_DIR: configDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
   });
-  const policyOptions = mode
+  const options = mode
     ? buildAskClaudeQueryOptions({
-        cwd: process.cwd(),
+        cwd: workspace,
         baseEnv,
         cliModel: "fake-claude",
-        disallowedTools: getAskClaudeDisallowedTools(mode),
-        allowedTools: mode === "read" ? ["Read", "Grep", "Glob"] : [],
+        mode,
+        settingSources: [],
         isolated: true,
       })
-    : {};
+    : {
+        cwd: workspace,
+        env: baseEnv,
+        settingSources: [],
+        persistSession: false,
+        strictMcpConfig: true,
+        maxTurns: 1,
+      };
   const sdkQuery = query({
     prompt: "offline initialization inventory",
-    options: {
-      cwd: process.cwd(),
-      settingSources: [],
-      persistSession: false,
-      strictMcpConfig: true,
-      maxTurns: 1,
-      ...policyOptions,
-      env: credentialFreeEnv({
-        ...policyOptions.env,
-        CLAUDE_CONFIG_DIR: configDir,
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      }),
-    },
+    options,
   });
   try {
     for await (const message of sdkQuery) {
@@ -115,7 +114,7 @@ async function captureBundledSystemInit(mode) {
     return undefined;
   } finally {
     sdkQuery.close();
-    rmSync(configDir, { recursive: true, force: true });
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 }
 
@@ -142,6 +141,68 @@ describe("offline Agent SDK process contracts", () => {
     assert.equal(state.result.subtype, "success");
     assert.equal(state.result.isError, false);
     assert.equal(state.result.text, "offline contract response");
+  });
+
+  it("delivers partial text events through AskClaude-built options", {
+    timeout: 10_000,
+  }, async () => {
+    const options = buildAskClaudeQueryOptions({
+      cwd: process.cwd(),
+      baseEnv: credentialFreeEnv(),
+      cliModel: "fake-claude",
+      mode: "read",
+      settingSources: [],
+      isolated: true,
+      claudeExecutable: fakeClaude,
+    });
+    const messages = await runFakeQuery({
+      options: { ...options, env: { ...options.env, FAKE_CLAUDE_RESPONSE: "partial response" } },
+      useNativeToolInventory: true,
+    });
+    const state = createSdkMessageState();
+    for (const message of messages) reduceSdkMessage(state, message);
+
+    assert.ok(state.textDeltaCount > 0);
+    assert.equal(state.streamedText, "partial response");
+  });
+
+  it("observes a partial tool start before its completed assistant block", {
+    timeout: 10_000,
+  }, async () => {
+    const options = buildAskClaudeQueryOptions({
+      cwd: process.cwd(),
+      baseEnv: credentialFreeEnv(),
+      cliModel: "fake-claude",
+      mode: "read",
+      settingSources: [],
+      isolated: true,
+      claudeExecutable: fakeClaude,
+    });
+    const messages = await runFakeQuery({
+      scenario: "tool-use",
+      options,
+      useNativeToolInventory: true,
+    });
+    const state = createSdkMessageState();
+    let startedAt = -1;
+    let completedAt = -1;
+    let completedTool;
+    for (const [index, message] of messages.entries()) {
+      const reduced = reduceSdkMessage(state, message);
+      if (reduced.toolUseStarted) startedAt = index;
+      if (reduced.toolUsesCompleted?.length) {
+        completedAt = index;
+        [completedTool] = reduced.toolUsesCompleted;
+      }
+    }
+
+    assert.ok(startedAt >= 0, "expected a streamed tool start");
+    assert.ok(completedAt > startedAt, "tool start should precede the completed block");
+    assert.deepEqual(completedTool, {
+      id: "tool-fake-1",
+      name: "Read",
+      input: { file_path: "README.md" },
+    });
   });
 
   it("connects an SDK MCP server, exposes its tool schema, and invokes it", {
@@ -241,8 +302,7 @@ describe("offline Agent SDK process contracts", () => {
           cwd: process.cwd(),
           baseEnv: credentialFreeEnv(),
           cliModel: "fake-claude",
-          disallowedTools: getAskClaudeDisallowedTools(mode),
-          allowedTools: mode === "read" ? ["Read", "Grep", "Glob"] : [],
+          mode,
           isolated: true,
           claudeExecutable: fakeClaude,
         });
@@ -263,6 +323,8 @@ describe("offline Agent SDK process contracts", () => {
 
     for (const tool of [
       "Read",
+      "Grep",
+      "Glob",
       "Write",
       "Bash",
       "WebSearch",
@@ -285,6 +347,7 @@ describe("offline Agent SDK process contracts", () => {
     }
 
     for (const tool of [
+      "Skill",
       "Read",
       "Write",
       "Glob",
@@ -306,7 +369,7 @@ describe("offline Agent SDK process contracts", () => {
     ]) {
       assert.ok(!inventories.none.has(tool), `none mode should block ${tool}`);
     }
-    const nonePolicy = new Set(getAskClaudeDisallowedTools("none"));
+    const nonePolicy = new Set(getAskClaudeToolPolicy("none").disallowedTools);
     for (const transitionalName of ["Agent", "RemoteTrigger"]) {
       assert.ok(
         nonePolicy.has(transitionalName),
@@ -325,10 +388,7 @@ describe("offline Agent SDK process contracts", () => {
     assert.equal(state.result.subtype, "error_during_execution");
     assert.equal(state.result.successful, false);
     assert.equal(state.result.isError, true);
-    assert.equal(
-      state.result.errorText,
-      "offline terminal failure (session_id=00000000-0000-4000-8000-000000000001)",
-    );
+    assert.equal(state.result.errorText, "offline terminal failure");
     assert.equal(
       state.result.sessionId,
       "00000000-0000-4000-8000-000000000001",
@@ -346,10 +406,7 @@ describe("offline Agent SDK process contracts", () => {
     assert.equal(state.result.successful, false);
     assert.equal(state.result.isError, true);
     assert.equal(state.result.terminalReason, "api_error");
-    assert.equal(
-      state.result.errorText,
-      "offline success-subtype failure (terminal_reason=api_error, session_id=00000000-0000-4000-8000-000000000001)",
-    );
+    assert.equal(state.result.errorText, "offline success-subtype failure");
   });
 
   it("accepts an unknown future message without failing the query", {
@@ -514,13 +571,14 @@ describe("Claude Code executable resolution", () => {
     for (const tool of ["Write", "Edit", "Bash"]) {
       assert.ok(!inventories.read.has(tool), `target read mode should block ${tool}`);
     }
-    for (const tool of ["Read", "Write", "Bash", "Task", "Workflow"]) {
+    for (const tool of ["Read", "Grep", "Glob", "Write", "Bash", "Task", "Workflow"]) {
       assert.ok(inventories.full.has(tool), `target full mode should expose ${tool}`);
     }
     for (const tool of ["ToolSearch", "ScheduleWakeup"]) {
       assert.ok(!inventories.full.has(tool), `target full mode should block ${tool}`);
     }
     for (const tool of [
+      "Skill",
       "Read",
       "Write",
       "Grep",

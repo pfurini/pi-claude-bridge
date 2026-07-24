@@ -289,6 +289,41 @@ function emitAssistantConversation(responseText) {
   });
 }
 
+function emitToolUseConversation() {
+	emit({
+		type: "stream_event",
+		event: {
+			type: "content_block_start",
+			index: 0,
+			content_block: { type: "tool_use", id: "tool-fake-1", name: "Read", input: {} },
+		},
+		parent_tool_use_id: null,
+		uuid: ASSISTANT_UUID,
+		session_id: SESSION_ID,
+	});
+	emit({
+		type: "assistant",
+		message: {
+			id: ASSISTANT_ID,
+			type: "message",
+			role: "assistant",
+			model: "fake-claude",
+			content: [{
+				type: "tool_use",
+				id: "tool-fake-1",
+				name: "Read",
+				input: { file_path: "README.md" },
+			}],
+			stop_reason: "tool_use",
+			stop_sequence: null,
+			usage: { input_tokens: 1, output_tokens: 3 },
+		},
+		parent_tool_use_id: null,
+		uuid: ASSISTANT_UUID,
+		session_id: SESSION_ID,
+	});
+}
+
 function emitSuccessResult(responseText) {
   emit({
     type: "result",
@@ -361,6 +396,11 @@ function maybeEmitConversation() {
     emitSuccessSubtypeError();
     return;
   }
+	if (scenario === "tool-use") {
+		emitToolUseConversation();
+		emitSuccessResult("tool use completed");
+		return;
+	}
 
   const responseText =
     mcpToolResult?.content?.find((content) => content.type === "text")?.text ??

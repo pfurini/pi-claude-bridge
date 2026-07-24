@@ -46,11 +46,40 @@ export function tryParseJson(path: string): Partial<Config> {
 	}
 }
 
+export function normalizeAskClaudeDefaultMode(
+	defaultMode: unknown,
+	allowFullMode?: unknown,
+): "full" | "read" | "none" | undefined {
+	if (defaultMode === undefined) return undefined;
+	if (defaultMode !== "full" && defaultMode !== "read" && defaultMode !== "none") {
+		console.warn(
+			`claude-bridge: invalid askClaude.defaultMode ${JSON.stringify(defaultMode)}; using "read"`,
+		);
+		return "read";
+	}
+	if (defaultMode === "full" && allowFullMode === false) {
+		console.warn(
+			'claude-bridge: askClaude.defaultMode "full" is disabled by allowFullMode=false; using "read"',
+		);
+		return "read";
+	}
+	return defaultMode;
+}
+
 export function loadConfig(cwd: string): Config {
 	const global = tryParseJson(join(homedir(), ".pi", "agent", "claude-bridge.json"));
 	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
+	const askClaude = { ...global.askClaude, ...project.askClaude } as NonNullable<Config["askClaude"]> & {
+		defaultMode?: unknown;
+	};
+	const defaultMode = normalizeAskClaudeDefaultMode(
+		askClaude.defaultMode,
+		askClaude.allowFullMode,
+	);
+	if (defaultMode !== undefined) askClaude.defaultMode = defaultMode;
+
 	return {
-		askClaude: { ...global.askClaude, ...project.askClaude },
+		askClaude: askClaude as NonNullable<Config["askClaude"]>,
 		provider: { ...global.provider, ...project.provider },
 	};
 }

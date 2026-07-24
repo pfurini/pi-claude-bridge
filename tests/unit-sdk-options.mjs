@@ -4,6 +4,7 @@ import {
 	buildAskClaudeQueryOptions,
 	buildIsolatedSummaryQueryOptions,
 	buildProviderQueryOptions,
+	getAskClaudeToolPolicy,
 } from "../src/sdk-options.js";
 
 const baseEnv = { PATH: "/test/bin", KEEP_ME: "yes" };
@@ -69,14 +70,18 @@ describe("provider SDK options", () => {
 });
 
 describe("AskClaude SDK options", () => {
-	it("preserves mode restrictions, skills, and isolated-session settings", () => {
-		const blocked = ["Write", "Bash"];
-		const options = buildAskClaudeQueryOptions({
+	function build(mode, overrides = {}) {
+		return buildAskClaudeQueryOptions({
 			cwd: "/work/project",
 			baseEnv,
 			cliModel: "claude-opus-test",
-			disallowedTools: blocked,
-			allowedTools: ["Read", "Grep", "Glob"],
+			mode,
+			...overrides,
+		});
+	}
+
+	it("applies the complete read policy and AskClaude query invariants", () => {
+		const options = build("read", {
 			effort: "medium",
 			skillsBlock: "available skills",
 			resumeSessionId: "session-2",
@@ -84,11 +89,14 @@ describe("AskClaude SDK options", () => {
 			claudeExecutable: "/opt/claude",
 		});
 
-		assert.deepEqual(options.disallowedTools, blocked);
 		assert.deepEqual(options.allowedTools, ["Read", "Grep", "Glob"]);
+		for (const tool of ["Write", "Edit", "Bash", "EnterWorktree", "CronCreate"]) {
+			assert.ok(options.disallowedTools.includes(tool), `read policy should block ${tool}`);
+		}
 		assert.equal(options.permissionMode, "bypassPermissions");
 		assert.equal(options.allowDangerouslySkipPermissions, true);
 		assert.equal(options.strictMcpConfig, true);
+		assert.equal(options.includePartialMessages, true);
 		assert.equal(options.effort, "medium");
 		assert.deepEqual(options.systemPrompt, {
 			type: "preset",
@@ -105,6 +113,39 @@ describe("AskClaude SDK options", () => {
 		assert.equal(options.env.KEEP_ME, "yes");
 		assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "0");
 		assert.equal(options.env.DISABLE_AUTO_COMPACT, "1");
+	});
+
+	it("adds Read, Grep, and Glob explicitly in full mode", () => {
+		const policy = getAskClaudeToolPolicy("full");
+		const options = build("full");
+		assert.deepEqual(policy.allowedTools, ["Read", "Grep", "Glob"]);
+		assert.deepEqual(options.allowedTools, policy.allowedTools);
+		assert.ok(!options.disallowedTools.includes("Write"));
+		assert.ok(options.disallowedTools.includes("AskUserQuestion"));
+	});
+
+	it("blocks Skill and disables SDK skill discovery in none mode", () => {
+		const policy = getAskClaudeToolPolicy("none");
+		const options = build("none");
+		assert.deepEqual(policy.allowedTools, []);
+		assert.ok(policy.disallowedTools.includes("Skill"));
+		assert.ok(options.disallowedTools.includes("Skill"));
+		assert.deepEqual(policy.skills, []);
+		assert.deepEqual(options.skills, []);
+		assert.equal("allowedTools" in options, false);
+	});
+
+	it("preserves an explicit empty settings source list", () => {
+		const options = build("read", { settingSources: [] });
+		assert.deepEqual(options.settingSources, []);
+	});
+
+	it("fails closed to the read policy for an invalid runtime mode", () => {
+		const options = build("invalid-at-runtime");
+		assert.deepEqual(options.allowedTools, ["Read", "Grep", "Glob"]);
+		for (const tool of ["Write", "Edit", "Bash"]) {
+			assert.ok(options.disallowedTools.includes(tool), `fallback should block ${tool}`);
+		}
 	});
 });
 

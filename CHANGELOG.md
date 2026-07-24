@@ -2,6 +2,8 @@
 
 ## UNRELEASED
 
+- **Fix: harden AskClaude SDK policy and diagnostics** — validate configured modes fail-closed, enforce the full-mode lockout on configured defaults, restore partial events and native search tools, disable skills in none mode, correct rate-limit display units, and keep opaque terminal metadata out of retry-classified errors.
+- **Tests: isolate SDK inventory and bound RPC shutdown** — prevent user and project settings from contaminating native tool-policy probes and escalate wedged test processes after bounded shutdown waits.
 - **Bump: upgrade Claude Agent SDK and aligned peers** — pin Agent SDK `0.3.218` (bundled Claude Code `2.1.218`) and align `@anthropic-ai/sdk` `0.113.0`, MCP SDK `1.29.0`, and Zod `4.4.3`; add the required bypass acknowledgement, typed strict MCP, eager Pi MCP loading, updated AskClaude policies, and terminal `is_error` propagation.
 - **Fix: gate Fable 5 by subscription eligibility** — hide Fable 5 from Pro users unless Extra Usage is enabled and reject explicit ineligible AskClaude requests before they reach Claude Code; preserve Fable availability on Max.
 - **Tests: add Agent SDK upgrade compatibility contracts** — establish the Pi `0.80.3` and Node `>=22.19.0` baseline; cover SDK initialization, MCP tools, AskClaude policies, terminal and abort paths, configuration sources, synthetic sessions, and executable resolution offline; then verify authenticated provider, cache, compaction, native subagent, model aliases, context windows, served-window parity, cross-version transcript/API, and restart-and-rebuild rollback behavior.

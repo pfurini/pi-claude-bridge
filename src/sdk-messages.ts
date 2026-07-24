@@ -1,4 +1,4 @@
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage, SDKRateLimitInfo } from "@anthropic-ai/claude-agent-sdk";
 
 export interface ReducedToolUse {
 	id: string;
@@ -41,7 +41,7 @@ export interface SdkMessageReduction {
 	result?: SdkTerminalResult;
 	sessionId?: string;
 	systemInit?: SdkSystemInit;
-	rateLimitInfo?: Record<string, unknown>;
+	rateLimitInfo?: SDKRateLimitInfo;
 	unknown?: boolean;
 }
 
@@ -92,6 +92,16 @@ export function parseSdkSystemInit(
 	};
 }
 
+export function rateLimitResetDate(resetsAt?: number): Date | undefined {
+	if (resetsAt === undefined || !Number.isFinite(resetsAt)) return undefined;
+	return new Date(resetsAt * 1_000);
+}
+
+export function rateLimitUtilizationPercent(utilization?: number): number {
+	if (utilization === undefined || !Number.isFinite(utilization)) return 0;
+	return Math.floor(utilization * 100);
+}
+
 export function resultErrorText(
 	message: SDKMessage,
 	failureLabel = "Claude Code query",
@@ -102,32 +112,21 @@ export function resultErrorText(
 		result?: unknown;
 		errors?: unknown;
 		error?: unknown;
-		terminal_reason?: unknown;
-		session_id?: unknown;
 	};
-	let errorText: string;
 	if (Array.isArray(result.errors) && result.errors.length > 0) {
-		errorText = result.errors.map(String).join("\n");
-	} else if (typeof result.error === "string" && result.error) {
-		errorText = result.error;
-	} else if (
+		return result.errors.map(String).join("\n");
+	}
+	if (typeof result.error === "string" && result.error) {
+		return result.error;
+	}
+	if (
 		result.is_error === true &&
 		typeof result.result === "string" &&
 		result.result
 	) {
-		errorText = result.result;
-	} else {
-		errorText = `${failureLabel} failed: ${result.subtype ?? "unknown result"}`;
+		return result.result;
 	}
-
-	const context: string[] = [];
-	if (typeof result.terminal_reason === "string") {
-		context.push(`terminal_reason=${result.terminal_reason}`);
-	}
-	if (typeof result.session_id === "string") {
-		context.push(`session_id=${result.session_id}`);
-	}
-	return context.length > 0 ? `${errorText} (${context.join(", ")})` : errorText;
+	return `${failureLabel} failed: ${result.subtype ?? "unknown result"}`;
 }
 
 export function parseSdkResult(
@@ -250,9 +249,9 @@ export function reduceSdkMessage(
 		}
 	} else if (type === "rate_limit_event") {
 		const info = (
-			message as SDKMessage & { rate_limit_info?: Record<string, unknown> }
+			message as SDKMessage & { rate_limit_info?: SDKRateLimitInfo }
 		).rate_limit_info;
-		if (info && typeof info === "object") reduction.rateLimitInfo = info;
+		if (info) reduction.rateLimitInfo = info;
 	} else if (type !== "user") {
 		state.unknownMessageTypes.push(type);
 		reduction.unknown = true;
