@@ -2,6 +2,7 @@
 
 ## UNRELEASED
 
+- **Add: isolate Claude Code configuration** — run all bridge-managed Claude Code subprocesses and sessions under `~/.pi/agent/claude` by default, add the validated `provider.claudeConfigDir` override, preserve Pi paths in forwarded AGENTS.md content, and keep isolation variables child-local.
 - **Fix: harden AskClaude SDK policy and diagnostics** — validate configured modes fail-closed, enforce the full-mode lockout on configured defaults, restore partial events and native search tools, disable skills in none mode, correct rate-limit display units, and keep opaque terminal metadata out of retry-classified errors.
 - **Tests: isolate SDK inventory and bound RPC shutdown** — prevent user and project settings from contaminating native tool-policy probes and escalate wedged test processes after bounded shutdown waits.
 - **Bump: upgrade Claude Agent SDK and aligned peers** — pin Agent SDK `0.3.218` (bundled Claude Code `2.1.218`) and align `@anthropic-ai/sdk` `0.113.0`, MCP SDK `1.29.0`, and Zod `4.4.3`; add the required bypass acknowledgement, typed strict MCP, eager Pi MCP loading, updated AskClaude policies, and terminal `is_error` propagation.

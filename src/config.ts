@@ -7,7 +7,8 @@ import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { isAbsolute, join } from "path";
+import { defaultClaudeConfigDir } from "./claude-config.js";
 
 export interface Config {
 	askClaude?: {
@@ -26,6 +27,7 @@ export interface Config {
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
+		claudeConfigDir?: string;
 		// Subscription plan tier. Setting to "max" makes Fable 5 available and enables
 		// Opus 4.6 at 1M context.
 		plan?: "pro" | "max";
@@ -66,6 +68,18 @@ export function normalizeAskClaudeDefaultMode(
 	return defaultMode;
 }
 
+export function normalizeClaudeConfigDir(value: unknown): string {
+	const fallback = defaultClaudeConfigDir();
+	if (value === undefined) return fallback;
+	if (typeof value === "string" && value.length > 0 && isAbsolute(value)) {
+		return value;
+	}
+	console.warn(
+		`claude-bridge: invalid provider.claudeConfigDir ${JSON.stringify(value)}; using ${fallback}`,
+	);
+	return fallback;
+}
+
 export function loadConfig(cwd: string): Config {
 	const global = tryParseJson(join(homedir(), ".pi", "agent", "claude-bridge.json"));
 	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
@@ -78,8 +92,12 @@ export function loadConfig(cwd: string): Config {
 	);
 	if (defaultMode !== undefined) askClaude.defaultMode = defaultMode;
 
+	const provider = { ...global.provider, ...project.provider } as NonNullable<Config["provider"]> & {
+		claudeConfigDir?: unknown;
+	};
+	provider.claudeConfigDir = normalizeClaudeConfigDir(provider.claudeConfigDir);
 	return {
 		askClaude: askClaude as NonNullable<Config["askClaude"]>,
-		provider: { ...global.provider, ...project.provider },
+		provider: provider as NonNullable<Config["provider"]>,
 	};
 }

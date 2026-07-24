@@ -19,6 +19,9 @@ OLD_OUTPUT="$ROLLBACK_ROOT/old.stdout.log"
 
 mkdir -p "$ROLLBACK_ROOT" "$PI_AGENT_DIR" "$PI_SESSION_DIR"
 WORKSPACE="$(mktemp -d "$ROLLBACK_ROOT/workspace.XXXXXX")"
+PROJECT_CONFIG_DIR="$WORKSPACE/.pi"
+PROJECT_CONFIG="$PROJECT_CONFIG_DIR/claude-bridge.json"
+mkdir -p "$PROJECT_CONFIG_DIR"
 printf '{}\n' > "$PI_AGENT_DIR/settings.json"
 : > "$TARGET_DEBUG"
 : > "$OLD_DEBUG"
@@ -46,6 +49,9 @@ SESSION_ID=$(node -e 'console.log(crypto.randomUUID())')
 PHRASE="ROLLBACK-$(node -e 'console.log(crypto.randomUUID().slice(0,8))')"
 CLEAN_PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v node_modules | paste -sd: -)
 
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({provider:{claudeConfigDir:process.argv[2]}}) + "\n")' \
+	"$PROJECT_CONFIG" "$TARGET_PROFILE"
+
 (
 	cd "$WORKSPACE"
 	PATH="$CLEAN_PATH" \
@@ -63,6 +69,8 @@ grep -qi "RECORDED" "$TARGET_OUTPUT"
 
 # This is the restart boundary. A new Pi process loads the same Pi session while
 # the bridge and Claude profile now come from the old installation.
+node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({provider:{claudeConfigDir:process.argv[2]}}) + "\n")' \
+	"$PROJECT_CONFIG" "$OLD_PROFILE"
 (
 	cd "$WORKSPACE"
 	PATH="$CLEAN_PATH" \

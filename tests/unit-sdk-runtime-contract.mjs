@@ -23,6 +23,7 @@ const require = createRequire(import.meta.url);
 const fakeClaude = fileURLToPath(
   new URL("./fixtures/fake-claude-cli.mjs", import.meta.url),
 );
+const runtimeConfigDir = join(tmpdir(), "claude-sdk-runtime-isolated");
 
 function credentialFreeEnv(overrides = {}) {
   const env = { ...process.env, ...overrides };
@@ -90,6 +91,7 @@ async function captureBundledSystemInit(mode) {
     ? buildAskClaudeQueryOptions({
         cwd: workspace,
         baseEnv,
+        claudeConfigDir: configDir,
         cliModel: "fake-claude",
         mode,
         settingSources: [],
@@ -149,6 +151,7 @@ describe("offline Agent SDK process contracts", () => {
     const options = buildAskClaudeQueryOptions({
       cwd: process.cwd(),
       baseEnv: credentialFreeEnv(),
+      claudeConfigDir: runtimeConfigDir,
       cliModel: "fake-claude",
       mode: "read",
       settingSources: [],
@@ -172,6 +175,7 @@ describe("offline Agent SDK process contracts", () => {
     const options = buildAskClaudeQueryOptions({
       cwd: process.cwd(),
       baseEnv: credentialFreeEnv(),
+      claudeConfigDir: runtimeConfigDir,
       cliModel: "fake-claude",
       mode: "read",
       settingSources: [],
@@ -301,6 +305,7 @@ describe("offline Agent SDK process contracts", () => {
         const options = buildAskClaudeQueryOptions({
           cwd: process.cwd(),
           baseEnv: credentialFreeEnv(),
+          claudeConfigDir: runtimeConfigDir,
           cliModel: "fake-claude",
           mode,
           isolated: true,

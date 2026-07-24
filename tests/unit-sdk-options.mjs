@@ -6,8 +6,25 @@ import {
 	buildProviderQueryOptions,
 	getAskClaudeToolPolicy,
 } from "../src/sdk-options.js";
+import { claudeChildEnv, defaultClaudeConfigDir } from "../src/claude-config.js";
 
-const baseEnv = { PATH: "/test/bin", KEEP_ME: "yes" };
+const claudeConfigDir = "/isolated/claude";
+const baseEnv = { PATH: "/test/bin", KEEP_ME: "yes", CLAUDE_CONFIG_DIR: "/inherited/claude" };
+
+describe("Claude child environment", () => {
+	it("resolves the default profile below Pi's agent directory", () => {
+		assert.equal(defaultClaudeConfigDir("/home/test"), "/home/test/.pi/agent/claude");
+	});
+
+	it("preserves inherited and extra variables while enforcing isolation", () => {
+		const env = claudeChildEnv(claudeConfigDir, baseEnv, { EXTRA_VAR: "present" });
+		assert.equal(env.PATH, "/test/bin");
+		assert.equal(env.KEEP_ME, "yes");
+		assert.equal(env.EXTRA_VAR, "present");
+		assert.equal(env.CLAUDE_CONFIG_DIR, claudeConfigDir);
+		assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1");
+	});
+});
 
 describe("provider SDK options", () => {
 	it("preserves the provider query invariants", () => {
@@ -15,6 +32,7 @@ describe("provider SDK options", () => {
 		const options = buildProviderQueryOptions({
 			cwd: "/work/project",
 			baseEnv,
+			claudeConfigDir,
 			cliModel: "claude-test[1m]",
 			systemPromptAppend: "project instructions",
 			effort: "high",
@@ -43,6 +61,7 @@ describe("provider SDK options", () => {
 		assert.equal(options.resume, "session-1");
 		assert.equal(options.pathToClaudeCodeExecutable, "/opt/claude");
 		assert.equal(options.env.KEEP_ME, "yes");
+		assert.equal(options.env.CLAUDE_CONFIG_DIR, claudeConfigDir);
 		assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "0");
 		assert.equal(options.env.DISABLE_AUTO_COMPACT, "1");
 		assert.equal(options.extraArgs.model, "claude-test[1m]");
@@ -55,6 +74,7 @@ describe("provider SDK options", () => {
 		const options = buildProviderQueryOptions({
 			cwd: "/work/project",
 			baseEnv,
+			claudeConfigDir,
 			cliModel: "claude-test",
 			strictMcpConfigEnabled: false,
 		});
@@ -74,6 +94,7 @@ describe("AskClaude SDK options", () => {
 		return buildAskClaudeQueryOptions({
 			cwd: "/work/project",
 			baseEnv,
+			claudeConfigDir,
 			cliModel: "claude-opus-test",
 			mode,
 			...overrides,
@@ -111,6 +132,7 @@ describe("AskClaude SDK options", () => {
 		assert.equal("strict-mcp-config" in options.extraArgs, false);
 		assert.equal(options.extraArgs["thinking-display"], "summarized");
 		assert.equal(options.env.KEEP_ME, "yes");
+		assert.equal(options.env.CLAUDE_CONFIG_DIR, claudeConfigDir);
 		assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "0");
 		assert.equal(options.env.DISABLE_AUTO_COMPACT, "1");
 	});
@@ -154,6 +176,7 @@ describe("isolated compaction SDK options", () => {
 		const options = buildIsolatedSummaryQueryOptions({
 			cwd: "/work/project",
 			baseEnv,
+			claudeConfigDir,
 			systemPrompt: "Summarize this context",
 			cliModel: "claude-summary-test",
 			claudeExecutable: "/opt/claude",
@@ -169,6 +192,7 @@ describe("isolated compaction SDK options", () => {
 		assert.equal(options.maxTurns, 1);
 		assert.equal(options.pathToClaudeCodeExecutable, "/opt/claude");
 		assert.equal(options.env.KEEP_ME, "yes");
+		assert.equal(options.env.CLAUDE_CONFIG_DIR, claudeConfigDir);
 		assert.equal(options.env.DISABLE_AUTO_COMPACT, "1");
 		assert.equal(options.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
 	});

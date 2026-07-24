@@ -3,6 +3,7 @@ import type {
 	Options,
 	SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
+import { claudeChildEnv } from "./claude-config.js";
 
 export type CliDebugOptions = Pick<Options, "debug" | "debugFile" | "stderr">;
 
@@ -100,6 +101,7 @@ export function getAskClaudeDisallowedTools(mode: AskClaudeMode): string[] {
 export interface ProviderQueryOptionsInput {
 	cwd: string;
 	baseEnv: NodeJS.ProcessEnv;
+	claudeConfigDir: string;
 	cliModel: string;
 	systemPromptAppend?: string;
 	effort?: EffortLevel;
@@ -119,11 +121,10 @@ export function buildProviderQueryOptions(
 
 	return {
 		cwd: input.cwd,
-		env: {
-			...input.baseEnv,
+		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
 			ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 			DISABLE_AUTO_COMPACT: "1",
-		},
+		}),
 		tools: [],
 		permissionMode: "bypassPermissions",
 		allowDangerouslySkipPermissions: true,
@@ -149,6 +150,7 @@ export function buildProviderQueryOptions(
 export interface AskClaudeQueryOptionsInput {
 	cwd: string;
 	baseEnv: NodeJS.ProcessEnv;
+	claudeConfigDir: string;
 	cliModel: string;
 	mode: AskClaudeMode;
 	effort?: EffortLevel;
@@ -169,11 +171,10 @@ export function buildAskClaudeQueryOptions(
 
 	return {
 		cwd: input.cwd,
-		env: {
-			...input.baseEnv,
+		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
 			ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 			DISABLE_AUTO_COMPACT: "1",
-		},
+		}),
 		permissionMode: "bypassPermissions",
 		allowDangerouslySkipPermissions: true,
 		strictMcpConfig: true,
@@ -203,6 +204,7 @@ export function buildAskClaudeQueryOptions(
 export interface IsolatedSummaryQueryOptionsInput {
 	cwd: string;
 	baseEnv: NodeJS.ProcessEnv;
+	claudeConfigDir: string;
 	systemPrompt: string;
 	cliModel: string;
 	claudeExecutable?: string;
@@ -214,11 +216,10 @@ export function buildIsolatedSummaryQueryOptions(
 ): Options {
 	return {
 		cwd: input.cwd,
-		env: {
-			...input.baseEnv,
+		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
 			DISABLE_AUTO_COMPACT: "1",
 			CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-		},
+		}),
 		tools: [],
 		strictMcpConfig: true,
 		settingSources: [],
