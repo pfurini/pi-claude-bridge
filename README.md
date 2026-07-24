@@ -44,7 +44,7 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 ### Parameters
 
 - **`prompt`** — the question or task for Claude Code
-- **`mode`** — `read` (default, read files and search/fetch on web), `none`, or `full` (read+write+bash, disable this mode with `allowFullMode: false` in config)
+- **`mode`** — `read` (default, read files and search/fetch on web), `none` (no file access), or `full` (read+write+bash). Set `allowFullMode: false` to disable full mode.
 - **`model`** — `opus` (default), `sonnet`, `haiku`, or a full model ID
 - **`thinking`** — effort level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
 - **`isolated`** — when `true`, Claude gets a clean session with no conversation history (default: `false`)
@@ -75,9 +75,9 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `name` — override the tool's pi-side name (default `"AskClaude"`)
 - `label` — override the TUI label (default `"Ask Claude Code"`)
 - `description` — override the tool description. Default when `allowFullMode: true`: *"Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories), or to autonomously handle a task. Defaults to read-only mode — use full mode when the user wants to delegate a task that requires changes. Prefer to handle straightforward tasks yourself."*
-- `defaultMode` — `"read"` (default), `"none"`, or `"full"`
+- `defaultMode` — `"read"` (default), `"none"`, or `"full"`. Invalid values fall back to read mode with a warning.
 - `defaultIsolated` — start each call in a fresh session (default `false`)
-- `allowFullMode` — allow `mode: "full"`; set `false` to lock it out
+- `allowFullMode` — allow `mode: "full"`; set `false` to lock it out. This also overrides `defaultMode: "full"`, falls back to read mode, and emits a warning.
 - `appendSkills` — forward pi's skills block into the system prompt (default `true`)
 
 `provider`:
@@ -108,4 +108,4 @@ When filing a bug about a session-resume failure (e.g. "No conversation found"),
 
 ## Maintenance
 
-After a Claude Code release, review `MODE_DISALLOWED_TOOLS` in `src/index.ts` — it gates which CC tools the AskClaude subagent may invoke per mode (`read` / `full` / `none`). Add new agentic tools (PlanMode, Task spawning, etc.) to the appropriate mode lists if they shouldn't be available to subagents.
+After a Claude Code release, review `getAskClaudeToolPolicy()` in `src/sdk-options.ts`. It gates which Claude Code tools the AskClaude subagent may invoke in `read`, `full`, and `none` modes. Add new agentic tools (PlanMode, Task spawning, and similar tools) to the appropriate policy if subagents should not use them.

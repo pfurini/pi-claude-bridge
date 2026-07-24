@@ -84,7 +84,13 @@ function countRecords(jsonlPath) {
 async function askToken(sid) {
 	return drain(query({
 		prompt: "What token did I ask you to remember? Reply with just the word.",
-		options: { resume: sid, model: MODEL, cwd: CWD, permissionMode: "bypassPermissions" },
+		options: {
+			resume: sid,
+			model: MODEL,
+			cwd: CWD,
+			permissionMode: "bypassPermissions",
+			allowDangerouslySkipPermissions: true,
+		},
 	}));
 }
 
@@ -140,7 +146,13 @@ test("rebuild over CC-written tool_use records resolves cleanly", { timeout: 180
 	// session file mid-execution. package.json is guaranteed to exist at CWD.
 	await drain(query({
 		prompt: "Use the Read tool to read package.json and tell me the top-level name field (one word).",
-		options: { resume: sid, model: MODEL, cwd: CWD, permissionMode: "bypassPermissions" },
+		options: {
+			resume: sid,
+			model: MODEL,
+			cwd: CWD,
+			permissionMode: "bypassPermissions",
+			allowDangerouslySkipPermissions: true,
+		},
 	}));
 
 	const afterToolUse = countRecords(s1.jsonlPath);

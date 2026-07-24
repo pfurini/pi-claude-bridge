@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Prompt cache efficiency test for pi-claude-bridge.
 # Runs a multi-turn conversation and verifies Anthropic prompt caching is working.
-# Expects: cacheRead grows across turns (system prompt + history are cache-hit),
-#   cacheWrite is small after the first turn (only new content is written).
+# Expects: every primary request after the warm-up turn has a high cache-hit
+# rate and nondecreasing cache reads as conversation history grows. Tool-result
+# continuation turns are reported separately because the SDK can use a distinct
+# cache shape for the first MCP continuation.
 #
 # Also checks session sync correctness: consecutive same-provider turns must
 # resume the session (Case 3), not rebuild it (Case 4). A rebuild would reset
@@ -51,20 +53,24 @@ fi
 echo ""
 echo "Turn-by-turn cache metrics:"
 echo "---"
-printf "%-6s  %8s  %8s  %8s  %8s  %s\n" "Turn" "Input" "CacheRd" "CacheWr" "Output" "CacheHit%"
+printf "%-6s  %-12s  %8s  %8s  %8s  %8s  %s\n" "Turn" "Kind" "Input" "CacheRd" "CacheWr" "Output" "CacheHit%"
 
 # Thresholds
 MIN_CACHE_HIT_PCT=90
 MIN_EXPECTED_TURNS=7    # 5 prompts + 2 tool sub-turns (write + read)
+MIN_EXPECTED_PRIMARY_TURNS=5
 MIN_CASE3_RESUMES=2
 EXPECTED_CASE1=1
 
 TURN=0
+PRIMARY_TURNS=0
 FAIL=0
-PREV_CACHE_READ=0
+PREV_PRIMARY_CACHE_READ=0
 
 while IFS= read -r line; do
   TURN=$((TURN + 1))
+  AGENT=$(echo "$line" | jq -r '.agent')
+  TURN_IN_AGENT=$(echo "$line" | jq -r '.turnInAgent')
   INPUT=$(echo "$line" | jq -r '.input')
   CACHE_READ=$(echo "$line" | jq -r '.cacheRead')
   CACHE_WRITE=$(echo "$line" | jq -r '.cacheWrite')
@@ -77,30 +83,57 @@ while IFS= read -r line; do
     HIT_PCT=0
   fi
 
-  printf "%-6s  %8s  %8s  %8s  %8s  %s%%\n" "$TURN" "$INPUT" "$CACHE_READ" "$CACHE_WRITE" "$OUTPUT" "$HIT_PCT"
-
-  # Assertions
-  if [ "$TURN" -ge 3 ]; then
-    # Turn 3+: cache read should be >= turn 2's (system prompt + history cached).
-    # It can stay flat when the prior turn's response was short.
-    if [ "$CACHE_READ" -lt "$PREV_CACHE_READ" ]; then
-      echo "  FAIL: Turn $TURN cacheRead ($CACHE_READ) decreased from turn $((TURN - 1)) ($PREV_CACHE_READ)"
-      FAIL=$((FAIL + 1))
-    fi
-    # Cache hit rate should be high
-    if [ "$HIT_PCT" -lt $MIN_CACHE_HIT_PCT ]; then
-      echo "  FAIL: Turn $TURN cache hit rate ${HIT_PCT}% < ${MIN_CACHE_HIT_PCT}%"
-      FAIL=$((FAIL + 1))
-    fi
+  if [ "$TURN_IN_AGENT" -eq 1 ]; then
+    KIND="prompt-$AGENT"
+    PRIMARY_TURNS=$((PRIMARY_TURNS + 1))
+  else
+    KIND="tool-result"
   fi
 
-  PREV_CACHE_READ=$CACHE_READ
-done < <(jq -c 'select(.type == "turn_end") | .message.usage | {input, cacheRead, cacheWrite, output}' "$LOGFILE")
+  printf "%-6s  %-12s  %8s  %8s  %8s  %8s  %s%%\n" "$TURN" "$KIND" "$INPUT" "$CACHE_READ" "$CACHE_WRITE" "$OUTPUT" "$HIT_PCT"
+
+  # Only compare primary prompt turns. MCP tool-result continuations can use a
+  # different cache shape, so comparing them with adjacent prompt turns produces
+  # false regressions even when the shared session is reused correctly.
+  if [ "$TURN_IN_AGENT" -eq 1 ]; then
+    if [ "$AGENT" -ge 2 ]; then
+      if [ "$CACHE_READ" -lt "$PREV_PRIMARY_CACHE_READ" ]; then
+        echo "  FAIL: Prompt $AGENT cacheRead ($CACHE_READ) decreased from the prior prompt ($PREV_PRIMARY_CACHE_READ)"
+        FAIL=$((FAIL + 1))
+      fi
+      if [ "$HIT_PCT" -lt $MIN_CACHE_HIT_PCT ]; then
+        echo "  FAIL: Prompt $AGENT cache hit rate ${HIT_PCT}% < ${MIN_CACHE_HIT_PCT}%"
+        FAIL=$((FAIL + 1))
+      fi
+    fi
+    PREV_PRIMARY_CACHE_READ=$CACHE_READ
+  fi
+done < <(jq -s -c '
+  reduce .[] as $event (
+    {agent: 0, turnInAgent: 0, rows: []};
+    if $event.type == "agent_start" then
+      .agent += 1 | .turnInAgent = 0
+    elif $event.type == "turn_end" then
+      .turnInAgent += 1 | .rows += [{
+        agent: .agent,
+        turnInAgent: .turnInAgent,
+        input: ($event.message.usage.input // 0),
+        cacheRead: ($event.message.usage.cacheRead // 0),
+        cacheWrite: ($event.message.usage.cacheWrite // 0),
+        output: ($event.message.usage.output // 0)
+      }]
+    else . end
+  ) | .rows[]
+' "$LOGFILE")
 
 echo "---"
 
 if [ "$TURN" -lt $MIN_EXPECTED_TURNS ]; then
   echo "FAIL: Only $TURN turns detected (expected >= $MIN_EXPECTED_TURNS with tool use sub-turns)"
+  FAIL=$((FAIL + 1))
+fi
+if [ "$PRIMARY_TURNS" -lt $MIN_EXPECTED_PRIMARY_TURNS ]; then
+  echo "FAIL: Only $PRIMARY_TURNS primary prompt turns detected (expected >= $MIN_EXPECTED_PRIMARY_TURNS)"
   FAIL=$((FAIL + 1))
 fi
 

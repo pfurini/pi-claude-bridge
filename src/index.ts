@@ -2,7 +2,7 @@ import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessage
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, keyHint, type CompactionEntry, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKRateLimitInfo, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -11,14 +11,16 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
+import { applyLongContext, assertClaudeCodeModelAvailable, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, type Config } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
-import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
+import { typeBoxToolToSdkMcpTool } from "./typebox-to-zod.js";
+import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions } from "./sdk-options.js";
+import { createSdkMessageState, parseSdkResult, parseSdkSystemInit, rateLimitResetDate, rateLimitUtilizationPercent, reduceSdkMessage, type SdkTerminalResult } from "./sdk-messages.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
@@ -138,31 +140,6 @@ function errorMessage(err: unknown): string {
 	return String(err);
 }
 
-// AskClaude mode presets — controls which CC tools are blocked per mode.
-// Only block tools that can't work (no pi TUI for user interaction).
-// Other CC tools (Agent, SendMessage, RemoteTrigger, Tasks, etc.) are intentionally not blocked.
-const ASKCLAUDE_ALWAYS_BLOCKED = [
-	"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
-	"ToolSearch", // probes for blocked tools, wastes tokens
-	"ScheduleWakeup", // no harness to fire wakeup from inside a delegated subagent
-];
-const MODE_DISALLOWED_TOOLS: Record<string, string[]> = {
-	full: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-	],
-	read: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-		"Write", "Edit", "Bash", "NotebookEdit",
-		"EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "TeamCreate", "TeamDelete",
-	],
-	none: [
-		...ASKCLAUDE_ALWAYS_BLOCKED,
-		"Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent",
-		"NotebookEdit", "EnterWorktree", "ExitWorktree",
-		"CronCreate", "CronDelete", "TeamCreate", "TeamDelete",
-		"WebFetch", "WebSearch",
-	],
-};
 
 // --- Session persistence ---
 
@@ -310,12 +287,6 @@ function extractIsolatedSummaryPrompt(messages: Context["messages"]): string {
 	return promptText;
 }
 
-function resultErrorText(message: SDKMessage): string {
-	const result = message as SDKMessage & { subtype?: string; errors?: unknown; error?: unknown };
-	if (Array.isArray(result.errors)) return result.errors.map(String).join("\n");
-	if (typeof result.error === "string") return result.error;
-	return `Claude Code summary failed: ${result.subtype ?? "unknown result"}`;
-}
 
 function isolatedStreamFn(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = newAssistantMessageEventStream();
@@ -346,30 +317,21 @@ async function runIsolatedSummary(
 
 		sdkQuery = query({
 			prompt: promptText,
-			options: {
+			options: buildIsolatedSummaryQueryOptions({
 				cwd,
-				env: { ...process.env, DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
-				tools: [],
-				strictMcpConfig: true,
-				settingSources: [] as SettingSource[],
-				skills: [],
-				persistSession: false,
+				baseEnv: process.env,
 				systemPrompt: context.systemPrompt,
-				model: cliModel,
-				maxTurns: 1,
-				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-				...makeCliDebugOptions("compact-summary"),
-			},
+				cliModel,
+				claudeExecutable,
+				debugOptions: makeCliDebugOptions("compact-summary"),
+			}),
 		});
-
 		if (options?.signal) {
 			if (options.signal.aborted) onAbort();
 			else options.signal.addEventListener("abort", onAbort, { once: true });
 		}
 
-		let assistantText = "";
-		let finalText = "";
-		let errorText: string | undefined;
+		const messageState = createSdkMessageState();
 		let firstEventLogged = false;
 
 		for await (const message of sdkQuery) {
@@ -379,18 +341,8 @@ async function runIsolatedSummary(
 			}
 			if (wasAborted) break;
 
-			if (message.type === "assistant") {
-				for (const block of (message as any).message?.content ?? []) {
-					if (block.type === "text" && typeof block.text === "string") assistantText += block.text;
-				}
-			} else if (message.type === "result") {
-				logServedContextWindow("compact summary", message, model);
-				if (message.subtype === "success") {
-					finalText = message.result || assistantText;
-				} else {
-					errorText = resultErrorText(message);
-				}
-			}
+			const reduced = reduceSdkMessage(messageState, message, { failureLabel: "Claude Code summary" });
+			if (reduced.result) logServedContextWindow("compact summary", message, model);
 		}
 
 		if (wasAborted) {
@@ -401,7 +353,11 @@ async function runIsolatedSummary(
 			return;
 		}
 
-		const text = finalText || assistantText;
+		if (messageState.result && !messageState.result.successful) {
+			debugTerminalFailure("compact summary", messageState.result);
+		}
+		const text = messageState.result?.successful ? messageState.result.text : messageState.assistantText;
+		const errorText = messageState.result?.successful ? undefined : messageState.result?.errorText;
 		if (errorText || !text.trim()) {
 			const msg = errorText ?? "Claude Code summary returned empty text";
 			debug(`compact summary: error ${msg}`);
@@ -706,11 +662,8 @@ function resolveMcpTools(context: Context, excludeToolName?: string): {
 // correct query's state while multiple queries run concurrently.
 function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, ReturnType<typeof createSdkMcpServer>> | undefined {
 	if (!tools.length) return undefined;
-	const mcpTools = tools.map((tool) => ({
-		name: tool.name,
-		description: tool.description,
-		inputSchema: jsonSchemaToZodShape(tool.parameters),
-		handler: async () => {
+	const mcpTools = tools.map((tool) =>
+		typeBoxToolToSdkMcpTool(tool, async () => {
 			const toolCallId = queryCtx.turnToolCallIds[queryCtx.nextHandlerIdx++];
 			if (!toolCallId) debug(`WARNING: mcp handler ${tool.name} has no toolCallId (idx=${queryCtx.nextHandlerIdx - 1}, available=${queryCtx.turnToolCallIds.length})`);
 			if (toolCallId && queryCtx.pendingResults.has(toolCallId)) {
@@ -723,9 +676,14 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 			return new Promise<McpResult>((resolve) => {
 				queryCtx.pendingToolCalls.set(toolCallId, { toolName: tool.name, resolve });
 			});
-		},
-	}));
-	const server = createSdkMcpServer({ name: MCP_SERVER_NAME, version: "1.0.0", tools: mcpTools });
+		}),
+	);
+	const server = createSdkMcpServer({
+		name: MCP_SERVER_NAME,
+		version: "1.0.0",
+		tools: mcpTools,
+		alwaysLoad: true,
+	});
 	return { [MCP_SERVER_NAME]: server };
 }
 
@@ -823,11 +781,16 @@ function finalizeCurrentStream(c: QueryContext, stopReason?: string): void {
 	if (!c.currentPiStream || !c.turnOutput) return;
 	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: c.turnOutput!.stopReason, error: c.turnOutput!.errorMessage})}`);
 	if (!c.turnStarted) ensureTurnStarted(c);
-	const reason = stopReason === "length" ? "length" : "stop";
 	const stream = c.currentPiStream;
-	stream!.push({ type: "done", reason, message: c.turnOutput });
+	const isError = stopReason === "error" || c.turnOutput.stopReason === "error";
+	if (isError) {
+		stream.push({ type: "error", reason: "error", error: c.turnOutput });
+	} else {
+		const reason = stopReason === "length" ? "length" : "stop";
+		stream.push({ type: "done", reason, message: c.turnOutput });
+	}
 	markStreamComplete(stream);
-	stream!.end();
+	stream.end();
 	c.currentPiStream = null;
 }
 
@@ -1003,6 +966,57 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	}
 }
 
+function debugTerminalFailure(label: string, result: SdkTerminalResult): void {
+	debug(
+		`${label}: terminal failure`,
+		`subtype=${result.subtype} isError=${result.isError}`,
+		`terminalReason=${result.terminalReason ?? "none"}`,
+		`session=${result.sessionId?.slice(0, 8) ?? "none"}`,
+	);
+}
+
+function processTerminalResultMessage(message: SDKMessage, model: Model<any>, queryCtx: QueryContext) {
+	logServedContextWindow("result", message, model);
+	const terminalResult = parseSdkResult(message);
+	if (!terminalResult) return undefined;
+	if (!terminalResult.successful) {
+		debugTerminalFailure("provider", terminalResult);
+		ensureTurnStarted(queryCtx);
+		if (queryCtx.turnOutput) {
+			queryCtx.turnOutput.stopReason = "error";
+			queryCtx.turnOutput.errorMessage = terminalResult.errorText;
+		}
+		return terminalResult;
+	}
+	if (queryCtx.turnSawStreamEvent) return terminalResult;
+
+	ensureTurnStarted(queryCtx);
+	const text = terminalResult.text;
+	queryCtx.turnBlocks.push({ type: "text", text });
+	const idx = queryCtx.turnBlocks.length - 1;
+	queryCtx.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: queryCtx.turnOutput });
+	queryCtx.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: queryCtx.turnOutput });
+	queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
+	return terminalResult;
+}
+
+function systemInitSessionId(message: SDKMessage): string | undefined {
+	return parseSdkSystemInit(message)?.sessionId;
+}
+
+function processRateLimitMessage(message: SDKMessage): void {
+	const info = (message as SDKMessage & { rate_limit_info?: SDKRateLimitInfo })
+		.rate_limit_info;
+	debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
+	if (info?.status === "rejected") {
+		const resetsAt = rateLimitResetDate(info.resetsAt)?.toLocaleTimeString() ?? "unknown";
+		piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+	} else if (info?.status === "allowed_warning") {
+		const utilization = rateLimitUtilizationPercent(info.utilization);
+		piUI?.notify(`Claude rate limit warning: ${utilization}% used (${info.rateLimitType ?? ""})`, "warning");
+	}
+}
+
 /** Background consumer: iterates the SDK generator, pushing events to currentPiStream.
  *  Runs until the query ends. Per turn, the SDK yields stream_events (deltas), then
  *  an assistant message (completed blocks). On tool_use, the stream is ended by
@@ -1028,36 +1042,19 @@ async function consumeQuery(
 			case "assistant":
 				processAssistantMessage(message, model, customToolNameToPi, queryCtx);
 				break;
-			case "result":
-				logServedContextWindow("result", message, model);
-				if (!queryCtx.turnSawStreamEvent && message.subtype === "success") {
-					ensureTurnStarted(queryCtx);
-					const text = message.result || "";
-					queryCtx.turnBlocks.push({ type: "text", text });
-					const idx = queryCtx.turnBlocks.length - 1;
-					queryCtx.currentPiStream?.push({ type: "text_start", contentIndex: idx, partial: queryCtx.turnOutput });
-					queryCtx.currentPiStream?.push({ type: "text_delta", contentIndex: idx, delta: text, partial: queryCtx.turnOutput });
-					queryCtx.currentPiStream?.push({ type: "text_end", contentIndex: idx, content: text, partial: queryCtx.turnOutput });
-				}
+			case "result": {
+				const terminalResult = processTerminalResultMessage(message, model, queryCtx);
+				capturedSessionId = terminalResult?.sessionId ?? capturedSessionId;
 				break;
+			}
 			case "system":
-				if ((message as any).subtype === "init" && (message as any).session_id) {
-					capturedSessionId = (message as any).session_id;
-				}
+				capturedSessionId = systemInitSessionId(message) ?? capturedSessionId;
 				break;
 			case "user":
 				break; // SDK echo of user prompt — not needed
-			case "rate_limit_event": {
-				const info = (message as any).rate_limit_info;
-				debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
-				if (info?.status === "rejected") {
-					const resetsAt = info.resetsAt ? new Date(info.resetsAt).toLocaleTimeString() : "unknown";
-					piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
-				} else if (info?.status === "allowed_warning") {
-					piUI?.notify(`Claude rate limit warning: ${Math.round(info.utilization ?? 0)}% used (${info.rateLimitType ?? ""})`, "warning");
-				}
+			case "rate_limit_event":
+				processRateLimitMessage(message);
 				break;
-			}
 			default:
 				debug("consumeQuery: unhandled SDK message type", message.type);
 				break;
@@ -1207,9 +1204,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
 	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
-	// token overhead. --strict-mcp-config tells the binary to use ONLY mcpServers passed
-	// programmatically and ignore filesystem MCP entries — applied unconditionally because
-	// settingSources=undefined does NOT give isolation (the CC default loads all sources).
+	// token overhead. The typed strictMcpConfig option tells the binary to use only
+	// programmatic mcpServers and ignore filesystem MCP entries. It is enabled by
+	// default because settingSources=undefined still loads Claude Code defaults.
 	const settingSources: SettingSource[] | undefined = appendSystemPrompt
 		? undefined
 		: providerSettings.settingSources ?? ["user", "project"];
@@ -1227,41 +1224,30 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
-	const extraArgs: Record<string, string | null> = { model: cliModel };
-	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
-	if (effort) extraArgs["thinking-display"] = "summarized";
 
-	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
-	// when the user is logged into Anthropic). These are a separate code path from
-	// filesystem MCP and are NOT blocked by --strict-mcp-config or settingSources=undefined.
-	// The native CC binary gates them on env var ENABLE_CLAUDEAI_MCP_SERVERS: setting it
-	// to "0"/"false"/"no"/"off" makes the loader return early before any cloud fetch.
+	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth).
+	// strictMcpConfig blocks them in the target SDK; the environment switch remains as
+	// defense in depth for older executable overrides and alternate loading paths.
 	// DISABLE_AUTO_COMPACT=1: pi owns context-management and propagates its own
 	// /compact via session_compact (see handler in default export). Letting CC
 	// also autocompact would double-flush the prompt cache and races pi's
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
-	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" };
-	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
+	const queryOptions = buildProviderQueryOptions({
 		cwd,
-		env: childEnv,
-		tools: [],
-		permissionMode: "bypassPermissions",
-		includePartialMessages: true,
-		systemPrompt: {
-			type: "preset", preset: "claude_code",
-			append: systemPromptAppend ? systemPromptAppend : undefined,
-		},
-		extraArgs,
-		...(effort ? { effort } : {}),
-		...(settingSources ? { settingSources } : {}),
-		...(mcpServers ? { mcpServers } : {}),
-		...(resumeSessionId ? { resume: resumeSessionId } : {}),
-		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-		...makeCliDebugOptions("provider"),
-	};
+		baseEnv: process.env,
+		cliModel,
+		systemPromptAppend,
+		effort,
+		settingSources,
+		mcpServers,
+		resumeSessionId,
+		claudeExecutable,
+		strictMcpConfigEnabled,
+		debugOptions: makeCliDebugOptions("provider"),
+	});
 
 	debug("provider: fresh query",
 		`model=${cliModel} msgs=${context.messages.length} tools=${mcpTools.length}`,
@@ -1427,7 +1413,6 @@ async function promptAndWait(
 	options?: {
 		systemPrompt?: string;
 		appendSkills?: boolean;
-		onStreamUpdate?: (responseText: string) => void;
 		model?: string;
 		thinking?: string;
 		isolated?: boolean;
@@ -1438,6 +1423,7 @@ async function promptAndWait(
 	const requestedModel = options?.model ?? "opus";
 	const model = resolveModel(requestedModel);
 	const modelId = model?.id ?? requestedModel;
+	if (!model) assertClaudeCodeModelAvailable(modelId, longContextSettings);
 	const cliModel = model ? claudeCodeModelId(model, longContextSettings) : modelId;
 
 	// Session resume for shared mode — reuse provider's session if it exists,
@@ -1458,9 +1444,6 @@ async function promptAndWait(
 		}
 	}
 
-	// Mode → disallowed tools
-	const disallowedTools = MODE_DISALLOWED_TOOLS[mode] ?? [];
-
 	// Skills append
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
 		? extractSkillsBlock(options.systemPrompt) : undefined;
@@ -1471,11 +1454,6 @@ async function promptAndWait(
 
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
-	const extraArgs: Record<string, string | null> = {
-		"strict-mcp-config": null,
-		model: cliModel,
-	};
-	if (effort) extraArgs["thinking-display"] = "summarized";
 
 	debug("askClaude:",
 		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,
@@ -1484,22 +1462,18 @@ async function promptAndWait(
 
 	const sdkQuery = query({
 		prompt,
-		options: {
+		options: buildAskClaudeQueryOptions({
 			cwd,
-			env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
-			permissionMode: "bypassPermissions",
-			...(disallowedTools.length ? { disallowedTools } : {}),
-			...(effort ? { effort } : {}),
-			systemPrompt: skillsBlock
-				? { type: "preset", preset: "claude_code", append: skillsBlock }
-				: undefined,
-			settingSources: ["user", "project"] as SettingSource[],
-			extraArgs,
-			...(resumeSessionId ? { resume: resumeSessionId } : {}),
-			...(options?.isolated ? { persistSession: false } : {}),
-			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-			...makeCliDebugOptions("askclaude"),
-		},
+			baseEnv: process.env,
+			cliModel,
+			mode,
+			effort,
+			skillsBlock,
+			resumeSessionId,
+			isolated: options?.isolated,
+			claudeExecutable,
+			debugOptions: makeCliDebugOptions("askclaude"),
+		}),
 	});
 
 	// Abort handling
@@ -1513,7 +1487,7 @@ async function promptAndWait(
 
 	let responseText = "";
 	let sdkMessageCount = 0;
-	let textDeltaCount = 0;
+	const messageState = createSdkMessageState();
 	let resultSubtype: string | undefined;
 
 	try {
@@ -1521,56 +1495,56 @@ async function promptAndWait(
 			if (wasAborted) break;
 			sdkMessageCount++;
 
-			switch (message.type) {
-				case "stream_event": {
-					const event = (message as SDKMessage & { event: any }).event;
-					// Text deltas → accumulate and stream
-					if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
-						responseText += event.delta.text;
-						textDeltaCount++;
-						options?.onStreamUpdate?.(responseText);
-					}
-					// Tool call start → track for action summary progress
-					if (event?.type === "content_block_start" && event.content_block?.type === "tool_use") {
-						debug(`askClaude: tool_use start: ${event.content_block.name}`);
-						toolCalls.set(event.content_block.id, {
-							name: mapToolName(event.content_block.name),
-							status: "running",
-						});
-					}
-					break;
+			const reduced = reduceSdkMessage(messageState, message);
+			if (reduced.textDelta !== undefined) {
+				responseText = messageState.streamedText;
+			}
+			if (reduced.toolUseStarted) {
+				debug(`askClaude: tool_use start: ${reduced.toolUseStarted.name}`);
+				toolCalls.set(reduced.toolUseStarted.id, {
+					name: mapToolName(reduced.toolUseStarted.name),
+					status: "running",
+				});
+			}
+			for (const toolUse of reduced.toolUsesCompleted ?? []) {
+				toolCalls.set(toolUse.id, {
+					name: mapToolName(toolUse.name),
+					status: "complete",
+					rawInput: toolUse.input,
+				});
+			}
+			if (reduced.result) {
+				resultSubtype = reduced.result.subtype;
+				const result = message as SDKMessage & {
+					result?: unknown;
+					usage?: {
+						input_tokens?: number;
+						output_tokens?: number;
+						cache_read_input_tokens?: number;
+						cache_creation_input_tokens?: number;
+					};
+					num_turns?: number;
+				};
+				if (result.usage) {
+					debug(`askClaude: result usage: in=${result.usage.input_tokens} out=${result.usage.output_tokens} cacheRead=${result.usage.cache_read_input_tokens ?? 0} cacheWrite=${result.usage.cache_creation_input_tokens ?? 0} turns=${result.num_turns ?? "?"}`);
 				}
-				case "assistant": {
-					// Update tool calls with full input for action summary
-					for (const block of (message as any).message?.content ?? []) {
-						if (block.type === "tool_use") {
-							toolCalls.set(block.id, {
-								name: mapToolName(block.name),
-								status: "complete",
-								rawInput: block.input,
-							});
-						}
-					}
-					break;
-				}
-				case "result": {
-					resultSubtype = message.subtype;
-					const r = message as any;
-					if (r.usage) {
-						debug(`askClaude: result usage: in=${r.usage.input_tokens} out=${r.usage.output_tokens} cacheRead=${r.usage.cache_read_input_tokens ?? 0} cacheWrite=${r.usage.cache_creation_input_tokens ?? 0} turns=${r.num_turns ?? "?"}`);
-					}
-					if (!responseText && message.subtype === "success" && message.result) {
-						responseText = message.result;
-					}
-					break;
+				const resultText = typeof result.result === "string" ? result.result : "";
+				if (!responseText && reduced.result.successful && resultText) {
+					responseText = resultText;
 				}
 			}
+		}
+
+		if (!wasAborted && messageState.result && !messageState.result.successful) {
+			debugTerminalFailure("askClaude", messageState.result);
+			const failure = messageState.result.errorText ?? `Claude Code query failed: ${messageState.result.subtype}`;
+			throw new Error(failure);
 		}
 
 		const stopReason = wasAborted ? "cancelled" : "stop";
 		debug(`askClaude: done`,
 			`stopReason=${stopReason} resultSubtype=${resultSubtype ?? "none"}`,
-			`sdkMessages=${sdkMessageCount} textDeltas=${textDeltaCount} responseLen=${responseText.length}`,
+			`sdkMessages=${sdkMessageCount} textDeltas=${messageState.textDeltaCount} responseLen=${responseText.length}`,
 			`toolCalls=${toolCalls.size}`);
 		return { responseText, stopReason };
 	} finally {

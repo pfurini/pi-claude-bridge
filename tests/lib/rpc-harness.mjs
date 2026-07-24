@@ -15,6 +15,54 @@ const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const ENV_FILE = resolve(DIR, ".env.test");
 if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
 
+const DEFAULT_SHUTDOWN_GRACE_MS = 2_000;
+const DEFAULT_SHUTDOWN_KILL_MS = 2_000;
+
+async function closesWithin(closePromise, timeoutMs) {
+	let timer;
+	try {
+		return await Promise.race([
+			closePromise.then(() => true),
+			new Promise((resolveTimeout) => {
+				timer = setTimeout(() => resolveTimeout(false), timeoutMs);
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
+export async function terminateChild(child, closePromise, options = {}) {
+	if (!child || !closePromise) return;
+	const {
+		shutdownGraceMs = DEFAULT_SHUTDOWN_GRACE_MS,
+		shutdownKillMs = DEFAULT_SHUTDOWN_KILL_MS,
+		rpcLogPath = "unknown",
+		debugLogPath = "unknown",
+		onDiagnostic,
+	} = options;
+	if (child.exitCode !== null || child.signalCode !== null) {
+		await closePromise;
+		return;
+	}
+
+	const pid = child.pid ?? "unknown";
+	child.kill("SIGTERM");
+	if (await closesWithin(closePromise, shutdownGraceMs)) return;
+
+	const diagnostic =
+		`RPC child pid=${pid} did not exit within ${shutdownGraceMs}ms after SIGTERM; ` +
+		`escalating to SIGKILL (rpcLog=${rpcLogPath}, debugLog=${debugLogPath})`;
+	onDiagnostic?.(diagnostic);
+	child.kill("SIGKILL");
+	if (await closesWithin(closePromise, shutdownKillMs)) return;
+
+	throw new Error(
+		`RPC child pid=${pid} did not exit within ${shutdownKillMs}ms after SIGKILL ` +
+		`(rpcLog=${rpcLogPath}, debugLog=${debugLogPath})`,
+	);
+}
+
 /**
  * Create an RPC harness for pi integration tests.
  *
@@ -24,9 +72,19 @@ if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
  * @param {Object} opts.env - Extra env vars to set on the pi process
  * @param {string} opts.cwd - Working directory for the pi process (default: project root)
  * @param {number} opts.defaultTimeout - Default timeout for send/wait operations (default: 30000)
+ * @param {number} opts.shutdownGraceMs - Time to wait after SIGTERM (default: 2000)
+ * @param {number} opts.shutdownKillMs - Time to wait after SIGKILL (default: 2000)
  */
 export function createRpcHarness(opts) {
-	const { name, args = [], env = {}, cwd = DIR, defaultTimeout = 30_000 } = opts;
+	const {
+		name,
+		args = [],
+		env = {},
+		cwd = DIR,
+		defaultTimeout = 30_000,
+		shutdownGraceMs = DEFAULT_SHUTDOWN_GRACE_MS,
+		shutdownKillMs = DEFAULT_SHUTDOWN_KILL_MS,
+	} = opts;
 
 	const LOGDIR = `${DIR}/.test-output`;
 	mkdirSync(LOGDIR, { recursive: true });
@@ -37,25 +95,28 @@ export function createRpcHarness(opts) {
 	// Strip any local node_modules from PATH so we use the globally-installed `pi`.
 	const cleanPath = process.env.PATH.split(":").filter((p) => !p.includes("node_modules")).join(":");
 
-	let pi, rpcLog;
+	let pi, piClosePromise, rpcLog;
 	let buffer = "";
 	let listeners = [];
 	let reqId = 0;
 
 	function start() {
+		buffer = "";
 		// Truncate the debug log on each run so test assertions that grep the
 		// log see only this run's output, not accumulated history from prior
 		// failing runs. RPC log is still append so cross-run comparisons work.
 		writeFileSync(DEBUG_LOG, "");
 		rpcLog = createWriteStream(RPC_LOG, { flags: "a" });
+		const currentLog = rpcLog;
 		const spawnArgs = ["--no-session", "-ne", "-e", DIR, "--mode", "rpc", ...args];
 		pi = spawn("pi", spawnArgs, {
 			cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 			env: { ...process.env, PATH: cleanPath, CLAUDE_BRIDGE_DEBUG: "1", CLAUDE_BRIDGE_DEBUG_PATH: DEBUG_LOG, ...env },
 		});
+		piClosePromise = new Promise((resolveClose) => pi.once("close", resolveClose));
 
-		pi.stderr.on("data", (d) => rpcLog.write(d));
+		pi.stderr.on("data", (d) => currentLog.write(d));
 
 		const decoder = new StringDecoder("utf8");
 		pi.stdout.on("data", (chunk) => {
@@ -67,7 +128,7 @@ export function createRpcHarness(opts) {
 				buffer = buffer.slice(i + 1);
 				try {
 					const msg = JSON.parse(line);
-					rpcLog.write(`< ${line}\n`);
+					currentLog.write(`< ${line}\n`);
 					for (const fn of [...listeners]) fn(msg);
 				} catch {}
 			}
@@ -75,13 +136,37 @@ export function createRpcHarness(opts) {
 	}
 
 	async function startAndWait(ms = 2000) {
+		if (pi) await stop();
 		start();
 		await new Promise((r) => setTimeout(r, ms));
 	}
 
-	function stop() {
-		pi?.kill();
-		return new Promise((r) => rpcLog?.end(r));
+	async function stop() {
+		const child = pi;
+		const closed = piClosePromise;
+		const log = rpcLog;
+
+		try {
+			await terminateChild(child, closed, {
+				shutdownGraceMs,
+				shutdownKillMs,
+				rpcLogPath: RPC_LOG,
+				debugLogPath: DEBUG_LOG,
+				onDiagnostic: (diagnostic) => {
+					if (log && !log.writableEnded) log.write(`[shutdown] ${diagnostic}\n`);
+				},
+			});
+		} finally {
+			if (log && !log.writableEnded) {
+				await new Promise((resolveEnd) => log.end(resolveEnd));
+			}
+
+			if (pi === child) {
+				pi = undefined;
+				piClosePromise = undefined;
+				rpcLog = undefined;
+			}
+		}
 	}
 
 	function addListener(fn) {

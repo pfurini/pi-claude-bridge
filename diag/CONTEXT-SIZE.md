@@ -1,110 +1,174 @@
 # Context windows served by the Claude Agent SDK
 
-Measured context windows from the Claude Agent SDK (`query()`), per model id,
-subscription plan, and Extra Usage (metered credits) setting.
+Current target-binary measurements from Claude Agent SDK `query()`, grouped by
+requested model ID and Pro Extra Usage state.
+
+## Scope and evidence labels
+
+This document reports Claude Agent SDK `0.3.218` with bundled Claude Code
+`2.1.218`, measured on 2026-07-23. The current matrix covers one Pro
+subscription account only.
+
+Evidence is labeled as follows:
+
+- **Directly measured:** observed in the saved target-binary reports or a focused
+  bridge-level served-window check.
+- **Inferred:** derived from a measured full model ID and a separately measured
+  alias mapping, but not run in that exact state.
+- **User-reported:** supplied by the user and not reproduced in this phase.
+- **Untested:** no Phase 8 result exists. No behavior claim is made.
 
 ## Method
 
-`diag/context-size.mjs` calls the SDK for each model id × {bare, `[1m]`} with
-one trivial turn and records `result.modelUsage[*].contextWindow` plus error
-details. Auth is subscription OAuth (claude.ai), no `ANTHROPIC_API_KEY`.
+`diag/context-size.mjs` calls the SDK for each model ID in bare and `[1m]`
+forms. Each probe sends one trivial turn and records
+`result.modelUsage[*].contextWindow`, maximum output tokens, terminal errors,
+rate-limit metadata, and the selected Claude Code version.
 
+```sh
+env -u ANTHROPIC_API_KEY node diag/context-size.mjs pro
 ```
-node diag/context-size.mjs pro        # current tier (pro | max)
-node diag/context-size.mjs --compare  # diff latest pro-* vs max-* JSON
+
+`diag/model-aliases.mjs` measures the documented `fable`, `opus`, `sonnet`, and
+`haiku` aliases separately:
+
+```sh
+env -u ANTHROPIC_API_KEY node diag/model-aliases.mjs pro on
 ```
 
-Raw JSON + MD per run save to `.test-output/context-size/` (gitignored).
+Both diagnostics save JSON and Markdown reports under the gitignored
+`.test-output/context-size/` directory. Extra Usage can consume metered credits.
+Warn the user and obtain explicit confirmation before running an eligible probe.
 
-## Environment
+## Measurement environment
 
-- Claude Agent SDK `@anthropic-ai/claude-agent-sdk` 0.2.141 (bundled Claude Code 2.1.141)
-- Auth: subscription OAuth (claude.ai), `ANTHROPIC_API_KEY` unset
-- Options: `settingSources: []`, `tools: []`, `maxTurns: 1`, `persistSession: false`
-- Date: 2026-06-26
+- Date: 2026-07-23.
+- Host: Darwin arm64 with Node `v26.5.0` and npm `11.17.0`.
+- Claude Agent SDK: `@anthropic-ai/claude-agent-sdk` `0.3.218`.
+- Bundled and selected Claude Code: `2.1.218`.
+- Authentication: Pro subscription OAuth with `ANTHROPIC_API_KEY` unset.
+- Directly measured Extra Usage states: disabled and enabled.
+- SDK options: `settingSources: []`, `tools: []`, `maxTurns: 1`, and
+  `persistSession: false`.
+- Extra Usage remained enabled on the account after Phase 8.
 
-## Served context windows
+## Direct Pro measurements
 
-Four conditions, each run with the probe above. Values are tokens; `1M` =
-1000000, `200K` = 200000. `429`/`400` = request rejected (see
-[Error shapes](#error-shapes)). One run predates full error-field capture (see
-the footnote below the table).
+Values are served input context / maximum output tokens. `1M` is 1,000,000
+tokens and `200K` is 200,000 tokens. `429` means the request required Extra
+Usage credits. `400` means the requested long-context form was incompatible
+with subscription OAuth.
 
-| requested id              | Pro, credits off | Pro, credits on | Max, credits off | Max, credits on |
-|---------------------------|------------------|-----------------|------------------|-----------------|
-| `claude-opus-4-8`         | 200K             | 200K            | 200K             | 200K            |
-| `claude-opus-4-8[1m]`    | 1M               | 1M              | 1M               | 1M              |
-| `claude-opus-4-7`         | 1M               | 1M              | 1M               | 1M              |
-| `claude-opus-4-7[1m]`    | 1M               | 1M              | 1M               | 1M              |
-| `claude-opus-4-6`         | 200K             | 200K            | 200K             | 200K            |
-| `claude-opus-4-6[1m]`    | 429              | 1M              | 1M               | 1M              |
-| `claude-fable-5`          | 200K             | —               | —                | —               |
-| `claude-fable-5[1m]`     | 1M               | —               | —                | —               |
-| `claude-sonnet-5`         | 200K             | —               | —                | —               |
-| `claude-sonnet-5[1m]`    | 1M               | —               | —                | —               |
-| `claude-sonnet-4-6`       | 200K             | 200K            | 200K             | 200K            |
-| `claude-sonnet-4-6[1m]`  | 429              | 1M              | 429              | 1M              |
-| `claude-haiku-4-5`        | 200K             | 200K            | 200K             | 200K            |
-| `claude-haiku-4-5[1m]`   | 429†             | 400             | 400              | 400             |
+| Requested model ID | Extra Usage disabled | Extra Usage enabled | Direct conclusion |
+| --- | ---: | ---: | --- |
+| `claude-opus-4-8` | 1M / 64K | 1M / 64K | Bare serves 1M |
+| `claude-opus-4-8[1m]` | 1M / 64K | 1M / 64K | Explicit 1M remains valid |
+| `claude-opus-4-7` | 1M / 64K | 1M / 64K | Bare serves 1M |
+| `claude-opus-4-7[1m]` | 1M / 64K | 1M / 64K | Explicit 1M remains valid |
+| `claude-opus-4-6` | 200K / 64K | 200K / 64K | Bare serves 200K |
+| `claude-opus-4-6[1m]` | 429 | 1M / 64K | Extra Usage is required on Pro |
+| `claude-fable-5` | 429 | 1M / 64K | The entire model requires Extra Usage on Pro |
+| `claude-fable-5[1m]` | 429 | 1M / 64K | The same gate applies; success serves the bare canonical ID |
+| `claude-sonnet-5` | 1M / 64K | 1M / 64K | Bare serves 1M |
+| `claude-sonnet-5[1m]` | 1M / 64K | 1M / 64K | Explicit 1M remains valid |
+| `claude-sonnet-4-6` | 200K / 32K | 200K / 32K | Bare serves 200K |
+| `claude-sonnet-4-6[1m]` | 429 | 1M / 32K | Extra Usage is required on Pro |
+| `claude-haiku-4-5` | 200K / 32K | 200K / 32K | Bare serves 200K |
+| `claude-haiku-4-5[1m]` | 400 | 400 | Subscription OAuth rejects the 1M form |
 
-Raw runs: `.test-output/context-size/{pro,max}-2026-06-26T21-*.json`
+Saved direct reports:
 
-`—` = not yet tested in that condition. Max-credits-on matched Pro-credits-on
-for every cell tested in both (shown for completeness).
+- Extra Usage disabled:
+  `.test-output/context-size/pro-2026-07-23T21-22-19-695Z.{json,md}`.
+- Extra Usage enabled:
+  `.test-output/context-size/pro-2026-07-23T21-26-26-003Z.{json,md}`.
 
-† **Inferred, not directly measured.** The Pro-credits-off run predates
-error-field capture; its three rejected `[1m]` rows have no recorded HTTP status
-or error text. `opus-4-6[1m]` was confirmed 429 via a separate one-off dump;
-`sonnet-4-6[1m]` and `haiku-4-5[1m]` are assumed the same by analogy.
+Every row recorded Agent SDK `0.3.218`, Claude Code `2.1.218`, and
+`ANTHROPIC_API_KEY=false`. Disabled-state rate-limit events reported
+`overageStatus: "rejected"` and `overageDisabledReason: "org_level_disabled"`.
+The enabled Fable rows reported `rateLimitType: "overage"` and
+`overageInUse: true`, directly confirming use of the Extra Usage path.
+
+## Direct alias measurements
+
+Aliases were measured on Pro with Extra Usage enabled. Every row reported
+`system:init.claude_code_version === "2.1.218"`.
+
+| Requested alias | `system:init.model` | Served usage key | Canonical model | Served input / max output |
+| --- | --- | --- | --- | ---: |
+| `fable` | `claude-fable-5` | `claude-fable-5` | `claude-fable-5` | 1M / 64K |
+| `opus` | `claude-opus-4-8` | `claude-opus-4-8` | `claude-opus-4-8` | 1M / 64K |
+| `sonnet` | `claude-sonnet-5` | `claude-sonnet-5` | `claude-sonnet-5` | 1M / 64K |
+| `haiku` | `claude-haiku-4-5-20251001` | `claude-haiku-4-5-20251001` | `claude-haiku-4-5` | 200K / 32K |
+
+Saved alias report:
+
+- `.test-output/context-size/pro-extra-on-aliases-2026-07-23T21-38-11-147Z.{json,md}`.
+
+## Bridge-level served-window parity
+
+Two authenticated bridge checks directly compared Claude Code's served metadata
+with the model registered in Pi:
+
+- Haiku: served `200000`, registered `200000`, maximum output `32000`.
+- Fable on Pro with Extra Usage enabled: served `1000000`, registered
+  `1000000`, maximum output `64000`.
+
+These values come from `result.modelUsage[*].contextWindow`. The probes did not
+send payloads close to the limits, so they verify served-limit metadata rather
+than boundary-size behavior.
 
 ## Error shapes
 
-Rejected `[1m]` turns surface in the SDK message stream, not `result.errors[]`
-(always empty). Sequence: `system:init → rate_limit_event → assistant →
-result:success` — `subtype: "success"` despite `is_error: true`. Error text in
-`result.result`; HTTP status in `result.api_error_status`.
+Rejected turns appear in the SDK stream as `result` messages with
+`subtype: "success"` and `is_error: true`. The error text is in `result.result`
+and the HTTP status is in `result.api_error_status`; `result.errors` remains
+empty. The bridge must therefore treat `is_error` as authoritative.
 
-### Credit-gated rejection (429) — e.g. `opus-4-6[1m]` on Pro, credits off
+### Credit-gated rejection (HTTP 429)
 
-```json
-// rate_limit_event
-{ "rate_limit_info": { "status": "rejected", "overageDisabledReason": "org_level_disabled", "isUsingOverage": false } }
+Pro with Extra Usage disabled returned 429 for Opus 4.6 `[1m]`, Sonnet 4.6
+`[1m]`, and both Fable forms. Rate-limit metadata included
+`status: "rejected"`, `overageDisabledReason: "org_level_disabled"`, and
+`errorCode: "credits_required"`.
 
-// assistant (synthetic)
-{ "error": "rate_limit", "message": { "model": "<synthetic>", "stop_reason": "stop_sequence",
-  "content": [{ "type": "text", "text": "Usage credits are required for long context requests." }] } }
+### Capability rejection (HTTP 400)
 
-// result
-{ "subtype": "success", "is_error": true, "api_error_status": 429,
-  "result": "Usage credits are required for long context requests.", "modelUsage": {}, "total_cost_usd": 0 }
+Haiku `[1m]` returned HTTP 400 with subscription OAuth in both Extra Usage
+states:
+
+```text
+API Error: 400 This authentication style is incompatible with the long context beta header.
 ```
 
-### Capability rejection (400) — e.g. `haiku-4-5[1m]` (not 1M-capable)
+## Differences from the Claude Code 2.1.141 record
 
-Same shape, `api_error_status: 400`, no `rate_limit_event`. Text varies:
+Compared with the earlier 2026-06-26 Pro measurements using Agent SDK
+`0.2.141` and Claude Code `2.1.141`:
 
-- Pro, credits on: `"This authentication style is incompatible with the long context beta header."`
-- Max (either): `"The long context beta is not yet available for this subscription."`
+- Bare Opus 4.8 changed from 200K to 1M.
+- Bare Sonnet 5 changed from 200K to 1M.
+- Fable 5 changed from available on the earlier Pro/no-Extra record to fully
+  credit-gated in the current Pro/no-Extra measurement.
+- Opus 4.6, Sonnet 4.6, and Haiku retained their earlier bare served windows
+  and long-context eligibility on the tested Pro account.
 
-### Served turn — e.g. `opus-4-8[1m]` → 1M
+The older Max rows are historical records only. They are not current
+Claude Code `2.1.218` coverage.
 
-```json
-{ "subtype": "success", "is_error": false, "stop_reason": "end_turn",
-  "modelUsage": { "claude-opus-4-8[1m]": { "contextWindow": 1000000, "maxOutputTokens": 32000,
-    "inputTokens": 173, "outputTokens": 4, "costUSD": 0.000579 } } }
-```
+## Coverage boundaries
 
-Allowed turns carry `rate_limit_event.status: "allowed"` plus `overageStatus` /
-`resetsAt` / `rateLimitType: "five_hour"`. Rejected turns fail fast (~130–400 ms,
-zero model tokens).
+- **Directly measured:** Pro with Extra Usage disabled and enabled; every model
+  ID and form in the current matrix; the four aliases with Extra Usage enabled;
+  and Haiku/Fable bridge-level served-window parity.
+- **Inferred only:** aliases with Extra Usage disabled where the enabled alias
+  maps to a canonical model whose disabled full ID was directly measured. In
+  particular, disabled-state `fable` is expected to reach the measured Fable
+  credit gate, but the alias itself was not run in that state.
+- **User-reported only:** Fable 5 works on Max. The bridge preserves configured
+  Max behavior, but Phase 8 did not measure it.
+- **Untested:** Max, Team, Enterprise, API-key authentication, other accounts,
+  aliases with Extra Usage disabled, and near-limit payload boundary behavior.
 
-## Findings
-
-1. **The `[1m]` suffix is the only reliable way to request 1M via the SDK.**
-   Bare model ids serve 200K (except the anomalous `opus-4-7`). The interactive
-   Claude Code CLI auto-selects `[1m]` for Opus on Max/Team/Enterprise, but the
-   SDK does not.
-2. **`opus-4-7` bare serves 1M everywhere** — stable across runs. Unexplained.
-3. **The subscription/OAuth path differs from the public API.** Anthropic's docs
-   say Opus 4.8/4.7 default to 1M on the API with no beta header; subscription
-   SDK serves 200K for a bare 4.8 id.
+Do not extend these results to an untested account, authentication method,
+subscription tier, or Extra Usage state.
