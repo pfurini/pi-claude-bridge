@@ -17,7 +17,6 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getSessionPath } from "cc-session-io";
 import { defaultClaudeConfigDir } from "../src/claude-config.js";
-import { assertClaudeAuthenticated } from "./lib/claude-auth.mjs";
 import { createRpcHarness, requireEnv } from "./lib/rpc-harness.mjs";
 
 const OTHER_PROVIDER = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER");
@@ -76,12 +75,13 @@ describe("Opus 5 as a bridge provider model", () => {
 		args: ["--model", BRIDGE_OPUS_5],
 		cwd: PROVIDER_CWD,
 		env: { PI_CODING_AGENT_DIR: providerAgentDir },
+		claudeConfigDir: CONFIGURED_PROFILE,
 		defaultTimeout: TIMEOUT,
 	});
 	const token = `OPUS5-${Math.random().toString(36).slice(2, 10)}`;
 
 	before(async () => {
-		assertClaudeAuthenticated(CONFIGURED_PROFILE);
+		// The harness preflights CONFIGURED_PROFILE's auth on start().
 		await harness.startAndWait();
 	});
 
@@ -245,6 +245,7 @@ describe("Opus 5 through AskClaude", () => {
 		name: "opus-5-askclaude",
 		args: ["--model", `${OTHER_PROVIDER}/${OTHER_MODEL}`],
 		cwd: ASK_CWD,
+		claudeConfigDir: CONFIGURED_PROFILE,
 		defaultTimeout: TIMEOUT,
 	});
 
@@ -266,7 +267,7 @@ describe("Opus 5 through AskClaude", () => {
 	}
 
 	before(async () => {
-		assertClaudeAuthenticated(CONFIGURED_PROFILE);
+		// The harness preflights CONFIGURED_PROFILE's auth on start().
 		await harness.startAndWait();
 	});
 

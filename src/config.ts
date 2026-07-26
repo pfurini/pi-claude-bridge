@@ -68,15 +68,24 @@ export function normalizeAskClaudeDefaultMode(
 	return defaultMode;
 }
 
-export function normalizeClaudeConfigDir(value: unknown): string {
-	const fallback = defaultClaudeConfigDir();
+// loadConfig runs at activation and again on every compaction, so an invalid value
+// would otherwise reprint its warning over the TUI on each call.
+const warnedClaudeConfigDirs = new Set<string>();
+
+export function normalizeClaudeConfigDir(
+	value: unknown,
+	fallback: string = defaultClaudeConfigDir(),
+): string {
 	if (value === undefined) return fallback;
 	if (typeof value === "string" && value.length > 0 && isAbsolute(value)) {
 		return value;
 	}
-	console.warn(
-		`claude-bridge: invalid provider.claudeConfigDir ${JSON.stringify(value)}; using ${fallback}`,
-	);
+	const warning =
+		`claude-bridge: invalid provider.claudeConfigDir ${JSON.stringify(value)}; using ${fallback}`;
+	if (!warnedClaudeConfigDirs.has(warning)) {
+		warnedClaudeConfigDirs.add(warning);
+		console.warn(warning);
+	}
 	return fallback;
 }
 
@@ -95,7 +104,14 @@ export function loadConfig(cwd: string): Config {
 	const provider = { ...global.provider, ...project.provider } as NonNullable<Config["provider"]> & {
 		claudeConfigDir?: unknown;
 	};
-	provider.claudeConfigDir = normalizeClaudeConfigDir(provider.claudeConfigDir);
+	// Validate each source on its own rather than the merged value, so an invalid
+	// project override falls back to a still-valid global setting (an authenticated
+	// profile) instead of all the way to the built-in default.
+	const globalClaudeConfigDir = normalizeClaudeConfigDir(global.provider?.claudeConfigDir);
+	provider.claudeConfigDir = normalizeClaudeConfigDir(
+		project.provider?.claudeConfigDir,
+		globalClaudeConfigDir,
+	);
 	return {
 		askClaude: askClaude as NonNullable<Config["askClaude"]>,
 		provider: provider as NonNullable<Config["provider"]>,

@@ -73,6 +73,10 @@ export async function terminateChild(child, closePromise, options = {}) {
  * @param {Object} opts.env - Extra env vars to set on the pi process
  * @param {string} opts.cwd - Working directory for the pi process (default: project root)
  * @param {number} opts.defaultTimeout - Default timeout for send/wait operations (default: 30000)
+ * @param {string} opts.claudeConfigDir - Claude profile this harness's bridge will use.
+ *   The auth preflight checks this profile, so a test that points the bridge at a
+ *   non-default profile fails fast on startup instead of on every turn with an
+ *   in-band auth error (default: the bridge's own default profile).
  * @param {number} opts.shutdownGraceMs - Time to wait after SIGTERM (default: 2000)
  * @param {number} opts.shutdownKillMs - Time to wait after SIGKILL (default: 2000)
  */
@@ -82,6 +86,7 @@ export function createRpcHarness(opts) {
 		args = [],
 		env = {},
 		cwd = DIR,
+		claudeConfigDir,
 		defaultTimeout = 30_000,
 		shutdownGraceMs = DEFAULT_SHUTDOWN_GRACE_MS,
 		shutdownKillMs = DEFAULT_SHUTDOWN_KILL_MS,
@@ -102,7 +107,7 @@ export function createRpcHarness(opts) {
 	let reqId = 0;
 
 	function start() {
-		assertClaudeAuthenticated();
+		assertClaudeAuthenticated(claudeConfigDir);
 		buffer = "";
 		// Truncate the debug log on each run so test assertions that grep the
 		// log see only this run's output, not accumulated history from prior

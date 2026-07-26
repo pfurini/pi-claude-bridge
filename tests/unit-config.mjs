@@ -155,6 +155,67 @@ describe("loadConfig", () => {
 		}
 	}));
 
+	it("falls back to a valid global profile when the project override is invalid", () => withTempHome((home) => {
+		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
+		const warnings = [];
+		const originalWarn = console.warn;
+		try {
+			const globalDir = join(home, ".pi", "agent");
+			const projectDir = join(cwd, CONFIG_DIR_NAME);
+			mkdirSync(globalDir, { recursive: true });
+			mkdirSync(projectDir, { recursive: true });
+			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({
+				provider: { claudeConfigDir: "/global/authenticated-profile" },
+			}));
+			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
+				provider: { claudeConfigDir: "typo-relative/profile" },
+			}));
+			console.warn = (...args) => warnings.push(args.join(" "));
+
+			const effective = loadConfig(cwd).provider.claudeConfigDir;
+			assert.equal(
+				effective,
+				"/global/authenticated-profile",
+				"a bad project override must not discard a valid global profile for the built-in default",
+			);
+			assert.notEqual(effective, defaultClaudeConfigDir(home));
+			assert.equal(warnings.length, 1);
+			assert.match(
+				warnings[0],
+				/invalid provider\.claudeConfigDir "typo-relative\/profile"; using \/global\/authenticated-profile/,
+			);
+		} finally {
+			console.warn = originalWarn;
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	}));
+
+	it("warns once when repeated loads hit the same invalid config directory", () => withTempHome((home) => {
+		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
+		const warnings = [];
+		const originalWarn = console.warn;
+		try {
+			const projectDir = join(cwd, CONFIG_DIR_NAME);
+			mkdirSync(projectDir, { recursive: true });
+			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
+				provider: { claudeConfigDir: "repeated-relative/profile" },
+			}));
+			console.warn = (...args) => warnings.push(args.join(" "));
+
+			for (let i = 0; i < 3; i++) {
+				assert.equal(loadConfig(cwd).provider.claudeConfigDir, defaultClaudeConfigDir(home));
+			}
+			assert.equal(
+				warnings.length,
+				1,
+				"activation plus each compaction reloads config; the warning must not reprint over the TUI",
+			);
+		} finally {
+			console.warn = originalWarn;
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	}));
+
 	it("preserves valid modes and leaves an unset mode for the caller default", () => {
 		assert.equal(normalizeAskClaudeDefaultMode(undefined), undefined);
 		assert.equal(normalizeAskClaudeDefaultMode("read"), "read");

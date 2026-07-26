@@ -318,8 +318,11 @@ async function runIsolatedSummary(
 	try {
 		const promptText = extractIsolatedSummaryPrompt(context.messages);
 		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-		const config = loadConfig(cwd);
-		const claudeExecutable = config.provider?.pathToClaudeCodeExecutable;
+		// Activation-time settings, like the provider and askClaude spawn paths. Reloading
+		// config for this cwd would take the executable from one source and the profile
+		// (effectiveClaudeConfigDir) from another, so a per-project override could split
+		// settings and sessions across two profiles.
+		const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 		const cliModel = claudeCodeModelId(model, longContextSettings);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
 
@@ -489,9 +492,12 @@ function deleteEphemeralSession(sessionId: string, cwd: string, claudeConfigDir:
 function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
+	// Required, and positioned before the optional arguments, so a new call site cannot
+	// silently fall back to the default profile while the Claude child reads from the
+	// user's provider.claudeConfigDir override.
+	claudeConfigDir: string,
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
-	claudeConfigDir: string = defaultClaudeConfigDir(),
 ): SyncResult {
 	const priorMessages = messages.slice(0, -1); // everything before the new user prompt
 
@@ -1180,7 +1186,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, model.id, effectiveClaudeConfigDir);
+	const syncResult = syncSharedSession(context.messages, cwd, effectiveClaudeConfigDir, customToolNameToSdk, model.id);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1443,7 +1449,7 @@ async function promptAndWait(
 		} else {
 			// No provider session yet — create one from pi's context
 			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
-			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, modelId, effectiveClaudeConfigDir);
+			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, effectiveClaudeConfigDir, undefined, modelId);
 			resumeSessionId = sync.sessionId;
 		}
 	}

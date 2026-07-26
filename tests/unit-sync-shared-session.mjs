@@ -46,7 +46,7 @@ describe("syncSharedSession", () => {
 					content: "Summarize this conversation.",
 					timestamp: Date.now(),
 				},
-			], cwd, undefined, undefined, join(cwd, "isolated-claude"));
+			], cwd, join(cwd, "isolated-claude"));
 
 			assert.equal(
 				result.sessionId,
@@ -69,7 +69,7 @@ describe("syncSharedSession", () => {
 		const cwd = join(root, "project");
 		const claudeConfigDir = join(root, "isolated-claude");
 		try {
-			const result = __test.syncSharedSession(contextMessages("first"), cwd, undefined, "test-model", claudeConfigDir);
+			const result = __test.syncSharedSession(contextMessages("first"), cwd, claudeConfigDir, undefined, "test-model");
 			const jsonlPath = getSessionPath(result.sessionId, cwd, claudeConfigDir);
 			assert.equal(existsSync(jsonlPath), true);
 			assert.equal(jsonlPath.startsWith(claudeConfigDir), true);
@@ -83,9 +83,9 @@ describe("syncSharedSession", () => {
 		const cwd = join(root, "project");
 		const claudeConfigDir = join(root, "isolated-claude");
 		try {
-			const first = __test.syncSharedSession(contextMessages("rebuild"), cwd, undefined, "test-model", claudeConfigDir);
+			const first = __test.syncSharedSession(contextMessages("rebuild"), cwd, claudeConfigDir, undefined, "test-model");
 			__test.setSharedSession({ ...__test.getSharedSession(), needsRebuild: true });
-			const rebuilt = __test.syncSharedSession(contextMessages("rebuild"), cwd, undefined, "test-model", claudeConfigDir);
+			const rebuilt = __test.syncSharedSession(contextMessages("rebuild"), cwd, claudeConfigDir, undefined, "test-model");
 			assert.equal(rebuilt.sessionId, first.sessionId);
 			assert.equal(existsSync(getSessionPath(rebuilt.sessionId, cwd, claudeConfigDir)), true);
 		} finally {
@@ -106,7 +106,7 @@ describe("syncSharedSession", () => {
 				needsRebuild: true,
 				forceRotate: true,
 			});
-			const rotated = __test.syncSharedSession(contextMessages("abort"), cwd, undefined, "test-model", claudeConfigDir);
+			const rotated = __test.syncSharedSession(contextMessages("abort"), cwd, claudeConfigDir, undefined, "test-model");
 			assert.notEqual(rotated.sessionId, previousSessionId);
 			assert.equal(existsSync(getSessionPath(rotated.sessionId, cwd, claudeConfigDir)), true);
 		} finally {
@@ -119,7 +119,7 @@ describe("syncSharedSession", () => {
 		const cwd = join(root, "project");
 		const claudeConfigDir = join(root, "isolated-claude");
 		try {
-			const result = __test.syncSharedSession(contextMessages("ephemeral"), cwd, undefined, "test-model", claudeConfigDir);
+			const result = __test.syncSharedSession(contextMessages("ephemeral"), cwd, claudeConfigDir, undefined, "test-model");
 			const jsonlPath = getSessionPath(result.sessionId, cwd, claudeConfigDir);
 			assert.equal(existsSync(jsonlPath), true);
 			__test.deleteEphemeralSession(result.sessionId, cwd, claudeConfigDir);

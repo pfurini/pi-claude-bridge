@@ -14,7 +14,6 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { getSessionPath } from "cc-session-io";
 import { defaultClaudeConfigDir } from "../src/claude-config.js";
-import { assertClaudeAuthenticated } from "./lib/claude-auth.mjs";
 import { createRpcHarness, requireEnv } from "./lib/rpc-harness.mjs";
 
 const OTHER_PROVIDER = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER");
@@ -24,6 +23,16 @@ const TEST_ROOT_PREFIX = join(tmpdir(), "pi-claude-bridge-config-isolation-");
 const TEST_ROOT = mkdtempSync(TEST_ROOT_PREFIX);
 const TEST_CWD = join(TEST_ROOT, "project");
 const INHERITED_PROFILE = join(TEST_ROOT, "inherited-profile");
+// Deliberately the default profile: credentials are scoped to the literal config-dir
+// path (a symlink to an authenticated profile reads as logged out), so a second
+// profile would need its own interactive `claude auth login` that CI cannot perform.
+// This test therefore discriminates env-inheritance isolation (an inherited
+// CLAUDE_CONFIG_DIR and the normal ~/.claude profile both stay untouched) and NOT the
+// provider.claudeConfigDir plumbing: were that plumbing dropped entirely, sessions
+// would still land here and every assertion below would still pass. That plumbing is
+// covered at both ends by unit-config.mjs (config merge and fallback) and
+// unit-sdk-options.mjs (claudeConfigDir reaching the child as CLAUDE_CONFIG_DIR).
+// The project config written below is realistic but non-discriminating today.
 const CONFIGURED_PROFILE = defaultClaudeConfigDir();
 const NORMAL_PROFILE = join(homedir(), ".claude");
 
@@ -38,12 +47,13 @@ const harness = createRpcHarness({
 	args: ["--model", `${OTHER_PROVIDER}/${OTHER_MODEL}`],
 	cwd: TEST_CWD,
 	env: { CLAUDE_CONFIG_DIR: INHERITED_PROFILE },
+	claudeConfigDir: CONFIGURED_PROFILE,
 	defaultTimeout: TIMEOUT,
 });
 
 describe("authenticated Claude config isolation", () => {
 	before(async () => {
-		assertClaudeAuthenticated(CONFIGURED_PROFILE);
+		// The harness preflights CONFIGURED_PROFILE's auth on start().
 		await harness.startAndWait();
 	});
 
@@ -59,7 +69,7 @@ describe("authenticated Claude config isolation", () => {
 		console.log(`  Debug log: ${harness.DEBUG_LOG}`);
 	});
 
-	it("uses the configured profile for seeded sessions and continuity", {
+	it("keeps seeded sessions and continuity out of the inherited and normal profiles", {
 		timeout: TIMEOUT,
 	}, async () => {
 		const token = `isolation-${Math.random().toString(36).slice(2, 10)}`;
