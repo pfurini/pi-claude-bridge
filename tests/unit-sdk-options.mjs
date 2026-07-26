@@ -155,7 +155,7 @@ describe("AskClaude SDK options", () => {
 	it("applies the complete read policy and AskClaude query invariants", () => {
 		const options = build("read", {
 			effort: "medium",
-			skillsBlock: "available skills",
+			systemPromptAppend: "available skills",
 			resumeSessionId: "session-2",
 			isolated: true,
 			claudeExecutable: "/opt/claude",

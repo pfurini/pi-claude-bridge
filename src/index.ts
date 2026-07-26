@@ -20,7 +20,8 @@ import { loadConfig, type Config } from "./config.js";
 import { defaultClaudeConfigDir } from "./claude-config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { typeBoxToolToSdkMcpTool } from "./typebox-to-zod.js";
-import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions } from "./sdk-options.js";
+import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions, getAskClaudeDisallowedTools } from "./sdk-options.js";
+import { buildHarnessCorrections } from "./harness-prompt.js";
 import { createSdkMessageState, parseSdkResult, parseSdkSystemInit, rateLimitResetDate, rateLimitUtilizationPercent, reduceSdkMessage, type SdkTerminalResult } from "./sdk-messages.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
@@ -1214,8 +1215,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
 	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
 	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
-	const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
-	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
 	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
@@ -1233,6 +1232,20 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
+
+	// Corrections go last so they follow the statements they override, and are not
+	// gated on appendSystemPrompt: that setting controls whether pi's own content
+	// (AGENTS.md, skills) is forwarded, and turning it off must not leave the model
+	// reading claims about its tools and ID that are false here.
+	const corrections = buildHarnessCorrections({
+		modelId: model.id,
+		cliModelId: cliModel,
+		toolsAreMcpOnly: true,
+	});
+	const appendParts = [agentsAppend, skillsAppend, corrections]
+		.filter((part): part is string => Boolean(part));
+	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
 
@@ -1458,6 +1471,25 @@ async function promptAndWait(
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
 		? extractSkillsBlock(options.systemPrompt) : undefined;
 
+	// Harness corrections ride along with the skills block rather than being sent on
+	// their own, because an append is what switches the claude_code preset on for
+	// this path. Without one the SDK sends no preset at all (measured: a 62-character
+	// identity line), so there is nothing to correct, and adding an append purely to
+	// carry a correction would pull in ~14K characters of prompt this path does not
+	// use today. Unlike the provider, AskClaude keeps Claude Code's native tools, so
+	// only the model ID is wrong here, plus the shell in modes that block Bash.
+	const askClaudeCorrections = skillsBlock
+		? buildHarnessCorrections({
+			modelId,
+			cliModelId: cliModel,
+			toolsAreMcpOnly: false,
+			noShellTool: getAskClaudeDisallowedTools(mode).includes("Bash"),
+		})
+		: undefined;
+	const systemPromptAppend = [skillsBlock, askClaudeCorrections]
+		.filter((part): part is string => Boolean(part))
+		.join("\n\n") || undefined;
+
 	// Effort — same model-aware lookup the provider path uses, so the same level
 	// word means the same served tier through either interface.
 	const effort = resolveEffort(model, options?.thinking);
@@ -1479,7 +1511,7 @@ async function promptAndWait(
 			cliModel,
 			mode,
 			effort,
-			skillsBlock,
+			systemPromptAppend,
 			resumeSessionId,
 			isolated: options?.isolated,
 			claudeExecutable,

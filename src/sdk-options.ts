@@ -168,7 +168,12 @@ export interface AskClaudeQueryOptionsInput {
 	cliModel: string;
 	mode: AskClaudeMode;
 	effort?: EffortLevel;
-	skillsBlock?: string;
+	/**
+	 * Appended to the claude_code preset. Carries the forwarded skills block and any
+	 * harness corrections. Leaving it unset sends no preset at all on this path, so
+	 * do not set it just to attach a minor correction.
+	 */
+	systemPromptAppend?: string;
 	settingSources?: SettingSource[];
 	resumeSessionId?: string | null;
 	isolated?: boolean;
@@ -200,8 +205,8 @@ export function buildAskClaudeQueryOptions(
 			: {}),
 		...(policy.skills !== undefined ? { skills: policy.skills } : {}),
 		...(input.effort ? { effort: input.effort } : {}),
-		systemPrompt: input.skillsBlock
-			? { type: "preset", preset: "claude_code", append: input.skillsBlock }
+		systemPrompt: input.systemPromptAppend
+			? { type: "preset", preset: "claude_code", append: input.systemPromptAppend }
 			: undefined,
 		settingSources: input.settingSources ?? ["user", "project"],
 		extraArgs,

@@ -72,24 +72,26 @@ are a billing header and a one-line harness identity.
 
 | Model | cli chars | bridge chars | Family |
 | --- | --- | --- | --- |
-| claude-opus-4-8 | 6,126 | 3,836 | new |
-| claude-opus-5 | 9,452 | 7,145 | new |
-| claude-fable-5 | 10,570 | 8,267 | new |
-| claude-opus-4-6 | 27,620 | 13,889 | legacy |
-| claude-opus-4-7 | 27,624 | 13,876 | legacy |
-| claude-sonnet-5 | 27,624 | 13,880 | legacy |
-| claude-sonnet-4-6 | 27,627 | 13,879 | legacy |
-| claude-haiku-4-5 | 27,627 | 13,879 | legacy |
+| claude-opus-4-8 | 6,126 | 4,550 | new |
+| claude-opus-5 | 9,452 | 7,672 | new |
+| claude-fable-5 | 10,570 | 8,980 | new |
+| claude-opus-4-6 | 27,620 | 14,603 | legacy |
+| claude-opus-4-7 | 27,624 | 14,403 | legacy |
+| claude-sonnet-5 | 27,624 | 14,594 | legacy |
+| claude-sonnet-4-6 | 27,627 | 14,406 | legacy |
+| claude-haiku-4-5 | 27,627 | 14,406 | legacy |
 
 These counts are the checked-in files under `diag/system-prompts/`, produced by
 `diag/system-prompt.mjs`. The two columns come from separate runs with different
 temp working directories, so a few dozen characters of the cli-versus-bridge gap
 are cwd-path noise rather than signal.
 
-The bridge column is measured **after** auto-memory was disabled on the provider
-path (defect 2 below), which is why the legacy-family prompts are roughly half
-their cli size. Before that change the bridge column read 26,7xx for every legacy
-model and 5,978 / 9,287 / 10,409 for Opus 4.8 / Opus 5 / Fable 5.
+The bridge column reflects all three fixes below. Auto-memory being off (defect 2)
+is why the legacy-family prompts are roughly half their cli size; the harness
+corrections (defects 1 and 3) add back 712 characters where a model ID needs
+correcting and 525 where it does not. Before any of it, the bridge column read
+26,7xx for every legacy model and 5,978 / 9,287 / 10,409 for Opus 4.8 / Opus 5 /
+Fable 5.
 
 ### Legacy family (Opus 4.6, Opus 4.7, Sonnet 5, Sonnet 4.6, Haiku 4.5)
 
@@ -160,11 +162,11 @@ bridge files, but that is the bridge's own doing rather than upstream adaptation
 (see defect 2).
 
 Four residual defects were found. All are small, and all are in the delivered
-prompt rather than in the bridge's own code. Defect 2 has since been fixed;
-defects 1, 3, and 4 remain open.
+prompt rather than in the bridge's own code. Defects 1, 2, and 3 have since been
+fixed; defect 4 is noise and is left alone.
 
-1. **Wrong shell named (legacy family only).** With no `Bash` tool in the
-   inventory the line degrades to:
+1. **Wrong shell and tool names (legacy family only). FIXED.** With no `Bash` tool
+   in the inventory the line degrades to:
 
    ```
     - Prefer dedicated tools over PowerShell when one fits (Read, Edit, Write, Glob, Grep)
@@ -173,8 +175,16 @@ defects 1, 3, and 4 remain open.
 
    On macOS and Linux this names the wrong shell, and `Read`/`Edit`/`Write`/
    `Glob`/`Grep` do not exist under those names in the bridge (pi's tools arrive
-   as MCP tools under the bridge's own server name). The new family does not
-   contain this line at all.
+   as MCP tools under `mcp__custom-tools__`). The new family does not contain this
+   line at all.
+
+   The preset is generated inside the binary and cannot be edited at the source,
+   so `buildHarnessCorrections` (`src/harness-prompt.ts`) appends a `# Harness
+   corrections` block naming the real tool surface. It costs 525 characters and is
+   emitted on the provider path only, where the native inventory really is empty.
+   AskClaude keeps Claude Code's native tools, so disclaiming them there would
+   itself be false; that path gets a narrower shell-only line in `read` and `none`
+   modes, which are the modes that block `Bash`.
 
 2. **Auto memory was the largest unactionable block. FIXED.** Both families
    instructed the model to use a file-based memory directory and to "write to it
@@ -199,9 +209,10 @@ defects 1, 3, and 4 remain open.
    on a cached prefix, so the practical value is the cache-write cost and the
    removal of instructions the model cannot follow, not a per-turn cost reduction.
    Note that any memories accumulated by earlier sessions under the pi profile are
-   no longer surfaced; nothing is deleted.
+   no longer surfaced; nothing is deleted. The "after" column here predates the
+   harness corrections, which add some of it back (see the size table above).
 
-3. **The `[1m]` suffix leaks into the model's self-description.** Because
+3. **The `[1m]` suffix leaked into the model's self-description. FIXED.** Because
    `claudeCodeModelId` appends `[1m]` for long-context models, the prompt tells
    the model:
 
@@ -209,11 +220,16 @@ defects 1, 3, and 4 remain open.
     - You are powered by the model named Sonnet 5. The exact model ID is claude-sonnet-5[1m].
    ```
 
-   `claude-sonnet-5[1m]` is a Claude Code request alias, not a valid API model ID.
-   A user asking "what model are you" gets an ID that does not exist. Which models
-   are affected follows `resolveClaudeCodeRuntimeModel`, so it depends on plan and
-   Extra Usage; measured with `plan: "max"` it hits Fable 5, Opus 4.6, Opus 4.8,
-   and Sonnet 5, while Opus 5, Opus 4.7, Sonnet 4.6, and Haiku 4.5 report a clean ID.
+   `claude-sonnet-5[1m]` is a Claude Code request alias, not a valid API model ID,
+   so a user asking "what model are you" got an ID that does not exist. Which
+   models are affected follows `resolveClaudeCodeRuntimeModel`, so it depends on
+   plan and Extra Usage; measured with `plan: "max"` it hits Fable 5, Opus 4.6,
+   Opus 4.8, and Sonnet 5, while Opus 5, Opus 4.7, Sonnet 4.6, and Haiku 4.5
+   already reported a clean ID.
+
+   The corrections block states the bare ID and explains the suffix, costing 187
+   characters and emitted only when `cliModelId` actually differs from the
+   registered `modelId`. It applies to the provider path and to AskClaude.
 
 4. **Hooks and CLAUDE.md references.** Both families describe Claude Code hooks,
    which pi has no concept of: five mentions in the legacy family, two in the new
@@ -222,6 +238,34 @@ defects 1, 3, and 4 remain open.
    memory section. This is harmless noise, and the CLAUDE.md reference is in fact
    accurate: `extractAgentsAppend` (`src/agents-md.ts:38`) labels the appended
    AGENTS.md as `# CLAUDE.md`, so the prompt names something the bridge does send.
+
+## The AskClaude path is not the provider path
+
+Worth knowing before assuming a provider-path finding transfers: **AskClaude sends
+no Claude Code system prompt at all unless a skills block is being forwarded.**
+`buildAskClaudeQueryOptions` leaves `systemPrompt` undefined when there is nothing
+to append, and the SDK reads that as "no preset", not "default preset". Measured
+with `claude-sonnet-5[1m]`:
+
+| Mode | Skills block | Prompt | PowerShell | `[1m]` |
+| --- | --- | --- | --- | --- |
+| read / full / none | absent | 62 chars (identity line only) | n/a | n/a |
+| read | present | 14,766 | yes | yes |
+| full | present | 14,754 | no | yes |
+| none | present | 13,894 | yes | yes |
+
+PowerShell tracks whether `Bash` is in the disallowed list, which is why `full`
+mode escapes it. Two consequences shaped the fixes above:
+
+- The corrections ride along with the skills append rather than being sent on
+  their own. Sending them alone would set `systemPrompt` and thereby switch the
+  preset **on**, adding ~14K characters to a path that does not use it today.
+  That is a behavior change, not a correction.
+- AskClaude keeps Claude Code's native tools, so it gets the model-ID line and (in
+  `read`/`none`) a shell-only line, never the provider path's MCP tool disclaimer.
+
+Whether AskClaude *should* run without the preset is a separate design question
+this record does not answer.
 
 ## Recommendation
 
@@ -238,11 +282,10 @@ and every one of those eight would become a file to re-measure. The preset, by
 contrast, tracks upstream for free and already self-adapts to the empty tool
 inventory.
 
-The residual delta does not justify that cost. After the tool-aware sections drop
-out and auto memory is disabled, the mismatch is one wrong sentence about
-PowerShell and a model ID with a suffix on it.
+The residual delta did not justify that cost, and all three actionable defects
+have now been closed within the append seam for a total of 712 characters.
 
-Proportionate follow-ups, in descending value:
+What was done:
 
 1. ~~Set `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` on the provider path.~~ **Done.**
    Applied to the provider and AskClaude paths through `CLAUDE_ISOLATION_ENV`
@@ -250,16 +293,19 @@ Proportionate follow-ups, in descending value:
    the legacy-family prompt. Not gated behind a provider setting, since the
    instructions it removes name a tool neither path exposes; add a setting if
    someone turns out to want Claude Code memory through the bridge.
-2. Add a short corrective block to `systemPromptAppend` naming pi's actual tool
-   surface and shell, which overrides the PowerShell sentence for the legacy
-   family. pi's tools arrive under the `custom-tools` MCP server, so they are
-   visible to the model as `mcp__custom-tools__*` (`MCP_TOOL_PREFIX`,
-   `src/skills.ts:5`), which is what the correction should name in place of
-   `Read`/`Edit`/`Write`/`Glob`/`Grep`. Roughly 200 characters against 14k, and it
-   costs nothing when the new family (which lacks the sentence) is selected.
-3. Consider stripping `[1m]` from the identity line, either by appending a
-   correction or by asking upstream for a fix. This is cosmetic unless users ask
-   the model what it is.
+2. ~~Add a corrective block naming pi's actual tool surface and shell.~~ **Done.**
+   `buildHarnessCorrections` (`src/harness-prompt.ts`) emits a `# Harness
+   corrections` block naming `mcp__custom-tools__` (`MCP_TOOL_PREFIX`,
+   `src/skills.ts:5`) in place of `Read`/`Edit`/`Write`/`Glob`/`Grep`/PowerShell.
+3. ~~Correct the `[1m]` identity line.~~ **Done.** Same block, emitted only when
+   `cliModelId` differs from the registered `modelId`.
+
+Two deliberate choices in that implementation are worth keeping if it is revisited.
+The corrections are **not** gated on `provider.appendSystemPrompt`: that setting
+governs whether pi's own content (AGENTS.md, skills) is forwarded, and switching it
+off must not leave the model reading false claims about its tools and ID. And each
+bullet is emitted only where the defect was measured, so no path is told something
+untrue about itself in the course of fixing something else.
 
 Only a structural change upstream (for example, the preset ceasing to adapt to
 tool inventory) would justify revisiting the wholesale-replacement option.

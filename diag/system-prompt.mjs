@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildProviderQueryOptions } from "../src/sdk-options.ts";
+import { buildHarnessCorrections } from "../src/harness-prompt.ts";
 import { MODEL_IDS_IN_ORDER, resolveClaudeCodeRuntimeModel } from "../src/models.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -134,11 +135,20 @@ if (mode === "bridge" || mode === "both") {
 	for (const id of MODELS) {
 		captured = null;
 		const { cliModelId } = resolveClaudeCodeRuntimeModel(id, settings);
+		// index.ts, not the option builder, assembles the append. Mirror the part of
+		// it that is deterministic so the captured prompt matches what pi receives.
+		// AGENTS.md and the skills block are deliberately left out: they depend on
+		// live pi state and would make the per-model diff machine-specific.
 		const options = buildProviderQueryOptions({
 			cwd,
 			baseEnv: { ...process.env, ...captureEnv },
 			claudeConfigDir: join(process.env.HOME, ".claude"),
 			cliModel: cliModelId,
+			systemPromptAppend: buildHarnessCorrections({
+				modelId: id,
+				cliModelId,
+				toolsAreMcpOnly: true,
+			}),
 			settingSources: [],
 			strictMcpConfigEnabled: true,
 		});
