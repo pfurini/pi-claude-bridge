@@ -1484,6 +1484,7 @@ async function promptAndWait(
 			cliModelId: cliModel,
 			toolsAreMcpOnly: false,
 			noShellTool: getAskClaudeDisallowedTools(mode).includes("Bash"),
+			noInteractiveChannel: true,
 		})
 		: undefined;
 	const systemPromptAppend = [skillsBlock, askClaudeCorrections]

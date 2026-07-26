@@ -306,13 +306,35 @@ The preset block carries `cache_control: ephemeral 1h`, so the added cost is a
 cache write on the first `full`-mode call per hour per distinct prefix and cache
 reads after that, not full input tokens on every call.
 
-One consequence to watch: `full`-mode sub-agents now receive the guidance to
-confirm before hard-to-reverse actions, and nobody is available to answer them
-mid-delegation. `permissionMode` is `bypassPermissions`, so nothing blocks
-mechanically, but a sub-agent that stops to ask is a worse outcome than one that
-is under-briefed. This has not been observed in practice and needs
-`tests/int-askclaude-upgrade.mjs` (currently blocked on alt-provider credits) to
-confirm either way.
+Sending the preset brought one incoherence with it, since `# Executing actions
+with care` tells the model to confirm before hard-to-reverse actions and to
+"always confirm first". A delegated sub-agent cannot: `AskUserQuestion` is in
+`ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS`, nobody is listening, and
+`permissionMode` is `bypassPermissions` so nothing gates mechanically either.
+
+The correction invokes the preset's own documented override rather than
+contradicting it:
+
+> This default can be changed by user instructions - if explicitly asked to
+> operate more autonomously, then you may proceed without confirmation, but still
+> attend to the risks and consequences when taking actions.
+
+so `buildHarnessCorrections` adds a `noInteractiveChannel` bullet telling the
+sub-agent it is delegated, to proceed autonomously within the scope of the
+request, and to stop and report rather than ask when something would exceed that
+scope. The surrounding blast-radius guidance is left intact and still appears in
+the captured prompt alongside the correction. This bullet is **not** emitted on
+the provider path, where pi's TUI does put a user on the other end and the
+confirmation guidance is actionable.
+
+Measured effect: the sub-agent never stalled waiting for an answer, before or
+after. Across 69 distinct sub-agent results in one authenticated run, three
+contained a trailing offer, all from `none` mode and all of the form "I could not
+do that, would you like me to try alternatives?" after being asked for four
+operations it has no tools for. That is a different phenomenon from
+permission-seeking, and no before/after rate was measured, so no improvement is
+claimed there. What the correction fixes is the instruction itself being
+impossible to follow.
 
 ## Recommendation
 

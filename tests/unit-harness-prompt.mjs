@@ -72,6 +72,36 @@ describe("harness corrections", () => {
 		assert.ok(withoutShell.includes("no shell tool"));
 	});
 
+	// The preset tells the model to confirm before hard-to-reverse actions, which a
+	// delegated sub-agent cannot do: AskUserQuestion is blocked and nobody is
+	// listening. The provider path keeps the guidance, since pi's TUI does put a
+	// user on the other end.
+	it("releases a delegated sub-agent from confirmation it cannot obtain", () => {
+		const delegated = buildHarnessCorrections({
+			modelId: "claude-sonnet-5",
+			cliModelId: "claude-sonnet-5",
+			toolsAreMcpOnly: false,
+			noInteractiveChannel: true,
+		});
+
+		assert.ok(delegated.includes("delegated sub-agent"));
+		assert.ok(delegated.includes("operate more autonomously"));
+		// The escape must not become a licence to ignore blast radius.
+		assert.ok(delegated.includes("reversibility and blast radius"));
+		assert.ok(delegated.includes("stop and report"));
+	});
+
+	it("leaves the provider path's confirmation guidance intact", () => {
+		const provider = buildHarnessCorrections({
+			modelId: "claude-sonnet-5",
+			cliModelId: "claude-sonnet-5[1m]",
+			toolsAreMcpOnly: true,
+		});
+
+		assert.ok(!provider.includes("delegated sub-agent"));
+		assert.ok(!provider.includes("operate more autonomously"));
+	});
+
 	it("does not describe an unrelated id divergence as a context-window suffix", () => {
 		const block = buildHarnessCorrections({
 			modelId: "claude-opus-5",
@@ -94,14 +124,30 @@ describe("harness corrections", () => {
 	});
 
 	// The block joins the cached prompt prefix on every request, so a regression that
-	// let it grow unbounded would be paid for on each cache write.
+	// let it grow unbounded would be paid for on each cache write. Both maxima are
+	// checked: the MCP and shell bullets are mutually exclusive, so the largest
+	// provider block and the largest AskClaude block are different shapes.
 	it("stays small enough to be irrelevant against the preset", () => {
-		const block = buildHarnessCorrections({
-			modelId: "claude-sonnet-5",
-			cliModelId: "claude-sonnet-5[1m]",
-			toolsAreMcpOnly: true,
-		});
+		const maxima = {
+			provider: buildHarnessCorrections({
+				modelId: "claude-sonnet-5",
+				cliModelId: "claude-sonnet-5[1m]",
+				toolsAreMcpOnly: true,
+			}),
+			askClaude: buildHarnessCorrections({
+				modelId: "claude-sonnet-5",
+				cliModelId: "claude-sonnet-5[1m]",
+				toolsAreMcpOnly: false,
+				noShellTool: true,
+				noInteractiveChannel: true,
+			}),
+		};
 
-		assert.ok(block.length < 1000, `corrections block grew to ${block.length} chars`);
+		for (const [path, block] of Object.entries(maxima)) {
+			assert.ok(
+				block.length < 1500,
+				`${path} corrections block grew to ${block.length} chars against a ~14K preset`,
+			);
+		}
 	});
 });
