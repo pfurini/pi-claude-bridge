@@ -10,8 +10,9 @@ export type CliDebugOptions = Pick<Options, "debug" | "debugFile" | "stderr">;
 export type AskClaudeMode = "full" | "read" | "none";
 
 // AskClaude cannot satisfy interactive or delayed workflows through Pi's tool call.
-// RemoteTrigger is retained for wire-name compatibility even though Claude Code
-// 2.1.218 does not expose it in the default SDK inventory.
+// RemoteTrigger is retained for wire-name compatibility even though the targeted
+// Claude Code release does not expose it in the default SDK inventory (confirmed
+// on 2.1.220).
 const ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS = [
 	"AskUserQuestion",
 	"EnterPlanMode",

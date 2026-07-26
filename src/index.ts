@@ -2,7 +2,7 @@ import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessage
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, keyHint, type CompactionEntry, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKRateLimitInfo, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type SDKMessage, type SDKRateLimitInfo, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -11,7 +11,7 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { applyLongContext, assertClaudeCodeModelAvailable, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
+import { applyLongContext, ASK_CLAUDE_THINKING_LEVELS, assertClaudeCodeModelAvailable, buildModels, claudeCodeModelId, type LongContextSettings, reportMissingModelIds, resolveEffort, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -120,7 +120,12 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 };
 
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
-const MODELS = buildModels(getModels("anthropic"));
+// The catalog comes from whatever pi-ai the host pi installed, which may predate
+// the ids the bridge registers, so report the gap once per module load. Subagents
+// reload this module (see ACTIVE_STREAM_SIMPLE_KEY) and will re-emit it.
+const PI_AI_MODELS = getModels("anthropic");
+const MODELS = buildModels(PI_AI_MODELS);
+reportMissingModelIds(PI_AI_MODELS);
 let providerSettings: NonNullable<Config["provider"]> = {};
 let effectiveClaudeConfigDir = defaultClaudeConfigDir();
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
@@ -730,13 +735,6 @@ function logServedContextWindow(label: string, message: SDKMessage, model: Model
 	}
 }
 
-// --- Effort level mapping ---
-// Pi reasoning levels → CC SDK effort levels
-
-const REASONING_TO_EFFORT: Record<string, EffortLevel> = {
-	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max",
-};
-
 // --- Provider helpers: misc ---
 
 function mapStopReason(reason: string | undefined): "stop" | "length" | "toolUse" {
@@ -1224,13 +1222,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
-	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
-	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
-	// Fall back to our generic table for older pi-ai or unmapped levels.
-	const effort = options?.reasoning
-		? ((model as any).thinkingLevelMap?.[options.reasoning] as EffortLevel | undefined)
-			?? REASONING_TO_EFFORT[options.reasoning]
-		: undefined;
+	const effort = resolveEffort(model, options?.reasoning);
 
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
@@ -1460,9 +1452,9 @@ async function promptAndWait(
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
 		? extractSkillsBlock(options.systemPrompt) : undefined;
 
-	// Effort
-	const effort = options?.thinking && options.thinking !== "off"
-		? REASONING_TO_EFFORT[options.thinking] : undefined;
+	// Effort — same model-aware lookup the provider path uses, so the same level
+	// word means the same served tier through either interface.
+	const effort = resolveEffort(model, options?.thinking);
 
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
@@ -1703,7 +1695,7 @@ export default function (pi: ExtensionAPI) {
 			prompt: Type.String({ description: "The question or task for Claude Code. By default Claude sees the full conversation history. Don't research up front, let Claude explore." }),
 			mode: Type.Optional(StringEnum(modeValues, { description: modeDesc })),
 			model: Type.Optional(Type.String({ description: 'Claude model (e.g. "opus", "sonnet", "haiku", or full ID). Defaults to "opus".' })),
-			thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"] as const, { description: "Thinking effort level. Omit to use Claude Code's default." })),
+			thinking: Type.Optional(StringEnum(ASK_CLAUDE_THINKING_LEVELS, { description: "Thinking effort level. Omit to use Claude Code's default." })),
 			isolated: Type.Optional(Type.Boolean({ description: "When true, Claude sees only this prompt (clean session). When false (default), Claude sees the full conversation history." })),
 		});
 		pi.registerTool<typeof askClaudeParams>({

@@ -5,9 +5,13 @@ requested model ID and Pro Extra Usage state.
 
 ## Scope and evidence labels
 
-This document reports Claude Agent SDK `0.3.218` with bundled Claude Code
-`2.1.218`, measured on 2026-07-23. The current matrix covers one Pro
-subscription account only.
+The current target is Claude Agent SDK `0.3.220` with bundled Claude Code
+`2.1.220`. Opus 5 was measured on that target on 2026-07-26 (see
+"Claude Opus 5 on Claude Code 2.1.220"). The full model/variant matrix below was
+measured on 2026-07-23 against Agent SDK `0.3.218` and Claude Code `2.1.218` and
+has **not** been re-run on `2.1.220`; treat it as the prior record for every
+model other than Opus 5. All measurements cover one Pro subscription account
+only.
 
 Evidence is labeled as follows:
 
@@ -29,6 +33,15 @@ rate-limit metadata, and the selected Claude Code version.
 env -u ANTHROPIC_API_KEY node diag/context-size.mjs pro
 ```
 
+Adding `--effort-max` appends one extra Opus 5 turn at effort `max`. That is the
+most expensive single request the bridge can issue, so it lives here as a
+deliberate one-off probe and is deliberately absent from the per-run integration
+suite:
+
+```sh
+env -u ANTHROPIC_API_KEY node diag/context-size.mjs pro --effort-max
+```
+
 `diag/model-aliases.mjs` measures the documented `fable`, `opus`, `sonnet`, and
 `haiku` aliases separately:
 
@@ -40,7 +53,42 @@ Both diagnostics save JSON and Markdown reports under the gitignored
 `.test-output/context-size/` directory. Extra Usage can consume metered credits.
 Warn the user and obtain explicit confirmation before running an eligible probe.
 
+## Claude Opus 5 on Claude Code 2.1.220
+
+Measured on 2026-07-26 through the bridge provider (`tests/int-opus-5.mjs`) on
+Agent SDK `0.3.220` / Claude Code `2.1.220`, Darwin arm64, Pro subscription OAuth
+with `ANTHROPIC_API_KEY` unset and **Extra Usage disabled** — the turns reported
+`overageStatus: "rejected"`, `overageDisabledReason: "org_level_disabled"`, and
+`isUsingOverage: false`, so no metered credit was involved.
+
+| Requested model ID | Served input / max output | Served usage key | Evidence |
+| --- | ---: | --- | --- |
+| `claude-opus-5` (bare) | 1M / 64K | `claude-opus-5` | Directly measured, Extra Usage disabled |
+| `claude-opus-5[1m]` | 1M / 64K | `claude-opus-5` | Measured 2026-07-25 during the update analysis; not re-run |
+| `opus` (alias) | 1M / 64K | `claude-opus-5` | Measured 2026-07-25 via `supportedModels()` and one alias turn; not re-run |
+
+Directly measured facts about the bare ID:
+
+- 1M is native. No `[1m]` suffix is needed and no plan or Extra Usage flag gates
+  it, which is why `resolveClaudeCodeRuntimeModel` requests Opus 5 bare.
+- Pi registers 1M and Claude Code serves 1M: the bridge's served-window
+  diagnostic reported `served contextWindow=1000000 registered=1000000`, so Pi's
+  status bar and compaction threshold match reality.
+- Default maximum output is 64,000 tokens, which is Claude Code's own cap. Pi's
+  catalog separately records the model capability as 128,000.
+- Effort `xhigh` is accepted and served as a distinct tier, not an alias for
+  `max`. Effort `max` was **not** exercised in the integration suite on purpose;
+  run `diag/context-size.mjs --effort-max` if that row is wanted.
+- Fast mode stays off. SDK sessions report
+  `fast_mode_disabled_reason: "sdk_opt_in_required"`, so it is off for every SDK
+  consumer regardless of account state.
+
+Not measured for Opus 5: Max plan, Extra Usage enabled, any other account or
+authentication method, and near-limit payload behavior.
+
 ## Measurement environment
+
+The environment for the 2.1.218 matrix in the following sections:
 
 - Date: 2026-07-23.
 - Host: Darwin arm64 with Node `v26.5.0` and npm `11.17.0`.
@@ -52,7 +100,10 @@ Warn the user and obtain explicit confirmation before running an eligible probe.
   `persistSession: false`.
 - Extra Usage remained enabled on the account after Phase 8.
 
-## Direct Pro measurements
+## Direct Pro measurements (Claude Code 2.1.218)
+
+Opus 5 is absent from this table because it does not exist in `2.1.218`. See
+"Claude Opus 5 on Claude Code 2.1.220" above.
 
 Values are served input context / maximum output tokens. `1M` is 1,000,000
 tokens and `200K` is 200,000 tokens. `429` means the request required Extra
@@ -92,18 +143,24 @@ The enabled Fable rows reported `rateLimitType: "overage"` and
 ## Direct alias measurements
 
 Aliases were measured on Pro with Extra Usage enabled. Every row reported
-`system:init.claude_code_version === "2.1.218"`.
+`system:init.claude_code_version === "2.1.218"`, except the `opus` row, which is
+the `2.1.220` re-measurement noted below.
 
 | Requested alias | `system:init.model` | Served usage key | Canonical model | Served input / max output |
 | --- | --- | --- | --- | ---: |
 | `fable` | `claude-fable-5` | `claude-fable-5` | `claude-fable-5` | 1M / 64K |
-| `opus` | `claude-opus-4-8` | `claude-opus-4-8` | `claude-opus-4-8` | 1M / 64K |
+| `opus` | `claude-opus-5` | `claude-opus-5` | `claude-opus-5` | 1M / 64K |
 | `sonnet` | `claude-sonnet-5` | `claude-sonnet-5` | `claude-sonnet-5` | 1M / 64K |
 | `haiku` | `claude-haiku-4-5-20251001` | `claude-haiku-4-5-20251001` | `claude-haiku-4-5` | 200K / 32K |
 
 Saved alias report:
 
 - `.test-output/context-size/pro-extra-on-aliases-2026-07-23T21-38-11-147Z.{json,md}`.
+  This saved report predates Opus 5 and still records `opus` →
+  `claude-opus-4-8`. On `2.1.220` the alias resolves to `claude-opus-5`
+  (measured 2026-07-25 via `supportedModels()` and one alias turn); re-run
+  `diag/model-aliases.mjs` to refresh the saved report. `fable`, `sonnet`, and
+  `haiku` were not re-measured on `2.1.220`.
 
 ## Bridge-level served-window parity
 
@@ -113,6 +170,8 @@ with the model registered in Pi:
 - Haiku: served `200000`, registered `200000`, maximum output `32000`.
 - Fable on Pro with Extra Usage enabled: served `1000000`, registered
   `1000000`, maximum output `64000`.
+- Opus 5 on Pro with Extra Usage disabled, Claude Code `2.1.220`: served
+  `1000000`, registered `1000000`, maximum output `64000`.
 
 These values come from `result.modelUsage[*].contextWindow`. The probes did not
 send payloads close to the limits, so they verify served-limit metadata rather
@@ -154,13 +213,14 @@ Compared with the earlier 2026-06-26 Pro measurements using Agent SDK
   and long-context eligibility on the tested Pro account.
 
 The older Max rows are historical records only. They are not current
-Claude Code `2.1.218` coverage.
+Claude Code `2.1.220` coverage.
 
 ## Coverage boundaries
 
 - **Directly measured:** Pro with Extra Usage disabled and enabled; every model
-  ID and form in the current matrix; the four aliases with Extra Usage enabled;
-  and Haiku/Fable bridge-level served-window parity.
+  ID and form in the `2.1.218` matrix; the four aliases with Extra Usage enabled;
+  Haiku/Fable bridge-level served-window parity; and bare Opus 5 on `2.1.220`
+  with Extra Usage disabled, including served-window parity and effort `xhigh`.
 - **Inferred only:** aliases with Extra Usage disabled where the enabled alias
   maps to a canonical model whose disabled full ID was directly measured. In
   particular, disabled-state `fable` is expected to reach the measured Fable
@@ -168,7 +228,9 @@ Claude Code `2.1.218` coverage.
 - **User-reported only:** Fable 5 works on Max. The bridge preserves configured
   Max behavior, but Phase 8 did not measure it.
 - **Untested:** Max, Team, Enterprise, API-key authentication, other accounts,
-  aliases with Extra Usage disabled, and near-limit payload boundary behavior.
+  aliases with Extra Usage disabled, near-limit payload boundary behavior, the
+  non-Opus-5 model matrix on `2.1.220`, Opus 5 with Extra Usage enabled, and
+  Opus 5 at effort `max`.
 
 Do not extend these results to an untested account, authentication method,
 subscription tier, or Extra Usage state.

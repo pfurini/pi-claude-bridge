@@ -425,6 +425,32 @@ describe("offline Agent SDK process contracts", () => {
     assert.equal(state.result.successful, true);
   });
 
+  it("ignores additive init and result fields introduced by 2.1.220", {
+    timeout: 10_000,
+  }, async () => {
+    // fast_mode_state / fast_mode_disabled_reason / capabilities are additive
+    // members of already-known messages. The reducer must not parse or trip on
+    // them while fast mode stays an unimplemented opt-in.
+    const messages = await runFakeQuery({ scenario: "additive-fields" });
+    const state = createSdkMessageState();
+    for (const message of messages) reduceSdkMessage(state, message);
+
+    const init = systemInit(messages);
+    assert.equal(init.fast_mode_disabled_reason, "sdk_opt_in_required");
+    assert.equal(terminalResult(messages).fast_mode_state, "off");
+
+    assert.deepEqual(state.unknownMessageTypes, [], "additive fields must not register as unknown message types");
+    assert.equal(state.result.successful, true);
+    assert.equal(state.result.isError, false);
+    assert.equal(state.systemInit.sessionId, init.session_id);
+    assert.equal(state.systemInit.claudeCodeVersion, init.claude_code_version);
+    // The parsed shape stays exactly the four documented fields.
+    assert.deepEqual(
+      Object.keys(state.systemInit).sort(),
+      ["claudeCodeVersion", "mcpServers", "sessionId", "tools"],
+    );
+  });
+
   it("aborts an in-flight fake query", { timeout: 10_000 }, async () => {
     const abortController = new AbortController();
     const sdkQuery = query({
@@ -507,7 +533,24 @@ async function captureExecutableSelection(pathToClaudeCodeExecutable) {
   return { messages, spawn: spawns[0] };
 }
 
+// Pinned target of the 2.1.220 / Opus 5 update. A dependency bump that moves
+// either number must be a deliberate edit here, with the plan's verification
+// re-run — not a silent drift.
+const TARGET_AGENT_SDK_VERSION = "0.3.220";
+const TARGET_CLAUDE_CODE_VERSION = "2.1.220";
+
+function agentSdkMetadata() {
+  const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
+  return JSON.parse(readFileSync(join(dirname(sdkEntry), "package.json"), "utf8"));
+}
+
 describe("Claude Code executable resolution", () => {
+  it("bundles the pinned Agent SDK and Claude Code versions", () => {
+    const metadata = agentSdkMetadata();
+    assert.equal(metadata.version, TARGET_AGENT_SDK_VERSION);
+    assert.equal(metadata.claudeCodeVersion, TARGET_CLAUDE_CODE_VERSION);
+  });
+
   it("resolves the SDK's installed platform executable by default", {
     timeout: 15_000,
   }, async () => {
@@ -530,6 +573,7 @@ describe("Claude Code executable resolution", () => {
     });
     assert.equal(version.status, 0, version.stderr);
     assert.match(version.stdout, new RegExp(metadata.claudeCodeVersion));
+    assert.match(version.stdout, new RegExp(TARGET_CLAUDE_CODE_VERSION));
   });
 
   it("reports the selected bundled Claude Code inventory and policies without credentials", {
@@ -538,11 +582,8 @@ describe("Claude Code executable resolution", () => {
     const init = await captureBundledSystemInit();
     assert.ok(init);
 
-    const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
-    const metadata = JSON.parse(
-      readFileSync(join(dirname(sdkEntry), "package.json"), "utf8"),
-    );
-    assert.equal(init.claude_code_version, metadata.claudeCodeVersion);
+    assert.equal(init.claude_code_version, agentSdkMetadata().claudeCodeVersion);
+    assert.equal(init.claude_code_version, TARGET_CLAUDE_CODE_VERSION);
     for (const tool of [
       "Task",
       "TaskCreate",

@@ -40,8 +40,8 @@ done
 
 OLD_SDK=$(node -e 'console.log(require(process.argv[1]).version)' "$OLD_BRIDGE_DIR/node_modules/@anthropic-ai/claude-agent-sdk/package.json")
 TARGET_SDK=$(node -e 'console.log(require(process.argv[1]).version)' "$DIR/node_modules/@anthropic-ai/claude-agent-sdk/package.json")
-if [[ "$OLD_SDK" != "0.2.141" || "$TARGET_SDK" != "0.3.218" ]]; then
-	echo "ERROR: expected installed old/target Agent SDK versions 0.2.141/0.3.218, got $OLD_SDK/$TARGET_SDK" >&2
+if [[ "$OLD_SDK" != "0.2.141" || "$TARGET_SDK" != "0.3.220" ]]; then
+	echo "ERROR: expected installed old/target Agent SDK versions 0.2.141/0.3.220, got $OLD_SDK/$TARGET_SDK" >&2
 	exit 1
 fi
 

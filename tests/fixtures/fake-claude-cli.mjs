@@ -10,8 +10,27 @@ const RESULT_UUID = "00000000-0000-4000-8000-000000000003";
 const fakeVersion = process.env.FAKE_CLAUDE_VERSION ?? "0.0.0-fake";
 const scenario = process.env.FAKE_CLAUDE_SCENARIO ?? "success";
 
+// Fields Claude Code 2.1.220 added to already-known init/result messages
+// (fast mode, interrupt capabilities). The bridge must ignore them, not choke.
+const ADDITIVE_FIELDS_SCENARIO = "additive-fields";
+function additiveFields() {
+  if (scenario !== ADDITIVE_FIELDS_SCENARIO) return {};
+  return {
+    fast_mode_state: "off",
+    fast_mode_disabled_reason: "sdk_opt_in_required",
+    capabilities: [
+      "interrupt_receipt_v1",
+      "interrupt_cancel_queued_v1",
+      "msg_lifecycle_v1",
+    ],
+    a_field_from_a_future_release: { nested: true },
+  };
+}
+
 const DEFAULT_NATIVE_TOOLS = [
-  // Claude Code 2.1.218 default SDK inventory.
+  // Stand-in inventory for offline policy filtering. It only has to be a superset
+  // of the names the allow/deny policies act on; the real Claude Code inventory is
+  // asserted against the actual binary in unit-sdk-runtime-contract.mjs.
   "Task",
   "Bash",
   "CronCreate",
@@ -201,6 +220,7 @@ function emitSystemInit() {
     claude_code_version: fakeVersion,
     output_style: "default",
     uuid: "00000000-0000-4000-8000-000000000000",
+    ...additiveFields(),
   });
 }
 
@@ -339,6 +359,7 @@ function emitSuccessResult(responseText) {
     modelUsage: {},
     permission_denials: [],
     uuid: RESULT_UUID,
+    ...additiveFields(),
   });
 }
 

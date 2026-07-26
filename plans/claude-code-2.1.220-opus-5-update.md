@@ -2,7 +2,9 @@
 
 <!-- markdownlint-disable MD013 -->
 
-**Status (2026-07-26):** Analysis and implementation plan only. No production dependency or source change has been applied. The 2026-07-25 analysis is retained below; the 2026-07-26 reassessment supersedes its Pi version, model-catalog, dependency, and effort-mapping conclusions.
+**Status (2026-07-26):** Implemented. Sections 1 through 8 and 10's constant updates are applied, and the authenticated Opus 5 suite (`tests/int-opus-5.mjs`) passes on Agent SDK `0.3.220` / Claude Code `2.1.220` with pi-ai `0.82.1`. Not done, and still open: Linux and Windows platform validation (section 9 items 7-8, no runners available), the clean-consumer install at the declared minimum Node `22.19.0` (only Node `v26.5.0` is installed; verified on `v26.5.0`), the Phase 6 cross-version and rollback runs (constants updated, harnesses need the old isolated installs re-provisioned), and the Max-plan / Extra-Usage-enabled Opus 5 probes.
+
+The 2026-07-25 analysis is retained below; the 2026-07-26 reassessment supersedes its Pi version, model-catalog, dependency, and effort-mapping conclusions.
 
 ## Reassessment (2026-07-26)
 
