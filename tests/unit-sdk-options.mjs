@@ -209,6 +209,36 @@ describe("AskClaude SDK options", () => {
 		assert.equal("allowedTools" in options, false);
 	});
 
+	// `systemPrompt: undefined` sends no preset at all on this path, which left full
+	// mode holding Bash, Write and Edit with no blast-radius guidance and no
+	// environment block. The condition is a union rather than a mode check because
+	// the forwarded skills block rides on the same append.
+	it("sends the preset in full mode even with nothing to append", () => {
+		const options = build("full");
+		assert.deepEqual(options.systemPrompt, {
+			type: "preset",
+			preset: "claude_code",
+			append: undefined,
+		});
+	});
+
+	it("leaves read and none preset-free when there is nothing to append", () => {
+		for (const mode of ["read", "none"]) {
+			assert.equal(build(mode).systemPrompt, undefined, `${mode} should send no preset`);
+		}
+	});
+
+	it("still forwards an append in read and none, which requires the preset", () => {
+		for (const mode of ["read", "none"]) {
+			const options = build(mode, { systemPromptAppend: "available skills" });
+			assert.deepEqual(
+				options.systemPrompt,
+				{ type: "preset", preset: "claude_code", append: "available skills" },
+				`${mode} should carry the append through the preset`,
+			);
+		}
+	});
+
 	it("preserves an explicit empty settings source list", () => {
 		const options = build("read", { settingSources: [] });
 		assert.deepEqual(options.settingSources, []);

@@ -89,7 +89,7 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 - `defaultMode` — `"read"` (default), `"none"`, or `"full"`. Invalid values fall back to read mode with a warning.
 - `defaultIsolated` — start each call in a fresh session (default `false`)
 - `allowFullMode` — allow `mode: "full"`; set `false` to lock it out. This also overrides `defaultMode: "full"`, falls back to read mode, and emits a warning.
-- `appendSkills` — forward pi's skills block into the system prompt (default `true`)
+- `appendSkills` — forward pi's skills block into the system prompt (default `true`). Note that `full` mode always sends Claude Code's system prompt regardless of this setting, since it grants shell and filesystem access and needs the accompanying safety guidance; `read` and `none` send it only when there is something to append. See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md).
 
 `provider`:
 - `plan` (default `"pro"`) — set to `"max"` for Max (or Team Premium/Enterprise) to enable Opus 4.6 with 1M context.

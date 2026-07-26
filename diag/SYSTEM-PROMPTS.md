@@ -258,17 +258,61 @@ with `claude-sonnet-5[1m]`:
 | none | present | 13,894 | yes | yes |
 
 PowerShell tracks whether `Bash` is in the disallowed list, which is why `full`
-mode escapes it. Two consequences shaped the fixes above:
+mode escapes it. AskClaude also keeps Claude Code's native tools, so it gets the
+model-ID line and (in `read`/`none`) a shell-only line, never the provider path's
+MCP tool disclaimer.
 
-- The corrections ride along with the skills append rather than being sent on
-  their own. Sending them alone would set `systemPrompt` and thereby switch the
-  preset **on**, adding ~14K characters to a path that does not use it today.
-  That is a behavior change, not a correction.
-- AskClaude keeps Claude Code's native tools, so it gets the model-ID line and (in
-  `read`/`none`) a shell-only line, never the provider path's MCP tool disclaimer.
+### What the preset-free sub-agent was missing
 
-Whether AskClaude *should* run without the preset is a separate design question
-this record does not answer.
+Probing the assembled request for a `full`-mode call with no skills block: 25 tool
+definitions (Bash, Write, Edit, Agent and 21 others) against a 136-character system
+prompt. Absent were the entire `# Environment` block (working directory, platform,
+OS, shell, git status, model identity) and `# Executing actions with care`, which
+is the reversibility and blast-radius policy. Tool *descriptions* were still
+present and carry substantial embedded guidance, so the sub-agent was not
+unguided; what it lacked was the cross-cutting harness framing.
+
+Handing a model `Bash`, `Write` and `Edit` with no blast-radius policy and no idea
+what directory it is in is not a defensible default, and it was not a chosen one:
+whether a sub-agent got that framing depended on whether pi's system prompt
+happened to contain a skills block, which has nothing to do with how much damage
+that sub-agent can do.
+
+### Resolution
+
+`full` mode now always sends the preset. `read` and `none` stay preset-free when
+there is nothing to append: `none` has a single tool and `read` has a low blast
+radius, so ~14K characters of tool guidance would be waste.
+
+The condition in `buildAskClaudeQueryOptions` is `mode === "full" || Boolean(append)`,
+a union rather than a plain mode check, because the forwarded skills block is
+delivered *through* that append. Testing the mode alone would silently stop
+forwarding skills in `read` and `none`. `index.ts` mirrors the same union when
+deciding whether to build corrections; the two have to stay in step, since
+emitting corrections is itself what can make the append non-empty.
+
+Measured after the change, with `claude-sonnet-5[1m]`:
+
+| Mode | Skills block | Prompt | Blast-radius policy | Environment | Skills forwarded |
+| --- | --- | --- | --- | --- | --- |
+| full | absent | 16,045 | yes | yes | n/a |
+| read | absent | 137 | no | no | n/a |
+| none | absent | 137 | no | no | n/a |
+| full | present | 16,097 | yes | yes | yes |
+| read | present | 16,278 | yes | yes | yes |
+| none | present | 15,406 | yes | yes | yes |
+
+The preset block carries `cache_control: ephemeral 1h`, so the added cost is a
+cache write on the first `full`-mode call per hour per distinct prefix and cache
+reads after that, not full input tokens on every call.
+
+One consequence to watch: `full`-mode sub-agents now receive the guidance to
+confirm before hard-to-reverse actions, and nobody is available to answer them
+mid-delegation. `permissionMode` is `bypassPermissions`, so nothing blocks
+mechanically, but a sub-agent that stops to ask is a worse outcome than one that
+is under-briefed. This has not been observed in practice and needs
+`tests/int-askclaude-upgrade.mjs` (currently blocked on alt-provider credits) to
+confirm either way.
 
 ## Recommendation
 

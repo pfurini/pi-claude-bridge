@@ -188,6 +188,20 @@ export function buildAskClaudeQueryOptions(
 	if (input.effort) extraArgs["thinking-display"] = "summarized";
 	const policy = getAskClaudeToolPolicy(input.mode);
 
+	// `systemPrompt: undefined` means no preset at all on this path, not "the SDK
+	// default": measured on 2.1.220, it yields a 136-character system prompt with no
+	// environment block and none of Claude Code's guidance. That is wrong for full
+	// mode, which hands the model Bash, Write, Edit and 22 other tools with no
+	// blast-radius framing and no idea what directory it is in.
+	//
+	// The condition is a union rather than a plain mode check because the forwarded
+	// skills block is delivered *through* this append. Testing the mode alone would
+	// silently stop forwarding skills in read and none modes. Read and none stay
+	// preset-free when there is nothing to append: none has a single tool and read
+	// has a low blast radius, so ~14K characters of tool guidance would be waste.
+	// See diag/SYSTEM-PROMPTS.md.
+	const usePreset = input.mode === "full" || Boolean(input.systemPromptAppend);
+
 	return {
 		cwd: input.cwd,
 		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
@@ -205,8 +219,12 @@ export function buildAskClaudeQueryOptions(
 			: {}),
 		...(policy.skills !== undefined ? { skills: policy.skills } : {}),
 		...(input.effort ? { effort: input.effort } : {}),
-		systemPrompt: input.systemPromptAppend
-			? { type: "preset", preset: "claude_code", append: input.systemPromptAppend }
+		systemPrompt: usePreset
+			? {
+				type: "preset",
+				preset: "claude_code",
+				append: input.systemPromptAppend || undefined,
+			}
 			: undefined,
 		settingSources: input.settingSources ?? ["user", "project"],
 		extraArgs,

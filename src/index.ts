@@ -1471,14 +1471,14 @@ async function promptAndWait(
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
 		? extractSkillsBlock(options.systemPrompt) : undefined;
 
-	// Harness corrections ride along with the skills block rather than being sent on
-	// their own, because an append is what switches the claude_code preset on for
-	// this path. Without one the SDK sends no preset at all (measured: a 62-character
-	// identity line), so there is nothing to correct, and adding an append purely to
-	// carry a correction would pull in ~14K characters of prompt this path does not
-	// use today. Unlike the provider, AskClaude keeps Claude Code's native tools, so
-	// only the model ID is wrong here, plus the shell in modes that block Bash.
-	const askClaudeCorrections = skillsBlock
+	// Corrections are only meaningful when the preset is actually sent, so this
+	// mirrors the `usePreset` union in buildAskClaudeQueryOptions. Keep the two in
+	// step: emitting corrections here is what makes the append non-empty, which is
+	// the other half of that union. Unlike the provider, AskClaude keeps Claude
+	// Code's native tools, so only the model ID is wrong here, plus the shell in
+	// modes that block Bash.
+	const presetActive = mode === "full" || Boolean(skillsBlock);
+	const askClaudeCorrections = presetActive
 		? buildHarnessCorrections({
 			modelId,
 			cliModelId: cliModel,
