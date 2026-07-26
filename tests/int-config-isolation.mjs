@@ -2,7 +2,14 @@
 
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { getSessionPath } from "cc-session-io";
@@ -42,7 +49,10 @@ describe("authenticated Claude config isolation", () => {
 
 	after(async () => {
 		await harness.stop();
-		if (TEST_ROOT.startsWith(TEST_ROOT_PREFIX) && TEST_ROOT.length > TEST_ROOT_PREFIX.length) {
+		if (
+			TEST_ROOT.startsWith(TEST_ROOT_PREFIX) &&
+			TEST_ROOT.length > TEST_ROOT_PREFIX.length
+		) {
 			rmSync(TEST_ROOT, { recursive: true, force: true });
 		}
 		console.log(`  RPC log: ${harness.RPC_LOG}`);
@@ -83,15 +93,38 @@ describe("authenticated Claude config isolation", () => {
 		const seeded = debugLog.match(
 			/syncResult: path=rebuild sessionId=([a-f0-9-]+) priors=\d+ first/,
 		);
-		assert.ok(seeded, "expected the provider switch to seed a shared Claude session");
+		assert.ok(
+			seeded,
+			"expected the provider switch to seed a shared Claude session",
+		);
 		const sessionId = seeded[1];
-		const configuredPath = getSessionPath(sessionId, TEST_CWD, CONFIGURED_PROFILE);
-		const inheritedPath = getSessionPath(sessionId, TEST_CWD, INHERITED_PROFILE);
+		const configuredPath = getSessionPath(
+			sessionId,
+			TEST_CWD,
+			CONFIGURED_PROFILE,
+		);
+		const inheritedPath = getSessionPath(
+			sessionId,
+			TEST_CWD,
+			INHERITED_PROFILE,
+		);
 		const normalPath = getSessionPath(sessionId, TEST_CWD, NORMAL_PROFILE);
 
-		assert.equal(existsSync(configuredPath), true, `missing configured session ${configuredPath}`);
-		assert.equal(existsSync(inheritedPath), false, `inherited profile was used: ${inheritedPath}`);
-		assert.equal(existsSync(normalPath), false, `normal Claude profile was used: ${normalPath}`);
+		assert.equal(
+			existsSync(configuredPath),
+			true,
+			`missing configured session ${configuredPath}`,
+		);
+		assert.equal(
+			existsSync(inheritedPath),
+			false,
+			`inherited profile was used: ${inheritedPath}`,
+		);
+		assert.equal(
+			existsSync(normalPath),
+			false,
+			`normal Claude profile was used: ${normalPath}`,
+		);
 		assert.match(debugLog, /syncResult: path=reuse sessionId=/);
 	});
 });

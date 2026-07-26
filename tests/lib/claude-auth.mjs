@@ -49,7 +49,9 @@ export function claudeAuthStatus(configDir = defaultClaudeConfigDir()) {
 	}
 }
 
-export function assertClaudeAuthenticated(configDir = defaultClaudeConfigDir()) {
+export function assertClaudeAuthenticated(
+	configDir = defaultClaudeConfigDir(),
+) {
 	const { executable, status } = claudeAuthStatus(configDir);
 	if (status.loggedIn === true) return status;
 	throw new Error(
@@ -58,13 +60,21 @@ export function assertClaudeAuthenticated(configDir = defaultClaudeConfigDir()) 
 	);
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain =
+	process.argv[1] &&
+	resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
 	try {
-		const status = assertClaudeAuthenticated(process.argv[2] || defaultClaudeConfigDir());
-		console.log(`Claude authentication ready (${status.authMethod ?? "unknown"})`);
+		const status = assertClaudeAuthenticated(
+			process.argv[2] || defaultClaudeConfigDir(),
+		);
+		console.log(
+			`Claude authentication ready (${status.authMethod ?? "unknown"})`,
+		);
 	} catch (error) {
-		console.error(`ERROR: ${error instanceof Error ? error.message : String(error)}`);
+		console.error(
+			`ERROR: ${error instanceof Error ? error.message : String(error)}`,
+		);
 		process.exitCode = 1;
 	}
 }

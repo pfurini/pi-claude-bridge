@@ -10,7 +10,8 @@ describe("AGENTS.md forwarding", () => {
 		const previousCwd = process.cwd();
 		const root = mkdtempSync(join(tmpdir(), "claude-bridge-agents-"));
 		const nested = join(root, "nested");
-		const content = "Read ~/.pi/agent/AGENTS.md and use the pi package from .pi/skills.";
+		const content =
+			"Read ~/.pi/agent/AGENTS.md and use the pi package from .pi/skills.";
 		try {
 			mkdirSync(nested);
 			writeFileSync(join(root, "AGENTS.md"), `${content}\n`);
