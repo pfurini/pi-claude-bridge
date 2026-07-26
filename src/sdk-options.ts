@@ -99,6 +99,20 @@ export function getAskClaudeDisallowedTools(mode: AskClaudeMode): string[] {
 	return getAskClaudeToolPolicy(mode).disallowedTools;
 }
 
+// Isolation switches shared by the provider and AskClaude paths.
+// CLAUDE_CODE_DISABLE_AUTO_MEMORY=1: Claude Code's auto-memory section instructs
+// the model to write memory files with the native Write tool, which neither path
+// exposes (the provider sends tools: [] and AskClaude restricts the inventory),
+// so the instructions are unactionable. It is also the largest removable block in
+// the preset prompt: on Claude Code 2.1.220 it accounts for roughly half of the
+// legacy-family prompt (Sonnet 5: 26,762 -> 13,880 chars) and about a fifth of the
+// new-family one (Opus 5: 9,287 -> 7,145). See diag/SYSTEM-PROMPTS.md.
+const CLAUDE_ISOLATION_ENV = {
+	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
+	DISABLE_AUTO_COMPACT: "1",
+	CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+} as const;
+
 export interface ProviderQueryOptionsInput {
 	cwd: string;
 	baseEnv: NodeJS.ProcessEnv;
@@ -123,8 +137,7 @@ export function buildProviderQueryOptions(
 	return {
 		cwd: input.cwd,
 		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
-			ENABLE_CLAUDEAI_MCP_SERVERS: "0",
-			DISABLE_AUTO_COMPACT: "1",
+			...CLAUDE_ISOLATION_ENV,
 		}),
 		tools: [],
 		permissionMode: "bypassPermissions",
@@ -173,8 +186,7 @@ export function buildAskClaudeQueryOptions(
 	return {
 		cwd: input.cwd,
 		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
-			ENABLE_CLAUDEAI_MCP_SERVERS: "0",
-			DISABLE_AUTO_COMPACT: "1",
+			...CLAUDE_ISOLATION_ENV,
 		}),
 		permissionMode: "bypassPermissions",
 		allowDangerouslySkipPermissions: true,

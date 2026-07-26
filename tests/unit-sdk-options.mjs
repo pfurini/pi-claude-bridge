@@ -64,6 +64,7 @@ describe("provider SDK options", () => {
 		assert.equal(options.env.CLAUDE_CONFIG_DIR, claudeConfigDir);
 		assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "0");
 		assert.equal(options.env.DISABLE_AUTO_COMPACT, "1");
+		assert.equal(options.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
 		assert.equal(options.extraArgs.model, "claude-test[1m]");
 		assert.equal("strict-mcp-config" in options.extraArgs, false);
 		assert.equal(options.extraArgs["thinking-display"], "summarized");
@@ -86,7 +87,57 @@ describe("provider SDK options", () => {
 		assert.equal(options.strictMcpConfig, false);
 		assert.equal("strict-mcp-config" in options.extraArgs, false);
 		assert.equal(options.systemPrompt.append, undefined);
+		assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "0");
+		assert.equal(options.env.DISABLE_AUTO_COMPACT, "1");
+		assert.equal(options.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
 	});
+});
+
+// Auto-memory used to be set on the compaction path only, so the provider and
+// AskClaude prompts still carried a large memory section instructing the model to
+// use a native Write tool neither path exposes. Assert every spawn path together
+// so the three cannot drift apart again.
+describe("Claude Code auto-memory isolation", () => {
+	const builders = {
+		provider: () =>
+			buildProviderQueryOptions({
+				cwd: "/work/project",
+				baseEnv,
+				claudeConfigDir,
+				cliModel: "claude-test",
+				strictMcpConfigEnabled: true,
+			}),
+		askClaude: () =>
+			buildAskClaudeQueryOptions({
+				cwd: "/work/project",
+				baseEnv,
+				claudeConfigDir,
+				cliModel: "claude-test",
+				mode: "read",
+			}),
+		askClaudeNoneMode: () =>
+			buildAskClaudeQueryOptions({
+				cwd: "/work/project",
+				baseEnv,
+				claudeConfigDir,
+				cliModel: "claude-test",
+				mode: "none",
+			}),
+		isolatedSummary: () =>
+			buildIsolatedSummaryQueryOptions({
+				cwd: "/work/project",
+				baseEnv,
+				claudeConfigDir,
+				systemPrompt: "Summarize this context",
+				cliModel: "claude-test",
+			}),
+	};
+
+	for (const [name, build] of Object.entries(builders)) {
+		it(`disables auto-memory on the ${name} path`, () => {
+			assert.equal(build().env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
+		});
+	}
 });
 
 describe("AskClaude SDK options", () => {
@@ -135,6 +186,7 @@ describe("AskClaude SDK options", () => {
 		assert.equal(options.env.CLAUDE_CONFIG_DIR, claudeConfigDir);
 		assert.equal(options.env.ENABLE_CLAUDEAI_MCP_SERVERS, "0");
 		assert.equal(options.env.DISABLE_AUTO_COMPACT, "1");
+		assert.equal(options.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
 	});
 
 	it("adds Read, Grep, and Glob explicitly in full mode", () => {
