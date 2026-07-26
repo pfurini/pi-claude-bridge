@@ -23,8 +23,11 @@ exactly as sent and no upstream call is made (no quota spent). Two harness modes
 are captured per model:
 
 - **cli** — the bundled binary run with `-p` (`cc_entrypoint=sdk-cli`).
-- **bridge** — the repo's own `buildProviderQueryOptions`, so the option set
-  cannot drift from what the provider path sends.
+- **bridge** — the repo's own `buildProviderQueryOptions`, so the option set is
+  the provider path's rather than a copy of it. The append is a copy, though:
+  `index.ts` assembles it, not the builder, so the tool re-implements the
+  deterministic part (the harness corrections) and the two can silently diverge
+  if only one is edited. Check both when either changes.
 
 Bridge mode makes exactly one deliberate departure from the provider path: it
 deletes `CLAUDE_CONFIG_DIR` from the built options so the capture can authenticate
