@@ -27,11 +27,12 @@ are captured per model:
   cannot drift from what the provider path sends.
 
 Bridge mode makes exactly one deliberate departure from the provider path: it
-deletes `CLAUDE_CONFIG_DIR` from the built options (see the caveat below), so the
-auto memory directory interpolated into the captured prompt sits under
-`~/.claude/projects/...` rather than the bridge's real `~/.pi/agent/claude/...`.
-Only that path string differs; any memories a real session accumulated live under
-the pi profile, not the one measured here.
+deletes `CLAUDE_CONFIG_DIR` from the built options so the capture can authenticate
+(see the caveat below). That departure is now invisible in the prompt, because
+disabling auto memory removed the only section that interpolated a profile-derived
+path. It did matter for the pre-fix figures quoted in defect 2, where the captured
+memory directory sat under `~/.claude/projects/...` rather than the bridge's real
+`~/.pi/agent/claude/...`; only that path string differed.
 
 `settingSources` is pinned to `[]` in both modes so CLAUDE.md and user settings
 cannot pollute the per-model diff. Bridge mode resolves model IDs with
@@ -56,9 +57,12 @@ Two capture caveats worth knowing:
   The mechanism was not determined and is out of scope here; what matters is that
   the bridge's own profile authenticates normally, so this is a capture caveat
   and not a bridge defect.
-- Prompt sizes shift by a few dozen characters between runs because the auto
-  memory directory path (derived from cwd) is interpolated into the prompt.
-  Compare structure, not exact byte counts, across runs.
+- **cli mode only:** prompt sizes shift by a few dozen characters between runs
+  because the auto memory directory path (derived from cwd) is interpolated into
+  the prompt, and the tool captures from a fresh temp cwd each time. Compare
+  structure, not exact byte counts, across cli runs. Bridge-mode captures are
+  byte-stable across runs now that auto memory is off (defect 2), since nothing
+  cwd-derived remains in the prompt.
 
 ## Result: eight distinct prompts, in two families
 
