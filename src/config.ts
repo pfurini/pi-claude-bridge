@@ -8,7 +8,7 @@
 // the session actually uses. See sessionAgentDir().
 
 import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import { CONFIG_DIR_NAME, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { isAbsolute, join } from "path";
 import { defaultClaudeConfigDir } from "./claude-config.js";
@@ -98,6 +98,15 @@ export function normalizeClaudeConfigDir(
 // ctx.agentDir is absent on pi builds that predate it, hence the fallback.
 export function sessionAgentDir(ctx: ExtensionContext): string {
 	return (ctx as ExtensionContext & { agentDir?: string }).agentDir ?? getAgentDir();
+}
+
+// The same dirs at extension load, where the factory registers models and the
+// AskClaude tool. Those registrations are flushed before any event fires, so
+// session_start is too late to correct them. pi.cwd/pi.agentDir are absent on
+// pi builds that predate them, where the process dirs were the only option.
+export function loadDirs(pi: ExtensionAPI): { cwd: string; agentDir: string } {
+	const api = pi as ExtensionAPI & { cwd?: string; agentDir?: string };
+	return { cwd: api.cwd ?? process.cwd(), agentDir: api.agentDir ?? getAgentDir() };
 }
 
 export function loadConfig(cwd: string, agentDir: string = getAgentDir()): Config {

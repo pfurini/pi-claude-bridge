@@ -16,7 +16,7 @@ import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.j
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
-import { loadConfig, sessionAgentDir, type Config } from "./config.js";
+import { loadConfig, loadDirs, sessionAgentDir, type Config } from "./config.js";
 import { defaultClaudeConfigDir } from "./claude-config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { typeBoxToolToSdkMcpTool } from "./typebox-to-zod.js";
@@ -1610,10 +1610,11 @@ const resolveCwd = (options?: unknown): string =>
 	(options as { cwd?: string } | undefined)?.cwd ?? sessionCwd ?? process.cwd();
 
 export default function (pi: ExtensionAPI) {
-	// Provider settings are read per request, so session_start can re-apply them
-	// once the session's own cwd and agent dir are known. The model list and the
-	// AskClaude tool below are registered here and stay on the activation-time
-	// config: pi flushes registrations before any session exists.
+	// Provider settings are read per request, so session_start re-applies them
+	// from ctx. The model list and the AskClaude tool below are registered here
+	// and keep whatever this load-time config says, because pi flushes those
+	// registrations before the first event; loadDirs() is what makes them follow
+	// the session on pi builds that report its dirs at load.
 	const applyProviderConfig = (config: Config) => {
 		providerSettings = config.provider ?? {};
 		effectiveClaudeConfigDir = providerSettings.claudeConfigDir ?? defaultClaudeConfigDir();
@@ -1624,8 +1625,9 @@ export default function (pi: ExtensionAPI) {
 		};
 	};
 
-	const config = loadConfig(process.cwd());
-	debug("loadConfig:", JSON.stringify(config));
+	const load = loadDirs(pi);
+	const config = loadConfig(load.cwd, load.agentDir);
+	debug("loadConfig:", JSON.stringify(config), `cwd=${load.cwd} agentDir=${load.agentDir}`);
 	applyProviderConfig(config);
 	const registeredModels = applyLongContext(MODELS, longContextSettings);
 
