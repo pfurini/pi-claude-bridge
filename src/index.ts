@@ -318,7 +318,7 @@ async function runIsolatedSummary(
 
 	try {
 		const promptText = extractIsolatedSummaryPrompt(context.messages);
-		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+		const cwd = resolveCwd(options);
 		// Activation-time settings, like the provider and askClaude spawn paths. Reloading
 		// config for this cwd would take the executable from one source and the profile
 		// (effectiveClaudeConfigDir) from another, so a per-project override could split
@@ -1182,7 +1182,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	queryCtx.latestCursor = 0;
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
-	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+	const cwd = resolveCwd(options);
 	const syncResult = syncSharedSession(context.messages, cwd, effectiveClaudeConfigDir, customToolNameToSdk, model.id);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
@@ -1209,7 +1209,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
-	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
+	const agentsAppend = appendSystemPrompt ? extractAgentsAppend(cwd) : undefined;
 	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
@@ -1438,7 +1438,7 @@ async function promptAndWait(
 		context?: Context["messages"];
 	},
 ): Promise<{ responseText: string; stopReason: string }> {
-	const cwd = process.cwd();
+	const cwd = resolveCwd();
 	const requestedModel = options?.model ?? "opus";
 	const model = resolveModel(requestedModel);
 	const modelId = model?.id ?? requestedModel;
@@ -1602,6 +1602,12 @@ const PREVIEW_MAX_CHARS = 1000;
 const PREVIEW_MAX_LINES = 6;
 
 let askClaudeToolName = "AskClaude";
+// Session cwd, cached from the one event that offers it. See the session_start
+// handler: pi never puts cwd in stream options, so this is the only correct
+// source, and process.cwd() is a last resort rather than the default.
+let sessionCwd: string | undefined;
+const resolveCwd = (options?: unknown): string =>
+	(options as { cwd?: string } | undefined)?.cwd ?? sessionCwd ?? process.cwd();
 
 export default function (pi: ExtensionAPI) {
 	const config = loadConfig(process.cwd());
@@ -1631,6 +1637,11 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
+		// The only place the session cwd is offered to an extension. Pi's stream
+		// options carry no cwd, so without caching it here every downstream caller
+		// falls back to process.cwd() - the directory the host process started in,
+		// which is not the session's directory for any SDK or harness caller.
+		sessionCwd = ctx.cwd;
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
