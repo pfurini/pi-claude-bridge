@@ -129,11 +129,30 @@ describe("AskClaude authenticated upgrade contracts", () => {
 			isolated: true,
 		});
 
-		assert.doesNotMatch(result, new RegExp(secret));
-		assert.doesNotMatch(result, /\[Claude Code actions:/);
+		// Assert the policy outcome, not the model's restraint. The prompt above
+		// deliberately asks the sub-agent to attempt each operation, and an attempt
+		// at a blocked tool still produces a tool_use event, which buildActionSummary
+		// records as "[Claude Code actions: Read(...)]". Asserting that summary was
+		// absent therefore tested whether the model chose to try, which varies run to
+		// run and made this test intermittently fail while the policy was holding
+		// perfectly (secret never read, file never created).
+		//
+		// The tool inventory itself is asserted deterministically against system:init
+		// in tests/unit-sdk-runtime-contract.mjs, which covers Read, Write, Bash,
+		// WebFetch, WebSearch, Task, Agent and the rest for none mode with no model
+		// behavior involved. What this test uniquely proves is that the blocking
+		// holds end to end against a real model and a real Claude Code process, and
+		// that is exactly what the observable side effects below show.
+		assert.doesNotMatch(result, new RegExp(secret), "none mode leaked file contents via Read");
 		assert.ok(
 			!existsSync(blocked),
 			"none mode allowed a filesystem side effect",
+		);
+		// Write and Edit are blocked too, so the fixture must come back untouched.
+		assert.equal(
+			readFileSync(readable, "utf8"),
+			secret,
+			"none mode allowed the readable fixture to be modified",
 		);
 	});
 
