@@ -16,7 +16,7 @@ import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.j
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
-import { loadConfig, type Config } from "./config.js";
+import { loadConfig, sessionAgentDir, type Config } from "./config.js";
 import { defaultClaudeConfigDir } from "./claude-config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { typeBoxToolToSdkMcpTool } from "./typebox-to-zod.js";
@@ -1610,15 +1610,23 @@ const resolveCwd = (options?: unknown): string =>
 	(options as { cwd?: string } | undefined)?.cwd ?? sessionCwd ?? process.cwd();
 
 export default function (pi: ExtensionAPI) {
+	// Provider settings are read per request, so session_start can re-apply them
+	// once the session's own cwd and agent dir are known. The model list and the
+	// AskClaude tool below are registered here and stay on the activation-time
+	// config: pi flushes registrations before any session exists.
+	const applyProviderConfig = (config: Config) => {
+		providerSettings = config.provider ?? {};
+		effectiveClaudeConfigDir = providerSettings.claudeConfigDir ?? defaultClaudeConfigDir();
+		// We need these settings to know if we're eligible for 1M context on certain models
+		longContextSettings = {
+			plan: providerSettings.plan ?? "pro",
+			longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
+		};
+	};
+
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
-	providerSettings = config.provider ?? {};
-	effectiveClaudeConfigDir = providerSettings.claudeConfigDir ?? defaultClaudeConfigDir();
-	// We need these settings to know if we're eligible for 1M context on certain models
-	longContextSettings = {
-		plan: providerSettings.plan ?? "pro",
-		longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
-	};
+	applyProviderConfig(config);
 	const registeredModels = applyLongContext(MODELS, longContextSettings);
 
 	// Reset shared session on pi session lifecycle events
@@ -1642,6 +1650,13 @@ export default function (pi: ExtensionAPI) {
 		// falls back to process.cwd() - the directory the host process started in,
 		// which is not the session's directory for any SDK or harness caller.
 		sessionCwd = ctx.cwd;
+		// Same reason we cache the cwd: activation ran against process.cwd() and the
+		// process-wide agent dir. A session created with its own agentDir keeps its
+		// own claude-bridge.json, so re-resolve before the first request reads
+		// effectiveClaudeConfigDir and picks a Claude profile.
+		const sessionConfig = loadConfig(ctx.cwd, sessionAgentDir(ctx));
+		debug("loadConfig(session):", JSON.stringify(sessionConfig));
+		applyProviderConfig(sessionConfig);
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}

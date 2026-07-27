@@ -1,11 +1,14 @@
-// User-facing extension config. Loaded once at extension registration from
-// the global agent dir (getAgentDir(), e.g. ~/.pi/agent/claude-bridge.json)
-// and the project Pi config directory, project overriding global. Missing or
-// unparseable files are ignored (error to console.error, empty object
-// returned) so the extension always starts.
+// User-facing extension config. Loaded from an agent dir
+// (e.g. ~/.pi/agent/claude-bridge.json) and the project Pi config directory,
+// project overriding global. Missing or unparseable files are ignored (error
+// to console.error, empty object returned) so the extension always starts.
+//
+// Loaded twice: once at extension registration, where neither the session cwd
+// nor its agent dir is known yet, and again on session_start against the dirs
+// the session actually uses. See sessionAgentDir().
 
 import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { isAbsolute, join } from "path";
 import { defaultClaudeConfigDir } from "./claude-config.js";
@@ -89,8 +92,16 @@ export function normalizeClaudeConfigDir(
 	return fallback;
 }
 
-export function loadConfig(cwd: string): Config {
-	const global = tryParseJson(join(getAgentDir(), "claude-bridge.json"));
+// The agent dir backing a session. pi.createAgentSession({ agentDir }) lets a
+// harness isolate a run under its own dir, and only ctx reports it; getAgentDir()
+// is process-wide and would hand that run the operator's personal profile.
+// ctx.agentDir is absent on pi builds that predate it, hence the fallback.
+export function sessionAgentDir(ctx: ExtensionContext): string {
+	return (ctx as ExtensionContext & { agentDir?: string }).agentDir ?? getAgentDir();
+}
+
+export function loadConfig(cwd: string, agentDir: string = getAgentDir()): Config {
+	const global = tryParseJson(join(agentDir, "claude-bridge.json"));
 	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
 	const askClaude = { ...global.askClaude, ...project.askClaude } as NonNullable<Config["askClaude"]> & {
 		defaultMode?: unknown;
