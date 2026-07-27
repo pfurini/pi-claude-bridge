@@ -3,14 +3,16 @@ import type {
 	Options,
 	SettingSource,
 } from "@anthropic-ai/claude-agent-sdk";
+import { claudeChildEnv } from "./claude-config.js";
 
 export type CliDebugOptions = Pick<Options, "debug" | "debugFile" | "stderr">;
 
 export type AskClaudeMode = "full" | "read" | "none";
 
 // AskClaude cannot satisfy interactive or delayed workflows through Pi's tool call.
-// RemoteTrigger is retained for wire-name compatibility even though Claude Code
-// 2.1.218 does not expose it in the default SDK inventory.
+// RemoteTrigger is retained for wire-name compatibility even though the targeted
+// Claude Code release does not expose it in the default SDK inventory (confirmed
+// on 2.1.220).
 const ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS = [
 	"AskUserQuestion",
 	"EnterPlanMode",
@@ -97,9 +99,24 @@ export function getAskClaudeDisallowedTools(mode: AskClaudeMode): string[] {
 	return getAskClaudeToolPolicy(mode).disallowedTools;
 }
 
+// Isolation switches shared by the provider and AskClaude paths.
+// CLAUDE_CODE_DISABLE_AUTO_MEMORY=1: Claude Code's auto-memory section instructs
+// the model to write memory files with the native Write tool, which neither path
+// exposes (the provider sends tools: [] and AskClaude restricts the inventory),
+// so the instructions are unactionable. It is also the largest removable block in
+// the preset prompt: on Claude Code 2.1.220 it accounts for roughly half of the
+// legacy-family prompt (Sonnet 5: 26,762 -> 13,880 chars) and about a fifth of the
+// new-family one (Opus 5: 9,287 -> 7,145). See diag/SYSTEM-PROMPTS.md.
+const CLAUDE_ISOLATION_ENV = {
+	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
+	DISABLE_AUTO_COMPACT: "1",
+	CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+} as const;
+
 export interface ProviderQueryOptionsInput {
 	cwd: string;
 	baseEnv: NodeJS.ProcessEnv;
+	claudeConfigDir: string;
 	cliModel: string;
 	systemPromptAppend?: string;
 	effort?: EffortLevel;
@@ -119,11 +136,9 @@ export function buildProviderQueryOptions(
 
 	return {
 		cwd: input.cwd,
-		env: {
-			...input.baseEnv,
-			ENABLE_CLAUDEAI_MCP_SERVERS: "0",
-			DISABLE_AUTO_COMPACT: "1",
-		},
+		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
+			...CLAUDE_ISOLATION_ENV,
+		}),
 		tools: [],
 		permissionMode: "bypassPermissions",
 		allowDangerouslySkipPermissions: true,
@@ -149,10 +164,16 @@ export function buildProviderQueryOptions(
 export interface AskClaudeQueryOptionsInput {
 	cwd: string;
 	baseEnv: NodeJS.ProcessEnv;
+	claudeConfigDir: string;
 	cliModel: string;
 	mode: AskClaudeMode;
 	effort?: EffortLevel;
-	skillsBlock?: string;
+	/**
+	 * Appended to the claude_code preset. Carries the forwarded skills block and any
+	 * harness corrections. Leaving it unset sends no preset at all on this path, so
+	 * do not set it just to attach a minor correction.
+	 */
+	systemPromptAppend?: string;
 	settingSources?: SettingSource[];
 	resumeSessionId?: string | null;
 	isolated?: boolean;
@@ -167,13 +188,25 @@ export function buildAskClaudeQueryOptions(
 	if (input.effort) extraArgs["thinking-display"] = "summarized";
 	const policy = getAskClaudeToolPolicy(input.mode);
 
+	// `systemPrompt: undefined` means no preset at all on this path, not "the SDK
+	// default": measured on 2.1.220, it yields a 136-character system prompt with no
+	// environment block and none of Claude Code's guidance. That is wrong for full
+	// mode, which hands the model Bash, Write, Edit and 22 other tools with no
+	// blast-radius framing and no idea what directory it is in.
+	//
+	// The condition is a union rather than a plain mode check because the forwarded
+	// skills block is delivered *through* this append. Testing the mode alone would
+	// silently stop forwarding skills in read and none modes. Read and none stay
+	// preset-free when there is nothing to append: none has a single tool and read
+	// has a low blast radius, so ~14K characters of tool guidance would be waste.
+	// See diag/SYSTEM-PROMPTS.md.
+	const usePreset = input.mode === "full" || Boolean(input.systemPromptAppend);
+
 	return {
 		cwd: input.cwd,
-		env: {
-			...input.baseEnv,
-			ENABLE_CLAUDEAI_MCP_SERVERS: "0",
-			DISABLE_AUTO_COMPACT: "1",
-		},
+		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
+			...CLAUDE_ISOLATION_ENV,
+		}),
 		permissionMode: "bypassPermissions",
 		allowDangerouslySkipPermissions: true,
 		strictMcpConfig: true,
@@ -186,8 +219,12 @@ export function buildAskClaudeQueryOptions(
 			: {}),
 		...(policy.skills !== undefined ? { skills: policy.skills } : {}),
 		...(input.effort ? { effort: input.effort } : {}),
-		systemPrompt: input.skillsBlock
-			? { type: "preset", preset: "claude_code", append: input.skillsBlock }
+		systemPrompt: usePreset
+			? {
+				type: "preset",
+				preset: "claude_code",
+				append: input.systemPromptAppend || undefined,
+			}
 			: undefined,
 		settingSources: input.settingSources ?? ["user", "project"],
 		extraArgs,
@@ -203,6 +240,7 @@ export function buildAskClaudeQueryOptions(
 export interface IsolatedSummaryQueryOptionsInput {
 	cwd: string;
 	baseEnv: NodeJS.ProcessEnv;
+	claudeConfigDir: string;
 	systemPrompt: string;
 	cliModel: string;
 	claudeExecutable?: string;
@@ -214,11 +252,10 @@ export function buildIsolatedSummaryQueryOptions(
 ): Options {
 	return {
 		cwd: input.cwd,
-		env: {
-			...input.baseEnv,
+		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
 			DISABLE_AUTO_COMPACT: "1",
 			CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-		},
+		}),
 		tools: [],
 		strictMcpConfig: true,
 		settingSources: [],

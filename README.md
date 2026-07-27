@@ -23,11 +23,13 @@ pi install npm:pi-claude-bridge
 
 ## Provider
 
-Use `/model` to select `claude-bridge/claude-fable-5`, `claude-bridge/claude-opus-4-8`, `claude-bridge/claude-opus-4-7`, `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-5`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
+Use `/model` to select `claude-bridge/claude-fable-5`, `claude-bridge/claude-opus-5`, `claude-bridge/claude-opus-4-8`, `claude-bridge/claude-opus-4-7`, `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-5`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
 
 Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider.
 
-**1M Context:** Opus 4.7 and Opus 4.8 get 1M context by default. Opus 4.6 only gets 1M if you're on a Max plan or pay for Extra Usage. Sonnet 4.6 only gets 1M if you pay for Extra Usage. You will need to set `provider.plan` and/or `provider.longContextExtraUsage` for 1M context in Opus 4.6/Sonnet 4.6 as described in [Configuration](#configuration).
+**1M Context:** Opus 5, Opus 4.7, and Opus 4.8 get 1M context by default. Opus 5 is native 1M: it is requested by its bare model ID and depends on neither `provider.plan` nor `provider.longContextExtraUsage`. Opus 4.6 only gets 1M if you're on a Max plan or pay for Extra Usage. Sonnet 4.6 only gets 1M if you pay for Extra Usage. You will need to set `provider.plan` and/or `provider.longContextExtraUsage` for 1M context in Opus 4.6/Sonnet 4.6 as described in [Configuration](#configuration).
+
+**Model shortcuts:** `opus` selects Opus 5. Opus 4.8, 4.7, and 4.6 remain selectable by their full IDs for pinning and rollback.
 
 ## AskClaude Tool
 
@@ -45,13 +47,21 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 
 - **`prompt`** — the question or task for Claude Code
 - **`mode`** — `read` (default, read files and search/fetch on web), `none` (no file access), or `full` (read+write+bash). Set `allowFullMode: false` to disable full mode.
-- **`model`** — `opus` (default), `sonnet`, `haiku`, or a full model ID
-- **`thinking`** — effort level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
+- **`model`** — `opus` (default, resolves to Opus 5), `sonnet`, `haiku`, or a full model ID
+- **`thinking`** — effort level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Levels resolve per model, the same way they do for the provider: on models with a distinct top-but-one tier (Opus 5, Opus 4.8, Opus 4.7, Sonnet 5, Fable 5) `xhigh` means the literal `xhigh` tier, and `max` is the maximum. On models with no separate `xhigh` tier (Opus 4.6, Sonnet 4.6, Haiku 4.5) `xhigh` and `max` both request the maximum.
 - **`isolated`** — when `true`, Claude gets a clean session with no conversation history (default: `false`)
 
 ## Configuration
 
 Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config directory, usually `.pi/claude-bridge.json` (project; merged over global).
+
+Claude Code subprocesses use an isolated filesystem profile at `~/.pi/agent/claude` by default. This keeps bridge settings, plugins, skills, and session history separate from the normal interactive `~/.claude` profile. Existing Claude sessions and settings are not copied automatically. Linux and Windows store credentials inside the profile, while macOS stores OAuth credentials in Keychain but still keeps account metadata in the profile. A new isolated profile can therefore require a one-time login on every platform:
+
+```bash
+CLAUDE_CONFIG_DIR="$HOME/.pi/agent/claude" claude auth login
+```
+
+When `provider.pathToClaudeCodeExecutable` is configured, use that executable instead of the `claude` command above.
 
 ```json
 {
@@ -65,6 +75,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
     "plan": "max",
     "longContextExtraUsage": false,
     "strictMcpConfig": true,
+    "claudeConfigDir": "/home/you/.pi/agent/claude",
     "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude"
   }
 }
@@ -78,14 +89,15 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `defaultMode` — `"read"` (default), `"none"`, or `"full"`. Invalid values fall back to read mode with a warning.
 - `defaultIsolated` — start each call in a fresh session (default `false`)
 - `allowFullMode` — allow `mode: "full"`; set `false` to lock it out. This also overrides `defaultMode: "full"`, falls back to read mode, and emits a warning.
-- `appendSkills` — forward pi's skills block into the system prompt (default `true`)
+- `appendSkills` — forward pi's skills block into the system prompt (default `true`). Note that `full` mode always sends Claude Code's system prompt regardless of this setting, since it grants shell and filesystem access and needs the accompanying safety guidance; `read` and `none` send it only when there is something to append. See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md).
 
 `provider`:
 - `plan` (default `"pro"`) — set to `"max"` for Max (or Team Premium/Enterprise) to enable Opus 4.6 with 1M context.
 - `longContextExtraUsage` — set to `true` to enable 1M models that cost money through Extra Usage. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro. Not needed for Opus 4.7 or 4.8.
-- `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`)
+- `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`). This covers pi's own content only. On the provider path a short `# Harness corrections` block is appended regardless of this setting, because Claude Code's preset prompt otherwise names tools and a model ID that do not exist here. AskClaude receives corrections only when it is already forwarding a skills block. See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md).
 - `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
-- `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
+- `strictMcpConfig` — block MCP servers from the isolated profile's `.claude.json` and project `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
+- `claudeConfigDir` — absolute path to the Claude Code filesystem profile (default `~/.pi/agent/claude`). Each config file is validated on its own, so an invalid or relative value warns and falls back to the next valid setting (a bad project value falls back to your global one, not to the default). An inherited `CLAUDE_CONFIG_DIR` does not override this setting.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 
 

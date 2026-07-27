@@ -27,10 +27,14 @@ describe("offline SDK settings contracts", () => {
 		const configDir = join(root, "isolated-claude");
 		const projectDir = join(root, "project");
 		mkdirSync(join(projectDir, ".claude"), { recursive: true });
-		mkdirSync(configDir, { recursive: true });
+		mkdirSync(join(configDir, ".claude"), { recursive: true });
 		writeFileSync(
 			join(configDir, "settings.json"),
 			JSON.stringify({ model: "user-contract-model" }),
+		);
+		writeFileSync(
+			join(configDir, ".claude", "settings.json"),
+			JSON.stringify({ model: "nested-config-must-not-load" }),
 		);
 		writeFileSync(
 			join(projectDir, ".claude", "settings.json"),

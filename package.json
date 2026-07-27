@@ -27,13 +27,14 @@
   ],
   "scripts": {
     "test:unit": "node --import tsx --test tests/unit-*.mjs",
-    "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",
+    "test:auth-preflight": "node --import tsx tests/lib/claude-auth.mjs",
+    "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && npm run test:auth-preflight && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",
     "test:usage": "tests/usage-test.sh",
     "typecheck": "tsc --noEmit"
   },
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.218",
+    "@anthropic-ai/claude-agent-sdk": "0.3.220",
     "@anthropic-ai/sdk": "0.113.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "cc-session-io": "^0.3.1",
@@ -42,14 +43,14 @@
     "zod": "4.4.3"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.80.3",
+    "@earendil-works/pi-ai": ">=0.82.1",
     "@earendil-works/pi-coding-agent": ">=0.80.0",
     "@earendil-works/pi-tui": ">=0.80.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.80.3",
-    "@earendil-works/pi-coding-agent": "0.80.3",
-    "@earendil-works/pi-tui": "0.80.3",
+    "@earendil-works/pi-ai": "0.82.1",
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-tui": "0.82.1",
     "@types/node": "^24.13.2",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3"

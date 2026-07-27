@@ -16,6 +16,7 @@ source "$(dirname "$0")/lib/bash-setup.sh"
 echo "=== cache-test.sh ==="
 
 setup_test_env "cache-test" ".ndjson"
+require_claude_auth
 
 LOGFILE="$LOGDIR/cache-test.ndjson"
 

@@ -1,6 +1,6 @@
 # Claude Code Configuration Isolation Checkpoint
 
-**Status (2026-07-24):** Design and documentation only. Phase 9 revalidated this proposal against Claude Agent SDK `0.3.218` and bundled Claude Code `2.1.218`; no configuration-isolation behavior has been implemented. Reviewed against `personal@fbb9e9f` on 2026-07-24: the mechanism and all cited call sites still hold, the profile path moved under `~/.pi/agent/`, and `provider.claudeConfigDir` was promoted into minimal scope.
+**Status (2026-07-26):** Option 1 is implemented on `feat/claude-config-isolation` (`70342b8` "feat(claude):isolate-config", `732ea20` "test(isolation):add-authenticated-coverage"). See "2026-07-26 Implementation Checkpoint" below for verification detail. Design history below (2026-07-24 and earlier) is retained as the record of what was proposed and revalidated before implementation.
 
 ## Decision
 
@@ -523,6 +523,26 @@ Re-measured on branch `personal` at `fbb9e9f`:
 - Still no configuration-isolation implementation. All three `process.env.CLAUDE_CONFIG_DIR` reads in the session path and all three diagnostic reads remain as described.
 
 Use 141/39 as the acceptance-criteria baseline, not the Phase 9 figure.
+
+### 2026-07-26 Implementation Checkpoint
+
+Option 1 shipped on `feat/claude-config-isolation`:
+
+- `70342b8` "feat(claude):isolate-config" — added `src/claude-config.ts` (`defaultClaudeConfigDir`, `claudeChildEnv`); wired `claudeConfigDir` through all three Agent SDK spawn paths in `src/sdk-options.ts`; threaded the same path through every `cc-session-io` call in `src/index.ts` (rebuild-path `createSession`/`deleteSession`, ephemeral cleanup, diagnostics); added validated `provider.claudeConfigDir` with global-then-project merge in `src/config.ts`; replaced `sanitizeAgentsContent`'s broken path rewriting in `src/agents-md.ts` with raw AGENTS.md forwarding under a `# CLAUDE.md` header; migrated `tests/phase6-restart-rollback.sh` off inherited `CLAUDE_CONFIG_DIR` onto `provider.claudeConfigDir`.
+- `732ea20` "test(isolation):add-authenticated-coverage" — added `tests/int-config-isolation.mjs` and an auth preflight (`tests/lib/claude-auth.mjs`).
+- Working tree (uncommitted as of this checkpoint) carries further refinements to `tests/int-config-isolation.mjs`, `tests/lib/claude-auth.mjs`, and `tests/unit-agents-md.mjs`.
+
+Verified directly against the branch:
+
+- `npm run test:unit`: 150 passing across 41 suites, 0 failures (above the 141/39 baseline).
+- `tsc --noEmit`: clean.
+- `grep -rn "process.env.CLAUDE_CONFIG_DIR" src/`: no matches — the extension reads its own resolved path everywhere, never the inherited environment variable.
+- The top-level `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` global mutation flagged under Critical Evaluation item 1 is gone from `src/index.ts`'s module scope; it now lives inside `claudeChildEnv` and applies only to spawned children.
+- `normalizeClaudeConfigDir` in `src/config.ts` requires a non-empty absolute path, warns and falls back to the default otherwise, and `claudeChildEnv` sets `CLAUDE_CONFIG_DIR` last in its spread so an inherited value can never win.
+- CHANGELOG has an `## UNRELEASED` entry documenting the change.
+- README documents `provider.claudeConfigDir`, its default, and its precedence over inherited `CLAUDE_CONFIG_DIR`.
+
+All items under "Acceptance Criteria" above are met for Option 1's scope. What remains open is everything under "Follow-on Features for Brainstorming" and "Critical Evaluation and Design Directions" items 2-7 (trust-aware setting sources, plugin/MCP compatibility, profile-mutation races, and Direction 2's control-plane stages 2-6) — none of that was in Option 1's scope and none of it has been started.
 
 ## Critical Evaluation and Design Directions
 

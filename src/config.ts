@@ -7,7 +7,8 @@ import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { isAbsolute, join } from "path";
+import { defaultClaudeConfigDir } from "./claude-config.js";
 
 export interface Config {
 	askClaude?: {
@@ -26,6 +27,7 @@ export interface Config {
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
+		claudeConfigDir?: string;
 		// Subscription plan tier. Setting to "max" makes Fable 5 available and enables
 		// Opus 4.6 at 1M context.
 		plan?: "pro" | "max";
@@ -66,6 +68,27 @@ export function normalizeAskClaudeDefaultMode(
 	return defaultMode;
 }
 
+// loadConfig runs at activation and again on every compaction, so an invalid value
+// would otherwise reprint its warning over the TUI on each call.
+const warnedClaudeConfigDirs = new Set<string>();
+
+export function normalizeClaudeConfigDir(
+	value: unknown,
+	fallback: string = defaultClaudeConfigDir(),
+): string {
+	if (value === undefined) return fallback;
+	if (typeof value === "string" && value.length > 0 && isAbsolute(value)) {
+		return value;
+	}
+	const warning =
+		`claude-bridge: invalid provider.claudeConfigDir ${JSON.stringify(value)}; using ${fallback}`;
+	if (!warnedClaudeConfigDirs.has(warning)) {
+		warnedClaudeConfigDirs.add(warning);
+		console.warn(warning);
+	}
+	return fallback;
+}
+
 export function loadConfig(cwd: string): Config {
 	const global = tryParseJson(join(homedir(), ".pi", "agent", "claude-bridge.json"));
 	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
@@ -78,8 +101,19 @@ export function loadConfig(cwd: string): Config {
 	);
 	if (defaultMode !== undefined) askClaude.defaultMode = defaultMode;
 
+	const provider = { ...global.provider, ...project.provider } as NonNullable<Config["provider"]> & {
+		claudeConfigDir?: unknown;
+	};
+	// Validate each source on its own rather than the merged value, so an invalid
+	// project override falls back to a still-valid global setting (an authenticated
+	// profile) instead of all the way to the built-in default.
+	const globalClaudeConfigDir = normalizeClaudeConfigDir(global.provider?.claudeConfigDir);
+	provider.claudeConfigDir = normalizeClaudeConfigDir(
+		project.provider?.claudeConfigDir,
+		globalClaudeConfigDir,
+	);
 	return {
 		askClaude: askClaude as NonNullable<Config["askClaude"]>,
-		provider: { ...global.provider, ...project.provider },
+		provider: provider as NonNullable<Config["provider"]>,
 	};
 }

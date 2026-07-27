@@ -206,7 +206,7 @@ try {
 			prompt: "Reply with exactly the synthetic history phrase.",
 			cwd: projectPath,
 			resume: sessionId,
-			expectedClaudeCode: "2.1.218",
+			expectedClaudeCode: "2.1.220",
 		});
 		assertContains(resumed.text, [phrase], "target synthetic resume");
 		results.push(`PASS target-synthetic-resume sdkMessages=${apiMessages}`);
@@ -226,7 +226,7 @@ try {
 			prompt: `The second benign phrase is ${appendPhrase}. Remember it and reply exactly RECORDED.`,
 			cwd: projectPath,
 			resume: sessionId,
-			expectedClaudeCode: "2.1.218",
+			expectedClaudeCode: "2.1.220",
 		});
 		copyTranscript({ sourcePath, destinationProfile: OLD_PROFILE, projectPath, sessionId });
 		const apiMessages = await assertSdkReadable({
@@ -278,7 +278,7 @@ try {
 			prompt: "Reply with both remembered phrases, separated by a comma.",
 			cwd: projectPath,
 			resume: sessionId,
-			expectedClaudeCode: "2.1.218",
+			expectedClaudeCode: "2.1.220",
 		});
 		assertContains(resumed.text, [basePhrase, appendPhrase], "target read of old-appended transcript");
 		results.push(`PASS old-to-target sdkMessages=${apiMessages} directResume=yes file=${basename(sourcePath)}`);

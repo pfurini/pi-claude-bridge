@@ -2,7 +2,7 @@ import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessage
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, keyHint, type CompactionEntry, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { createSdkMcpServer, query, type EffortLevel, type SDKMessage, type SDKRateLimitInfo, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type SDKMessage, type SDKRateLimitInfo, type SDKUserMessage, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -11,15 +11,17 @@ import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { applyLongContext, assertClaudeCodeModelAvailable, buildModels, claudeCodeModelId, type LongContextSettings, resolveModel as _resolveModel } from "./models.js";
+import { applyLongContext, ASK_CLAUDE_THINKING_LEVELS, assertClaudeCodeModelAvailable, buildModels, claudeCodeModelId, type LongContextSettings, reportMissingModelIds, resolveEffort, resolveModel as _resolveModel } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, type Config } from "./config.js";
+import { defaultClaudeConfigDir } from "./claude-config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { typeBoxToolToSdkMcpTool } from "./typebox-to-zod.js";
-import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions } from "./sdk-options.js";
+import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions, getAskClaudeDisallowedTools } from "./sdk-options.js";
+import { buildHarnessCorrections } from "./harness-prompt.js";
 import { createSdkMessageState, parseSdkResult, parseSdkSystemInit, rateLimitResetDate, rateLimitUtilizationPercent, reduceSdkMessage, type SdkTerminalResult } from "./sdk-messages.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
@@ -119,8 +121,14 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 };
 
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
-const MODELS = buildModels(getModels("anthropic"));
+// The catalog comes from whatever pi-ai the host pi installed, which may predate
+// the ids the bridge registers, so report the gap once per module load. Subagents
+// reload this module (see ACTIVE_STREAM_SIMPLE_KEY) and will re-emit it.
+const PI_AI_MODELS = getModels("anthropic");
+const MODELS = buildModels(PI_AI_MODELS);
+reportMissingModelIds(PI_AI_MODELS);
 let providerSettings: NonNullable<Config["provider"]> = {};
+let effectiveClaudeConfigDir = defaultClaudeConfigDir();
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
 
 function resolveModel(input: string) {
@@ -311,7 +319,11 @@ async function runIsolatedSummary(
 	try {
 		const promptText = extractIsolatedSummaryPrompt(context.messages);
 		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-		const claudeExecutable = loadConfig(cwd).provider?.pathToClaudeCodeExecutable;
+		// Activation-time settings, like the provider and askClaude spawn paths. Reloading
+		// config for this cwd would take the executable from one source and the profile
+		// (effectiveClaudeConfigDir) from another, so a per-project override could split
+		// settings and sessions across two profiles.
+		const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 		const cliModel = claudeCodeModelId(model, longContextSettings);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
 
@@ -320,6 +332,7 @@ async function runIsolatedSummary(
 			options: buildIsolatedSummaryQueryOptions({
 				cwd,
 				baseEnv: process.env,
+				claudeConfigDir: effectiveClaudeConfigDir,
 				systemPrompt: context.systemPrompt,
 				cliModel,
 				claudeExecutable,
@@ -409,18 +422,19 @@ function verifyWrittenSession(
 	expectedSessionId: string,
 	expectedRecordCount: number,
 	cwd: string,
+	claudeConfigDir: string,
 ): void {
 	const warnings = _verifyWrittenSession(jsonlPath, expectedSessionId, expectedRecordCount);
 	for (const msg of warnings) {
 		debug(`WARNING session verify: ${msg}`);
 		piUI?.notify(
 			`Session file issue: ${msg}\n` +
-			`cwd=${cwd} realpath=${safeRealpath(cwd)} CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? "(unset)"}\n` +
+			`cwd=${cwd} realpath=${safeRealpath(cwd)} claudeConfigDir=${claudeConfigDir}\n` +
 			`Please copy and paste this message into a new issue at https://github.com/elidickinson/pi-claude-bridge/issues/new` +
 			(DEBUG ? ` and attach ${DEBUG_LOG_PATH}` : ` (rerun with CLAUDE_BRIDGE_DEBUG=1 to capture a debug log)`),
 			"warning",
 		);
-		diagDump("session_verify_fail", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR ?? null });
+		diagDump("session_verify_fail", { msg, jsonlPath, cwd, realpath: safeRealpath(cwd), claudeConfigDir });
 	}
 }
 
@@ -431,7 +445,7 @@ function safeRealpath(p: string): string {
 // Diagnostic snapshot of where a session file was just written. Catches the
 // class of bugs where pi writes to ~/.claude/projects/<X> but CC SDK reads
 // from ~/.claude/projects/<Y> (symlinks, CLAUDE_CONFIG_DIR, hash mismatch).
-function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void {
+function debugSessionPaths(label: string, cwd: string, jsonlPath: string, claudeConfigDir: string): void {
 	const realCwd = safeRealpath(cwd);
 	let fileSize: number | null = null;
 	let fileExists = false;
@@ -444,7 +458,11 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 	if (realCwd !== cwd) debug(`${label}: realpath(cwd)=${realCwd} (DIFFERS — symlink-resolved path is what CC SDK uses)`);
 	debug(`${label}: jsonlPath=${jsonlPath}`);
 	debug(`${label}: fileExists=${fileExists}${fileSize != null ? ` size=${fileSize}` : ""}`);
-	debug(`${label}: env.CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? "(unset)"} HOME=${process.env.HOME ?? "(unset)"}`);
+	debug(`${label}: claudeConfigDir=${claudeConfigDir} HOME=${process.env.HOME ?? "(unset)"}`);
+}
+
+function deleteEphemeralSession(sessionId: string, cwd: string, claudeConfigDir: string): void {
+	deleteSession(sessionId, cwd, claudeConfigDir);
 }
 
 // Two semantic paths:
@@ -475,6 +493,10 @@ function debugSessionPaths(label: string, cwd: string, jsonlPath: string): void 
 function syncSharedSession(
 	messages: Context["messages"],
 	cwd: string,
+	// Required, and positioned before the optional arguments, so a new call site cannot
+	// silently fall back to the default profile while the Claude child reads from the
+	// user's provider.claudeConfigDir override.
+	claudeConfigDir: string,
 	customToolNameToSdk?: Map<string, string>,
 	modelId?: string,
 ): SyncResult {
@@ -525,17 +547,17 @@ function syncSharedSession(
 	const preserveId = previousSessionId !== undefined && !sharedSession?.forceRotate;
 	if (preserveId) {
 		// Wipe prior jsonl + companion dir (no-op if nothing to wipe).
-		deleteSession(previousSessionId!, cwd, process.env.CLAUDE_CONFIG_DIR);
+		deleteSession(previousSessionId!, cwd, claudeConfigDir);
 	}
 	const session = createSession({
 		projectPath: cwd,
-		claudeDir: process.env.CLAUDE_CONFIG_DIR,
+		claudeDir: claudeConfigDir,
 		...(preserveId ? { sessionId: previousSessionId } : {}),
 		...(modelId ? { model: modelId } : {}),
 	});
 	convertAndImportMessages(session, priorMessages, customToolNameToSdk);
 	session.save();
-	verifyWrittenSession(session.jsonlPath, session.sessionId, session.messages.length, cwd);
+	verifyWrittenSession(session.jsonlPath, session.sessionId, session.messages.length, cwd, claudeConfigDir);
 	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
 	if (previousSessionId === undefined) {
 		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`);
@@ -545,7 +567,7 @@ function syncSharedSession(
 	} else {
 		debug(`Case 4 post-abort: ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId.slice(0, 8)}, rotated to avoid race with orphan writer), ${session.messages.length} records`);
 	}
-	debugSessionPaths(`${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath);
+	debugSessionPaths(`${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath, claudeConfigDir);
 	debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${previousSessionId === undefined ? "first" : preserveId ? "preserved" : "rotated-post-abort"}`);
 	return { sessionId: session.sessionId };
 }
@@ -562,6 +584,7 @@ export const __test = {
 		return sharedSession;
 	},
 	syncSharedSession,
+	deleteEphemeralSession,
 };
 
 // --- Provider helpers: tool name mapping ---
@@ -718,13 +741,6 @@ function logServedContextWindow(label: string, message: SDKMessage, model: Model
 		debug(`${label}: served contextWindow=${v.contextWindow ?? "?"} maxOutputTokens=${v.maxOutputTokens ?? "?"} servedModel=${k} registered=${model.contextWindow}`);
 	}
 }
-
-// --- Effort level mapping ---
-// Pi reasoning levels → CC SDK effort levels
-
-const REASONING_TO_EFFORT: Record<string, EffortLevel> = {
-	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max",
-};
 
 // --- Provider helpers: misc ---
 
@@ -1171,7 +1187,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, model.id);
+	const syncResult = syncSharedSession(context.messages, cwd, effectiveClaudeConfigDir, customToolNameToSdk, model.id);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1199,8 +1215,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
 	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
 	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
-	const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
-	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
 	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
@@ -1213,17 +1227,25 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
-	// Prefer the model's own thinkingLevelMap when present (pi-ai 0.72+ ships
-	// per-model overrides — e.g. opus-4-7 wants xhigh→xhigh, not xhigh→max).
-	// Fall back to our generic table for older pi-ai or unmapped levels.
-	const effort = options?.reasoning
-		? ((model as any).thinkingLevelMap?.[options.reasoning] as EffortLevel | undefined)
-			?? REASONING_TO_EFFORT[options.reasoning]
-		: undefined;
+	const effort = resolveEffort(model, options?.reasoning);
 
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
+
+	// Corrections go last so they follow the statements they override, and are not
+	// gated on appendSystemPrompt: that setting controls whether pi's own content
+	// (AGENTS.md, skills) is forwarded, and turning it off must not leave the model
+	// reading claims about its tools and ID that are false here.
+	const corrections = buildHarnessCorrections({
+		modelId: model.id,
+		cliModelId: cliModel,
+		toolsAreMcpOnly: true,
+	});
+	const appendParts = [agentsAppend, skillsAppend, corrections]
+		.filter((part): part is string => Boolean(part));
+	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
 
@@ -1238,6 +1260,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const queryOptions = buildProviderQueryOptions({
 		cwd,
 		baseEnv: process.env,
+		claudeConfigDir: effectiveClaudeConfigDir,
 		cliModel,
 		systemPromptAppend,
 		effort,
@@ -1310,7 +1333,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			const sessionId = capturedSessionId ?? sharedSession?.sessionId;
 			if (syncResult.preserveSharedSession) {
 				if (capturedSessionId && capturedSessionId !== sharedSession?.sessionId) {
-					deleteSession(capturedSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+					deleteEphemeralSession(capturedSessionId, cwd, effectiveClaudeConfigDir);
 					debug(`provider: query done, deleted ephemeral session ${capturedSessionId.slice(0, 8)} to preserve shared session`);
 				}
 				debug(`provider: query done, ignoring captured session ${capturedSessionId?.slice(0, 8) ?? "none"} to preserve shared session`);
@@ -1439,7 +1462,7 @@ async function promptAndWait(
 		} else {
 			// No provider session yet — create one from pi's context
 			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
-			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, modelId);
+			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, effectiveClaudeConfigDir, undefined, modelId);
 			resumeSessionId = sync.sessionId;
 		}
 	}
@@ -1448,9 +1471,29 @@ async function promptAndWait(
 	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
 		? extractSkillsBlock(options.systemPrompt) : undefined;
 
-	// Effort
-	const effort = options?.thinking && options.thinking !== "off"
-		? REASONING_TO_EFFORT[options.thinking] : undefined;
+	// Corrections are only meaningful when the preset is actually sent, so this
+	// mirrors the `usePreset` union in buildAskClaudeQueryOptions. Keep the two in
+	// step: emitting corrections here is what makes the append non-empty, which is
+	// the other half of that union. Unlike the provider, AskClaude keeps Claude
+	// Code's native tools, so only the model ID is wrong here, plus the shell in
+	// modes that block Bash.
+	const presetActive = mode === "full" || Boolean(skillsBlock);
+	const askClaudeCorrections = presetActive
+		? buildHarnessCorrections({
+			modelId,
+			cliModelId: cliModel,
+			toolsAreMcpOnly: false,
+			noShellTool: getAskClaudeDisallowedTools(mode).includes("Bash"),
+			noInteractiveChannel: true,
+		})
+		: undefined;
+	const systemPromptAppend = [skillsBlock, askClaudeCorrections]
+		.filter((part): part is string => Boolean(part))
+		.join("\n\n") || undefined;
+
+	// Effort — same model-aware lookup the provider path uses, so the same level
+	// word means the same served tier through either interface.
+	const effort = resolveEffort(model, options?.thinking);
 
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
@@ -1465,10 +1508,11 @@ async function promptAndWait(
 		options: buildAskClaudeQueryOptions({
 			cwd,
 			baseEnv: process.env,
+			claudeConfigDir: effectiveClaudeConfigDir,
 			cliModel,
 			mode,
 			effort,
-			skillsBlock,
+			systemPromptAppend,
 			resumeSessionId,
 			isolated: options?.isolated,
 			claudeExecutable,
@@ -1564,12 +1608,10 @@ const PREVIEW_MAX_LINES = 6;
 let askClaudeToolName = "AskClaude";
 
 export default function (pi: ExtensionAPI) {
-	// Disable non-essential Claude Code traffic (update checks, MCP registry, telemetry)
-	process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
-
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
+	effectiveClaudeConfigDir = providerSettings.claudeConfigDir ?? defaultClaudeConfigDir();
 	// We need these settings to know if we're eligible for 1M context on certain models
 	longContextSettings = {
 		plan: providerSettings.plan ?? "pro",
@@ -1692,7 +1734,7 @@ export default function (pi: ExtensionAPI) {
 			prompt: Type.String({ description: "The question or task for Claude Code. By default Claude sees the full conversation history. Don't research up front, let Claude explore." }),
 			mode: Type.Optional(StringEnum(modeValues, { description: modeDesc })),
 			model: Type.Optional(Type.String({ description: 'Claude model (e.g. "opus", "sonnet", "haiku", or full ID). Defaults to "opus".' })),
-			thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"] as const, { description: "Thinking effort level. Omit to use Claude Code's default." })),
+			thinking: Type.Optional(StringEnum(ASK_CLAUDE_THINKING_LEVELS, { description: "Thinking effort level. Omit to use Claude Code's default." })),
 			isolated: Type.Optional(Type.Boolean({ description: "When true, Claude sees only this prompt (clean session). When false (default), Claude sees the full conversation history." })),
 		});
 		pi.registerTool<typeof askClaudeParams>({

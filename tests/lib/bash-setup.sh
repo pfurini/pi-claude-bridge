@@ -57,6 +57,11 @@ require_env() {
 	echo "$val"
 }
 
+# Fail clearly before authenticated integration tests if the isolated profile is not ready.
+require_claude_auth() {
+	node --import tsx "$DIR/tests/lib/claude-auth.mjs"
+}
+
 # Check for required commands or exit with error.
 # Usage: require_command cmd1 cmd2 ...
 require_command() {

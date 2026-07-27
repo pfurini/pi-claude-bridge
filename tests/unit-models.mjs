@@ -1,15 +1,33 @@
 /**
- * Tests for MODELS construction + resolveModel.
+ * Tests for MODELS construction + resolveModel + effort resolution.
  * Pins: opus shortcut resolves to whichever opus is first in MODEL_IDS_IN_ORDER,
  * projection strips pi-ai's baseUrl/api/provider/headers, and ordering is preserved.
+ *
+ * Every case here is mock-driven so a pi-ai bump cannot move it. The two
+ * assertions that read the installed catalog live in unit-catalog-gate.mjs.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MODEL_IDS_IN_ORDER, applyLongContext, assertClaudeCodeModelAvailable, buildModels, claudeCodeModelId, isClaudeCodeModelAvailable, resolveClaudeCodeRuntimeModel, resolveModel } from "../src/models.js";
+import { ASK_CLAUDE_THINKING_LEVELS, MODEL_IDS_IN_ORDER, REASONING_TO_EFFORT, REQUIRED_PI_AI_VERSION, applyLongContext, assertClaudeCodeModelAvailable, buildModels, claudeCodeModelId, isClaudeCodeModelAvailable, reportMissingModelIds, resolveClaudeCodeRuntimeModel, resolveEffort, resolveModel } from "../src/models.js";
 
 const PRO = { plan: "pro", longContextExtraUsage: false };
 const MAX = { plan: "max", longContextExtraUsage: false };
 const EXTRA = { plan: "pro", longContextExtraUsage: true };
+const ALL_PLANS = [["pro", PRO], ["max", MAX], ["pro+extra", EXTRA]];
+
+// resolveClaudeCodeRuntimeModel's default branch warns via console.error, so
+// "no unknown-model warning" can only be asserted by capturing it — a
+// contextWindow check passes whether or not the warning fired.
+function captureConsoleError(fn) {
+	const original = console.error;
+	const lines = [];
+	console.error = (...args) => lines.push(args.join(" "));
+	try {
+		return { result: fn(), lines };
+	} finally {
+		console.error = original;
+	}
+}
 
 // Simulated pi-ai registry entry — extra fields mimic the ones pi-ai exposes
 // that must not leak into the provider-registered MODELS array.
@@ -42,9 +60,23 @@ describe("MODELS projection", () => {
 	});
 
 	it("silently drops IDs missing from pi-ai (no fallback)", () => {
-		// Only haiku present — opus/sonnet vanish from picker.
+		// Only haiku present — opus/sonnet vanish from picker. buildModels itself
+		// stays silent; reportMissingModelIds is the operator-facing signal (below).
 		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
 		assert.deepEqual(models.map((m) => m.id), ["claude-haiku-4-5"]);
+	});
+
+	it("registers Opus 5 ahead of Opus 4.8", () => {
+		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
+		const ids = models.map((m) => m.id);
+		assert.ok(ids.includes("claude-opus-5"));
+		assert.ok(ids.indexOf("claude-opus-5") < ids.indexOf("claude-opus-4-8"));
+	});
+
+	it("keeps Opus 5's catalog thinkingLevelMap instead of a default", () => {
+		const catalogMap = { xhigh: "xhigh", max: "max" };
+		const models = buildModels([{ ...mockPiAiModel("claude-opus-5"), thinkingLevelMap: catalogMap }]);
+		assert.deepEqual(find(models, "claude-opus-5")?.thinkingLevelMap, catalogMap);
 	});
 
 	it("zeros out cost regardless of pi-ai pricing", () => {
@@ -60,10 +92,17 @@ describe("MODELS projection", () => {
 		assert.ok(models.every((m) => !m.name.includes("1M")));
 	});
 
+	// Fallbacks only reachable below the >=0.82.1 peer floor; values mirror what
+	// that release's catalog supplies so the two paths cannot disagree.
 	it("fills default thinkingLevelMap for sonnet-5 and sonnet-4-6 when pi-ai omits it", () => {
 		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
-		assert.deepEqual(find(models, "claude-sonnet-5")?.thinkingLevelMap, { xhigh: "max" });
-		assert.deepEqual(find(models, "claude-sonnet-4-6")?.thinkingLevelMap, { xhigh: "max" });
+		assert.deepEqual(find(models, "claude-sonnet-5")?.thinkingLevelMap, { xhigh: "xhigh", max: "max" });
+		assert.deepEqual(find(models, "claude-sonnet-4-6")?.thinkingLevelMap, { max: "max" });
+	});
+
+	it("gives Opus 5 no default thinkingLevelMap (the catalog owns it)", () => {
+		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
+		assert.equal(find(models, "claude-opus-5")?.thinkingLevelMap, undefined);
 	});
 
 	it("preserves pi-ai's thinkingLevelMap when present", () => {
@@ -101,7 +140,17 @@ describe("Claude Code runtime model policy", () => {
 	});
 
 	it("unknown model falls back to bare id at 200K", () => {
-		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-future-9-9", PRO), { cliModelId: "claude-future-9-9", contextWindow: 200000 });
+		const { result, lines } = captureConsoleError(() => resolveClaudeCodeRuntimeModel("claude-future-9-9", PRO));
+		assert.deepEqual(result, { cliModelId: "claude-future-9-9", contextWindow: 200000 });
+		assert.ok(lines.some((l) => l.includes("no known context size")));
+	});
+
+	it("serves Opus 5 bare at 1M on every plan, with no unknown-model warning", () => {
+		for (const [label, settings] of ALL_PLANS) {
+			const { result, lines } = captureConsoleError(() => resolveClaudeCodeRuntimeModel("claude-opus-5", settings));
+			assert.deepEqual(result, { cliModelId: "claude-opus-5", contextWindow: 1000000 }, label);
+			assert.deepEqual(lines, [], `${label}: expected no warning, got ${lines.join(" | ")}`);
+		}
 	});
 });
 
@@ -109,6 +158,7 @@ describe("claudeCodeModelId", () => {
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(oneM));
 
 	it("returns the measured SDK request id", () => {
+		assert.equal(claudeCodeModelId(find(models, "claude-opus-5"), PRO), "claude-opus-5");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-8"), PRO), "claude-opus-4-8[1m]");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-7"), PRO), "claude-opus-4-7");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-6"), PRO), "claude-opus-4-6");
@@ -142,6 +192,7 @@ describe("applyLongContext", () => {
 
 	it("registers measured Pro defaults", () => {
 		const registered = applyLongContext(models, PRO);
+		assert.equal(find(registered, "claude-opus-5").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-opus-4-8").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-opus-4-7").contextWindow, 1000000);
 		assert.equal(find(registered, "claude-opus-4-6").contextWindow, 200000);
@@ -167,8 +218,18 @@ describe("applyLongContext", () => {
 		assert.equal(find(registered, "claude-haiku-4-5").contextWindow, 200000);
 	});
 
+	it("keeps Opus 5 registered at 1M on every plan and never warns", () => {
+		for (const [label, settings] of ALL_PLANS) {
+			const { result, lines } = captureConsoleError(() => applyLongContext(models, settings));
+			const opus5 = find(result, "claude-opus-5");
+			assert.equal(opus5?.contextWindow, 1000000, label);
+			assert.deepEqual(lines, [], `${label}: expected no warning, got ${lines.join(" | ")}`);
+		}
+	});
+
 	it("labels exactly the registered 1M models", () => {
 		const pro = applyLongContext(models, PRO);
+		assert.equal(find(pro, "claude-opus-5").name, "claude-opus-5 1M");
 		assert.equal(find(pro, "claude-opus-4-8").name, "claude-opus-4-8 1M");
 		assert.equal(find(pro, "claude-opus-4-7").name, "claude-opus-4-7 1M");
 		assert.equal(find(pro, "claude-opus-4-6").name, "claude-opus-4-6");
@@ -183,8 +244,14 @@ describe("applyLongContext", () => {
 describe("resolveModel", () => {
 	const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
 
-	it("opus shortcut resolves to claude-opus-4-8 (first opus in order)", () => {
-		assert.equal(resolveModel(models, "opus")?.id, "claude-opus-4-8");
+	it("opus shortcut resolves to claude-opus-5 (first opus in order)", () => {
+		assert.equal(resolveModel(models, "opus")?.id, "claude-opus-5");
+	});
+
+	it("older opus versions stay explicitly selectable for pinning and rollback", () => {
+		for (const id of ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6"]) {
+			assert.equal(resolveModel(models, id)?.id, id);
+		}
 	});
 
 	it("haiku shortcut resolves to claude-haiku-4-5", () => {
@@ -202,7 +269,113 @@ describe("resolveModel", () => {
 	it("returns the matched model object for CLI-arg conversion", () => {
 		const oneMModels = buildModels(MODEL_IDS_IN_ORDER.map(oneM));
 		const model = resolveModel(oneMModels, "opus");
-		assert.equal(model.id, "claude-opus-4-8");
-		assert.equal(claudeCodeModelId(model, PRO), "claude-opus-4-8[1m]");
+		assert.equal(model.id, "claude-opus-5");
+		assert.equal(claudeCodeModelId(model, PRO), "claude-opus-5");
+		// Explicit Opus 4.8 keeps its own [1m] request policy.
+		assert.equal(claudeCodeModelId(resolveModel(oneMModels, "claude-opus-4-8"), PRO), "claude-opus-4-8[1m]");
+	});
+});
+
+describe("Opus 5 availability", () => {
+	it("is never gated the way Fable 5 is", () => {
+		for (const [label, settings] of ALL_PLANS) {
+			assert.equal(isClaudeCodeModelAvailable("claude-opus-5", settings), true, label);
+			const registered = applyLongContext(buildModels(MODEL_IDS_IN_ORDER.map(oneM)), settings);
+			assert.ok(find(registered, "claude-opus-5"), `${label}: Opus 5 must survive plan filtering`);
+		}
+		// Fable 5 is the contrast case: filtered out on Pro without Extra Usage.
+		assert.equal(isClaudeCodeModelAvailable("claude-fable-5", PRO), false);
+	});
+});
+
+// Logic-only effort coverage. These inputs are hand-written, so no pi-ai bump
+// may change the expectations here — the real-catalog canary is in
+// unit-catalog-gate.mjs.
+describe("resolveEffort", () => {
+	const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	const bothTiers = { thinkingLevelMap: { xhigh: "xhigh", max: "max" } };   // Opus 5, Opus 4.8/4.7, Sonnet 5
+	const maxOnly = { thinkingLevelMap: { max: "max" } };                     // Opus 4.6, Sonnet 4.6
+	const noMap = { id: "claude-haiku-4-5" };                                 // Haiku: no effort support
+
+	const expected = {
+		bothTiers: { off: undefined, minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" },
+		maxOnly: { off: undefined, minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max", max: "max" },
+		noMap: { off: undefined, minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max", max: "max" },
+		unresolved: { off: undefined, minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max", max: "max" },
+	};
+
+	for (const [label, model] of [["bothTiers", bothTiers], ["maxOnly", maxOnly], ["noMap", noMap], ["unresolved", undefined]]) {
+		it(`maps every level for ${label}`, () => {
+			for (const level of LEVELS) {
+				assert.equal(resolveEffort(model, level), expected[label][level], `${label}/${level}`);
+			}
+		});
+	}
+
+	it("treats a missing level as no effort", () => {
+		assert.equal(resolveEffort(bothTiers, undefined), undefined);
+		assert.equal(resolveEffort(bothTiers, ""), undefined);
+	});
+
+	it("ignores a null catalog mapping and falls back to the table", () => {
+		// Fable 5 ships { off: null, ... }; off must not become an effort value.
+		assert.equal(resolveEffort({ thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" } }, "off"), undefined);
+	});
+
+	it("keeps xhigh escalating to max in the generic fallback table", () => {
+		// Load-bearing: models with no catalog xhigh entry have no distinct tier.
+		assert.equal(REASONING_TO_EFFORT.xhigh, "max");
+		assert.equal(REASONING_TO_EFFORT.max, "max");
+	});
+});
+
+describe("AskClaude thinking levels", () => {
+	it("offers max alongside the pre-existing levels", () => {
+		assert.deepEqual([...ASK_CLAUDE_THINKING_LEVELS], ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+	});
+
+	it("resolves every offered level through the shared helper", () => {
+		for (const level of ASK_CLAUDE_THINKING_LEVELS) {
+			const effort = resolveEffort({ thinkingLevelMap: { xhigh: "xhigh", max: "max" } }, level);
+			if (level === "off") assert.equal(effort, undefined);
+			else assert.ok(["low", "medium", "high", "xhigh", "max"].includes(effort), `${level} → ${effort}`);
+		}
+	});
+});
+
+describe("missing-model diagnostic", () => {
+	const full = MODEL_IDS_IN_ORDER.map(mockPiAiModel);
+
+	it("stays silent when the catalog supplies every registered id", () => {
+		const lines = [];
+		const missing = reportMissingModelIds(full, (l) => lines.push(l));
+		assert.deepEqual(missing, []);
+		assert.deepEqual(lines, []);
+	});
+
+	it("names the missing id and the required pi-ai version", () => {
+		const withoutOpus5 = full.filter((m) => m.id !== "claude-opus-5");
+		const lines = [];
+		const missing = reportMissingModelIds(withoutOpus5, (l) => lines.push(l));
+		assert.deepEqual(missing, ["claude-opus-5"]);
+		assert.equal(lines.length, 1);
+		assert.match(lines[0], /claude-opus-5/);
+		assert.match(lines[0], new RegExp(REQUIRED_PI_AI_VERSION.replace(/\./g, "\\.")));
+	});
+
+	it("does not throw on an empty catalog and reports every id", () => {
+		const lines = [];
+		let missing;
+		assert.doesNotThrow(() => { missing = reportMissingModelIds([], (l) => lines.push(l)); });
+		assert.deepEqual(missing, MODEL_IDS_IN_ORDER);
+		assert.equal(lines.length, 1);
+	});
+
+	it("defaults to console.error and leaves buildModels itself silent", () => {
+		const partial = [mockPiAiModel("claude-haiku-4-5")];
+		const quiet = captureConsoleError(() => buildModels(partial));
+		assert.deepEqual(quiet.lines, [], "buildModels must not warn — mock-driven tests stay quiet");
+		const loud = captureConsoleError(() => reportMissingModelIds(partial));
+		assert.equal(loud.lines.length, 1);
 	});
 });

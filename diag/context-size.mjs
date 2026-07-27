@@ -7,8 +7,12 @@
 // Run on the current subscription tier, then re-run after changing tiers; the
 // saved JSON/MD lets you compare served context sizes across plans and model ids.
 //
-//   node diag/context-size.mjs pro        # current tier label (pro | max)
-//   node diag/context-size.mjs --compare  # diff latest pro-* vs max-* JSON
+//   node diag/context-size.mjs pro          # current tier label (pro | max)
+//   node diag/context-size.mjs --compare    # diff latest pro-* vs max-* JSON
+//   node diag/context-size.mjs pro --effort-max
+//        # adds one extra Opus 5 turn at effort "max". This is the single most
+//        # expensive request the bridge can issue, so it is opt-in and belongs
+//        # here as a one-off probe rather than in a per-run integration suite.
 //
 // Uses the same subscription OAuth the bridge uses (do NOT set ANTHROPIC_API_KEY).
 // Each turn is a tiny "reply yes" prompt; some combos may error or spend metered
@@ -25,8 +29,10 @@ const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUTDIR = join(DIR, ".test-output", "context-size");
 mkdirSync(OUTDIR, { recursive: true });
 
-const MODELS = ["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-fable-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
+const MODELS = ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-fable-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
 const VARIANTS = ["bare", "1m"];
+// Opt-in one-off: Opus 5 at the top effort tier. See --effort-max above.
+const EFFORT_MAX_MODEL = "claude-opus-5";
 const PER_CALL_MS = 120_000;
 const PROMPT = 'Reply with just the word "yes".';
 
@@ -40,7 +46,7 @@ try {
 
 function iso() { return new Date().toISOString().replace(/[:.]/g, "-"); }
 
-async function probe(requestedId) {
+async function probe(requestedId, effort) {
 	const cwd = mkdtempSync(join(tmpdir(), "context-size-"));
 	const ac = new AbortController();
 	const timer = setTimeout(() => ac.abort(), PER_CALL_MS);
@@ -62,6 +68,7 @@ async function probe(requestedId) {
 				maxTurns: 1,
 				persistSession: false,
 				abortController: ac,
+				...(effort ? { effort } : {}),
 			},
 		})) {
 			messageTypes.push(msg.subtype ? `${msg.type}:${msg.subtype}` : msg.type);
@@ -77,7 +84,7 @@ async function probe(requestedId) {
 	}
 	const elapsed = Date.now() - started;
 	if (!result) {
-		return { requestedId, status: error ? "error" : "timeout", error: error ?? "no result message", elapsedMs: elapsed, messageTypes };
+		return { requestedId, effort: effort ?? null, status: error ? "error" : "timeout", error: error ?? "no result message", elapsedMs: elapsed, messageTypes };
 	}
 	const mu = result.modelUsage ?? {};
 	const served = Object.entries(mu).map(([k, v]) => ({
@@ -91,6 +98,7 @@ async function probe(requestedId) {
 	}));
 	return {
 		requestedId,
+		effort: effort ?? null,
 		status: result.is_error ? `error(is_error:${result.subtype})` : (result.subtype === "success" ? "success" : `error:${result.subtype}`),
 		isError: !!result.is_error,
 		stopReason: result.stop_reason ?? null,
@@ -112,7 +120,8 @@ function mdTable(rows) {
 	const head = "| model | variant | requested id | status | served model | context | max out | error |";
 	const sep  = "|---|---|---|---|---|---|---|---|";
 	const body = rows.map((r) => {
-		const [m, v] = r.requestedId.includes("[1m]") ? [r.requestedId.replace("[1m]", ""), "[1m]"] : [r.requestedId, "bare"];
+		const [id, variant] = r.requestedId.includes("[1m]") ? [r.requestedId.replace("[1m]", ""), "[1m]"] : [r.requestedId, "bare"];
+		const [m, v] = r.effort ? [id, `${variant} effort=${r.effort}`] : [id, variant];
 		const served = (r.served ?? []).map((s) => `${s.servedModel}@${s.contextWindow}/${s.maxOutputTokens}`).join(" ") || "—";
 		const errParts = [];
 		if (r.error) errParts.push(String(r.error));
@@ -125,13 +134,14 @@ function mdTable(rows) {
 	return [head, sep, ...body].join("\n");
 }
 
-async function run(plan) {
+async function run(plan, { effortMax = false } = {}) {
 	const combos = [];
-	for (const id of MODELS) for (const v of VARIANTS) combos.push(v === "1m" ? `${id}[1m]` : id);
+	for (const id of MODELS) for (const v of VARIANTS) combos.push({ requestedId: v === "1m" ? `${id}[1m]` : id });
+	if (effortMax) combos.push({ requestedId: EFFORT_MAX_MODEL, effort: "max" });
 	const rows = [];
-	for (const requestedId of combos) {
-		process.stdout.write(`  ${requestedId} ... `);
-		const r = await probe(requestedId);
+	for (const { requestedId, effort } of combos) {
+		process.stdout.write(`  ${requestedId}${effort ? ` (effort=${effort})` : ""} ... `);
+		const r = await probe(requestedId, effort);
 		rows.push(r);
 		const served = (r.served ?? []).map((s) => `${s.contextWindow}`).join(",") || "—";
 		const errParts = [];
@@ -146,6 +156,7 @@ async function run(plan) {
 		sdkVersion, claudeCodeVersion,
 		apiKeySet: !!process.env.ANTHROPIC_API_KEY,
 		models: MODELS, variants: VARIANTS,
+		effortMaxProbe: effortMax ? EFFORT_MAX_MODEL : null,
 		rows,
 	};
 	const jsonPath = join(OUTDIR, `${plan}-${stamp}.json`);
@@ -168,7 +179,10 @@ function compare() {
 	if (!pro || !max) { console.log(`need both a pro-* and max-* JSON (found pro=${!!pro} max=${!!max})`); process.exit(1); }
 	const a = JSON.parse(readFileSync(pro, "utf8"));
 	const b = JSON.parse(readFileSync(max, "utf8"));
-	const lookup = (rep) => Object.fromEntries(rep.rows.map((r) => [r.requestedId, r]));
+	// Key by id + effort: with --effort-max two rows share a requestedId, and
+	// keying on the id alone would silently drop one of them.
+	const rowKey = (r) => (r.effort ? `${r.requestedId} effort=${r.effort}` : r.requestedId);
+	const lookup = (rep) => Object.fromEntries(rep.rows.map((r) => [rowKey(r), r]));
 	const A = lookup(a), B = lookup(b);
 	console.log(`compare pro @ ${a.timestamp}  vs  max @ ${b.timestamp}\n`);
 	console.log("| requested id | pro context | max context | pro status | max status |");
@@ -181,6 +195,8 @@ function compare() {
 	}
 }
 
-const arg = process.argv[2];
-if (arg === "--compare") compare();
-else run(arg ?? "pro");
+const args = process.argv.slice(2);
+const effortMax = args.includes("--effort-max");
+const arg = args.find((a) => !a.startsWith("--"));
+if (args.includes("--compare")) compare();
+else run(arg ?? "pro", { effortMax });
