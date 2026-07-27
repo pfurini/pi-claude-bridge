@@ -111,7 +111,7 @@ describe("MODELS projection", () => {
 		assert.deepEqual(find(models, "claude-sonnet-5")?.thinkingLevelMap, { xhigh: "xhigh" });
 	});
 
-	it("haiku gets no default thinkingLevelMap (no effort support)", () => {
+	it("forwards undefined thinkingLevelMap unchanged (no fabricated defaults)", () => {
 		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
 		assert.equal(find(models, "claude-haiku-4-5")?.thinkingLevelMap, undefined);
 	});
@@ -119,6 +119,7 @@ describe("MODELS projection", () => {
 
 describe("Claude Code runtime model policy", () => {
 	it("uses measured Pro defaults", () => {
+		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-5", PRO), { cliModelId: "claude-opus-5", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-8", PRO), { cliModelId: "claude-opus-4-8[1m]", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-7", PRO), { cliModelId: "claude-opus-4-7", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-6", PRO), { cliModelId: "claude-opus-4-6", contextWindow: 200000 });
@@ -127,6 +128,7 @@ describe("Claude Code runtime model policy", () => {
 	});
 
 	it("plan max only changes Opus 4.6", () => {
+		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-5", MAX), { cliModelId: "claude-opus-5", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-8", MAX), { cliModelId: "claude-opus-4-8[1m]", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-7", MAX), { cliModelId: "claude-opus-4-7", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-6", MAX), { cliModelId: "claude-opus-4-6[1m]", contextWindow: 1000000 });

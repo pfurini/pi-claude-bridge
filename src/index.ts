@@ -628,10 +628,6 @@ function mapToolArgs(
 	return result;
 }
 
-// --- Provider helpers: tool resolution ---
-
-// --- Provider helpers: tool bridge ---
-
 // --- Query state ---
 // QueryContext lives in query-state.js so tests can import it without
 // activating the extension.
@@ -1295,7 +1291,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	};
 	const onAbort = () => {
 		wasAborted = true;
-		// Prevent stale deferred messages from being replayed by parent on pop
+		// Discard deferred messages when aborting the query.
 		abortCtx.deferredUserMessages = [];
 		for (const pending of abortCtx.pendingToolCalls.values()) { pending.resolve({ content: [{ type: "text", text: "Operation aborted" }] }); }
 		abortCtx.pendingToolCalls.clear();

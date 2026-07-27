@@ -102,6 +102,7 @@ export function createRpcHarness(opts) {
 	const cleanPath = process.env.PATH.split(":").filter((p) => !p.includes("node_modules")).join(":");
 
 	let pi, piClosePromise, rpcLog;
+	let stopped = false;
 	let buffer = "";
 	let listeners = [];
 	let reqId = 0;
@@ -113,6 +114,7 @@ export function createRpcHarness(opts) {
 		// log see only this run's output, not accumulated history from prior
 		// failing runs. RPC log is still append so cross-run comparisons work.
 		writeFileSync(DEBUG_LOG, "");
+		stopped = false;
 		rpcLog = createWriteStream(RPC_LOG, { flags: "a" });
 		const currentLog = rpcLog;
 		const spawnArgs = ["--no-session", "-ne", "-e", DIR, "--mode", "rpc", ...args];
@@ -123,10 +125,15 @@ export function createRpcHarness(opts) {
 		});
 		piClosePromise = new Promise((resolveClose) => pi.once("close", resolveClose));
 
-		pi.stderr.on("data", (d) => currentLog.write(d));
+		// Two separate hazards, so both guards are needed. currentLog pins the stream
+		// this run opened, so a later start() swapping rpcLog cannot redirect these
+		// writes; the stopped check covers the killed subprocess flushing buffered
+		// output after stop() has already ended the stream (write-after-end).
+		pi.stderr.on("data", (d) => { if (!stopped) currentLog.write(d); });
 
 		const decoder = new StringDecoder("utf8");
 		pi.stdout.on("data", (chunk) => {
+			if (stopped) return;
 			buffer += decoder.write(chunk);
 			while (true) {
 				const i = buffer.indexOf("\n");
@@ -149,6 +156,9 @@ export function createRpcHarness(opts) {
 	}
 
 	async function stop() {
+		// Set before terminating so the stdout/stderr handlers stop writing: the
+		// killed child can still flush buffered output after the stream is ended.
+		stopped = true;
 		const child = pi;
 		const closed = piClosePromise;
 		const log = rpcLog;

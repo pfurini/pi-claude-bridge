@@ -73,8 +73,8 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 	return MODEL_IDS_IN_ORDER
 		.map((id) => piAiModels.find((m) => m.id === id))
 		.filter((m) => m != null)
-		// Forward thinkingLevelMap so per-model overrides (e.g. opus-4-7 mapping
-		// xhigh→xhigh instead of xhigh→max) are visible to the effort lookup.
+		// Forward thinkingLevelMap so pi-ai's per-model overrides (e.g. opus-4-8
+		// mapping xhigh→xhigh and max→max) are visible to the effort lookup.
 		.map(({ id, name, reasoning, input, contextWindow, maxTokens, thinkingLevelMap }) => ({
 			id,
 			name,

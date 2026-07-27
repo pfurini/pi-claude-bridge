@@ -67,6 +67,25 @@ with `ANTHROPIC_API_KEY` unset and **Extra Usage disabled** — the turns report
 | `claude-opus-5[1m]` | 1M / 64K | `claude-opus-5` | Measured 2026-07-25 during the update analysis; not re-run |
 | `opus` (alias) | 1M / 64K | `claude-opus-5` | Measured 2026-07-25 via `supportedModels()` and one alias turn; not re-run |
 
+### Conflicting upstream measurement (unresolved)
+
+Upstream's `0.6.3` (commit `d63c0a4`) added Opus 5 to its four-condition matrix
+with **`claude-opus-5` bare serving 200K on Max** and `claude-opus-5[1m]` serving
+1M, which is why upstream requests the `[1m]` form. That contradicts the Pro /
+`2.1.220` result above, and the merge kept the bare request.
+
+The two are not necessarily both wrong. They differ in account tier (Pro here,
+Max there), and upstream's rows sit in a table this record otherwise labels as
+`2.1.218`, a version where Opus 5 did not exist, so their measurement date and
+binary are unclear. Anthropic changing a model's native window between Claude
+Code releases is entirely plausible; `2.1.220` changed a great deal.
+
+**Risk if upstream is right for Max accounts:** the bridge would request 200K
+while Pi registers 1M, putting the status bar and the auto-compaction threshold
+out by 5x in the dangerous direction. Anyone on Max should re-run
+`diag/context-size.mjs` before trusting the bare ID. This has not been re-measured
+on a Max account.
+
 Directly measured facts about the bare ID:
 
 - 1M is native. No `[1m]` suffix is needed and no plan or Extra Usage flag gates
