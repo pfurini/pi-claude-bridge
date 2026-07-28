@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [personal, main]
+    # Feature branches too: the long-lived branches alone would leave a branch
+    # like fix/session-cwd with no signal until its PR opens.
+    branches: [personal, main, 'fix/**', 'feat/**']
   pull_request:
   workflow_dispatch:
 
