@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 
-const GLOBAL_AGENTS_PATH = join(homedir(), ".pi", "agent", "AGENTS.md");
+const DEFAULT_AGENT_DIR = join(homedir(), ".pi", "agent");
 
 /**
  * `startDir` must be the SESSION's cwd, not the process cwd. Pi's stream options
@@ -16,11 +16,20 @@ const GLOBAL_AGENTS_PATH = join(homedir(), ".pi", "agent", "AGENTS.md");
  * those coincide, but an SDK or harness caller that sets a session cwd got
  * discovery anchored on wherever the host process happened to start. That put
  * one project's AGENTS.md into a different project's session.
+ *
+ * `agentDir` is the session's agent dir, for the same reason. The global
+ * fallback used to be a constant off homedir(), so a run isolated under
+ * createAgentSession({ agentDir }) still had the operator's personal
+ * instructions forwarded into it as "# CLAUDE.md".
  */
-export function resolveAgentsMdPath(startDir: string = process.cwd()): string | undefined {
+export function resolveAgentsMdPath(
+	startDir: string = process.cwd(),
+	agentDir: string = DEFAULT_AGENT_DIR,
+): string | undefined {
 	const fromCwd = findAgentsMdInParents(startDir);
 	if (fromCwd) return fromCwd;
-	if (existsSync(GLOBAL_AGENTS_PATH)) return GLOBAL_AGENTS_PATH;
+	const globalAgentsPath = join(agentDir, "AGENTS.md");
+	if (existsSync(globalAgentsPath)) return globalAgentsPath;
 	return undefined;
 }
 
@@ -36,8 +45,8 @@ export function findAgentsMdInParents(startDir: string): string | undefined {
 	return undefined;
 }
 
-export function extractAgentsAppend(startDir?: string): string | undefined {
-	const agentsPath = resolveAgentsMdPath(startDir);
+export function extractAgentsAppend(startDir?: string, agentDir?: string): string | undefined {
+	const agentsPath = resolveAgentsMdPath(startDir, agentDir);
 	if (!agentsPath) return undefined;
 	try {
 		const content = readFileSync(agentsPath, "utf-8").trim();

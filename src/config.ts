@@ -3,9 +3,9 @@
 // project overriding global. Missing or unparseable files are ignored (error
 // to console.error, empty object returned) so the extension always starts.
 //
-// Loaded twice: once at extension registration, where neither the session cwd
-// nor its agent dir is known yet, and again on session_start against the dirs
-// the session actually uses. See sessionAgentDir().
+// Loaded twice: once at extension load, from loadDirs(), and again on
+// session_start against the dirs ctx reports. See loadDirs() and
+// sessionAgentDir() for why the two can disagree.
 
 import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -71,8 +71,8 @@ export function normalizeAskClaudeDefaultMode(
 	return defaultMode;
 }
 
-// loadConfig runs at activation and again on every compaction, so an invalid value
-// would otherwise reprint its warning over the TUI on each call.
+// loadConfig runs at extension load and again on session_start, so an invalid
+// value would otherwise reprint its warning over the TUI on each call.
 const warnedClaudeConfigDirs = new Set<string>();
 
 export function normalizeClaudeConfigDir(
@@ -103,7 +103,13 @@ export function sessionAgentDir(ctx: ExtensionContext): string {
 // The same dirs at extension load, where the factory registers models and the
 // AskClaude tool. Those registrations are flushed before any event fires, so
 // session_start is too late to correct them. pi.cwd/pi.agentDir are absent on
-// pi builds that predate them, where the process dirs were the only option.
+// pi builds that predate them (including published 0.82.1), where the process
+// dirs were the only option.
+//
+// Where they are present, these are still the dirs of whichever session first
+// loaded this module: pi keys its extension-module cache on the cwd alone, so a
+// second same-cwd session re-runs the factory with its own dirs against shared
+// module state. See providerOwnerClaimed in index.ts for who wins.
 export function loadDirs(pi: ExtensionAPI): { cwd: string; agentDir: string } {
 	const api = pi as ExtensionAPI & { cwd?: string; agentDir?: string };
 	return { cwd: api.cwd ?? process.cwd(), agentDir: api.agentDir ?? getAgentDir() };
