@@ -39,7 +39,11 @@ jobs:
       - name: Record the fork commit
         id: fork
         working-directory: pi
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "fork $(git log -1 --format='%h %s')"
+          git log -1 --format='%H %ci' >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v4
         with:
@@ -65,13 +69,17 @@ jobs:
         working-directory: pi
         run: npm ci
 
-      # build:offline, not build — the plain build regenerates the model catalog
-      # over the network. The order matters (tui, ai, agent, sqlite, coding-agent):
-      # building one package alone fails against a stale sibling dist.
+      # build, not build:offline. They differ only in pi-ai: build:offline starts
+      # with check:model-data, and packages/ai/src/providers/data/ is gitignored,
+      # so that check always fails on a fresh clone. `build` runs generate-models
+      # first to produce it, which needs network — fine on a runner, which is why
+      # local development uses build:offline against already-hydrated data.
+      # The order matters (tui, ai, agent, sqlite, coding-agent): building one
+      # package alone fails against a stale sibling dist.
       - name: Build the fork
         if: steps.dist.outputs.cache-hit != 'true'
         working-directory: pi
-        run: npm run build:offline
+        run: npm run build
 
       - name: Install the bridge
         working-directory: pi-claude-bridge
