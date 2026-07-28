@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    # Feature branches too: the long-lived branches alone would leave a branch
+    # like fix/session-cwd with no signal until its PR opens.
+    branches: [personal, main, 'fix/**', 'feat/**']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # The fork's root `prepare` script is husky, which has nothing to install in CI.
+  HUSKY: 0
+
+jobs:
+  # The development contract. The three @earendil-works devDependencies are
+  # `file:` links to ../pi, so this job reproduces the local layout: both repos
+  # checked out as siblings, the fork built before the bridge is typechecked.
+  # See AGENTS.md for why the fork, and not the registry, is the source of truth
+  # for pi's API.
+  fork:
+    name: fork (pfurini/pi)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the bridge
+        uses: actions/checkout@v4
+        with:
+          path: pi-claude-bridge
+
+      # Sibling to the bridge, because package.json resolves `file:../pi/packages/*`
+      # relative to the bridge's own directory.
+      - name: Check out the pi fork
+        uses: actions/checkout@v4
+        with:
+          repository: pfurini/pi
+          ref: personal
+          path: pi
+
+      - name: Record the fork commit
+        id: fork
+        working-directory: pi
+        run: |
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "fork $(git log -1 --format='%h %s')"
+          git log -1 --format='%H %ci' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            pi-claude-bridge/package-lock.json
+            pi/package-lock.json
+
+      # Types come from dist/*.d.ts, so the fork must be built. Cache on the fork
+      # commit: the build is the slow step and only changes when the fork does.
+      - name: Restore the fork build
+        id: dist
+        uses: actions/cache@v4
+        with:
+          path: pi/packages/*/dist
+          key: pi-dist-${{ runner.os }}-node24-${{ steps.fork.outputs.sha }}
+
+      # Always installed, cache hit or not: the bridge's typecheck resolves the
+      # fork's own imports (pi-agent-core, pi-ai, pi-tui) through the monorepo's
+      # hoisted node_modules.
+      - name: Install the fork
+        working-directory: pi
+        run: npm ci
+
+      # build, not build:offline. They differ only in pi-ai: build:offline starts
+      # with check:model-data, and packages/ai/src/providers/data/ is gitignored,
+      # so that check always fails on a fresh clone. `build` runs generate-models
+      # first to produce it, which needs network — fine on a runner, which is why
+      # local development uses build:offline against already-hydrated data.
+      # The order matters (tui, ai, agent, sqlite, coding-agent): building one
+      # package alone fails against a stale sibling dist.
+      - name: Build the fork
+        if: steps.dist.outputs.cache-hit != 'true'
+        working-directory: pi
+        run: npm run build
+
+      - name: Install the bridge
+        working-directory: pi-claude-bridge
+        run: npm ci
+
+      - name: Assert the fork's API is what got linked
+        working-directory: pi-claude-bridge
+        run: |
+          types=node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts
+          grep -q 'readonly agentDir: string' "$types" || {
+            echo "::error::Linked pi lacks ExtensionAPI.agentDir. The fork is unbuilt or the link resolved to the registry."
+            echo "The fork and the published package both report 0.82.1, so a version check cannot catch this."
+            exit 1
+          }
+
+      - name: Typecheck
+        working-directory: pi-claude-bridge
+        run: npm run typecheck
+
+      - name: Unit tests
+        working-directory: pi-claude-bridge
+        run: npm run test:unit
+
+  # The published support contract. pi-claude-bridge is on npm and declares
+  # peerDependencies >=0.82.1, so it has to keep building against stock pi, where
+  # loadDirs() and sessionAgentDir() fall back to the process dirs. Nothing here
+  # is committed — the rewrite is local to the runner.
+  stock:
+    name: stock pi (registry)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The committed lockfile pins the `file:` links, and npm honours those
+      # entries even after package.json is rewritten — it produces symlinks to a
+      # ../pi that does not exist here. Dropping the lock is deliberate: this job
+      # answers "does the published range still work", not "does the lock resolve".
+      - name: Pin the registry release
+        run: |
+          npm pkg set \
+            'devDependencies.@earendil-works/pi-ai=0.82.1' \
+            'devDependencies.@earendil-works/pi-coding-agent=0.82.1' \
+            'devDependencies.@earendil-works/pi-tui=0.82.1'
+          rm -f package-lock.json
+          npm install --no-audit --no-fund
+
+      - name: Assert stock pi really was installed
+        run: |
+          types=node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts
+          if grep -q 'readonly agentDir: string' "$types"; then
+            echo "::error::Installed pi carries fork-only API; this job is not testing the published contract."
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:unit

@@ -16,7 +16,7 @@ import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.j
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
-import { loadConfig, type Config } from "./config.js";
+import { loadConfig, loadDirs, sessionAgentDir, type Config } from "./config.js";
 import { defaultClaudeConfigDir } from "./claude-config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { typeBoxToolToSdkMcpTool } from "./typebox-to-zod.js";
@@ -127,8 +127,20 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 const PI_AI_MODELS = getModels("anthropic");
 const MODELS = buildModels(PI_AI_MODELS);
 reportMissingModelIds(PI_AI_MODELS);
+// Read fresh on every request, so session_start re-applies them from the dirs
+// ctx reports. Only the closure that registered the provider may do that; see
+// the session_start handler.
 let providerSettings: NonNullable<Config["provider"]> = {};
 let effectiveClaudeConfigDir = defaultClaudeConfigDir();
+// Backs the global AGENTS.md fallback, same lifecycle as the two above.
+// undefined until the factory runs, where agents-md's own default (the process
+// agent dir) is the only value we could supply anyway.
+let effectiveAgentDir: string | undefined;
+// Load-time only, unlike the three above. applyLongContext() bakes these into
+// the model list pi registers, and pi flushes registrations before the first
+// event fires, so session_start cannot correct them. Re-reading them per
+// session would let a request ask for a 1M window on a model registered at
+// 200K, or refuse a Fable model that pi still lists in the picker.
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
 
 function resolveModel(input: string) {
@@ -318,11 +330,11 @@ async function runIsolatedSummary(
 
 	try {
 		const promptText = extractIsolatedSummaryPrompt(context.messages);
-		const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-		// Activation-time settings, like the provider and askClaude spawn paths. Reloading
-		// config for this cwd would take the executable from one source and the profile
-		// (effectiveClaudeConfigDir) from another, so a per-project override could split
-		// settings and sessions across two profiles.
+		const cwd = resolveCwd(options);
+		// Session-time settings, like the provider and askClaude spawn paths, re-applied
+		// on session_start. Reloading config for this cwd would take the executable from
+		// one source and the profile (effectiveClaudeConfigDir) from another, so a
+		// per-project override could split settings and sessions across two profiles.
 		const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 		const cliModel = claudeCodeModelId(model, longContextSettings);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
@@ -1182,8 +1194,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	queryCtx.latestCursor = 0;
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
-	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-	const syncResult = syncSharedSession(context.messages, cwd, effectiveClaudeConfigDir, customToolNameToSdk, model.id);
+	const cwd = resolveCwd(options);
+	// Pin the profile for the whole request. effectiveClaudeConfigDir is re-applied
+	// on session_start, so a session starting while this query is in flight would
+	// otherwise send the completion handler looking for the ephemeral session file
+	// in a directory it was never written to, leaking it in the old one.
+	const requestClaudeConfigDir = effectiveClaudeConfigDir;
+	const syncResult = syncSharedSession(context.messages, cwd, requestClaudeConfigDir, customToolNameToSdk, model.id);
 	const { sessionId: resumeSessionId } = syncResult;
 	const promptBlocks = extractUserPromptBlocks(context.messages);
 	let promptText = extractUserPrompt(context.messages) ?? "";
@@ -1209,7 +1226,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
-	const agentsAppend = appendSystemPrompt ? extractAgentsAppend() : undefined;
+	const agentsAppend = appendSystemPrompt ? extractAgentsAppend(cwd, effectiveAgentDir) : undefined;
 	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
@@ -1256,7 +1273,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const queryOptions = buildProviderQueryOptions({
 		cwd,
 		baseEnv: process.env,
-		claudeConfigDir: effectiveClaudeConfigDir,
+		claudeConfigDir: requestClaudeConfigDir,
 		cliModel,
 		systemPromptAppend,
 		effort,
@@ -1329,7 +1346,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			const sessionId = capturedSessionId ?? sharedSession?.sessionId;
 			if (syncResult.preserveSharedSession) {
 				if (capturedSessionId && capturedSessionId !== sharedSession?.sessionId) {
-					deleteEphemeralSession(capturedSessionId, cwd, effectiveClaudeConfigDir);
+					deleteEphemeralSession(capturedSessionId, cwd, requestClaudeConfigDir);
 					debug(`provider: query done, deleted ephemeral session ${capturedSessionId.slice(0, 8)} to preserve shared session`);
 				}
 				debug(`provider: query done, ignoring captured session ${capturedSessionId?.slice(0, 8) ?? "none"} to preserve shared session`);
@@ -1436,9 +1453,13 @@ async function promptAndWait(
 		thinking?: string;
 		isolated?: boolean;
 		context?: Context["messages"];
+		// The invoking session's cwd, from the tool's ExtensionContext. That is
+		// authoritative where the module-level sessionCwd is only the last session
+		// to start in this module instance, so pass it whenever it is in hand.
+		cwd?: string;
 	},
 ): Promise<{ responseText: string; stopReason: string }> {
-	const cwd = process.cwd();
+	const cwd = resolveCwd(options);
 	const requestedModel = options?.model ?? "opus";
 	const model = resolveModel(requestedModel);
 	const modelId = model?.id ?? requestedModel;
@@ -1601,18 +1622,65 @@ const DEFAULT_TOOL_DESCRIPTION = "Delegate to Claude Code for a second opinion o
 const PREVIEW_MAX_CHARS = 1000;
 const PREVIEW_MAX_LINES = 6;
 
+// The name resolveMcpTools() maps pi's custom tools against, from the config of
+// whichever session owns this module instance. See providerOwnerClaimed.
 let askClaudeToolName = "AskClaude";
+// Session cwd, cached from the one event that offers it. See the session_start
+// handler: pi never puts cwd in stream options, so this is the only correct
+// source, and process.cwd() is a last resort rather than the default.
+let sessionCwd: string | undefined;
+const resolveCwd = (options?: unknown): string =>
+	(options as { cwd?: string } | undefined)?.cwd ?? sessionCwd ?? process.cwd();
+
+// Claimed by the first factory run in this module instance, which is the one
+// whose session may re-point the per-request settings above. Deliberately not
+// derived from ACTIVE_STREAM_SIMPLE_KEY: clearSession() nulls that global on the
+// owner's own first session_start (the /reload seam), so a second session's
+// factory would see it free and claim ownership too. /reload is still handled,
+// because pi's reload() calls clearExtensionCache() and the re-imported module
+// gets a fresh scope with this back at false.
+let providerOwnerClaimed = false;
 
 export default function (pi: ExtensionAPI) {
-	const config = loadConfig(process.cwd());
-	debug("loadConfig:", JSON.stringify(config));
-	providerSettings = config.provider ?? {};
-	effectiveClaudeConfigDir = providerSettings.claudeConfigDir ?? defaultClaudeConfigDir();
-	// We need these settings to know if we're eligible for 1M context on certain models
-	longContextSettings = {
-		plan: providerSettings.plan ?? "pro",
-		longContextExtraUsage: providerSettings.longContextExtraUsage ?? false,
+	// Split by lifecycle, because the two halves cannot be corrected at the same
+	// time. The long-context half feeds applyLongContext() below, whose result pi
+	// registers and flushes before the first event: it runs once, here, and
+	// session_start must leave it alone or the registered context window stops
+	// matching the one the bridge requests. The rest is read fresh on every
+	// request, so session_start can re-apply it from the session's own dirs.
+	const applyLongContextConfig = (config: Config) => {
+		const provider = config.provider ?? {};
+		// We need these settings to know if we're eligible for 1M context on certain models
+		longContextSettings = {
+			plan: provider.plan ?? "pro",
+			longContextExtraUsage: provider.longContextExtraUsage ?? false,
+		};
 	};
+	const applyProviderConfig = (config: Config, agentDir: string) => {
+		providerSettings = config.provider ?? {};
+		effectiveClaudeConfigDir = providerSettings.claudeConfigDir ?? defaultClaudeConfigDir();
+		effectiveAgentDir = agentDir;
+	};
+
+	// Claimed before anything is applied, because this factory body is itself a
+	// per-session mutation of module-level state: pi keys its extension-module
+	// cache on the cwd alone, so a second same-cwd session reuses this module and
+	// re-runs the factory with its own pi.cwd/pi.agentDir. Gating the apply calls
+	// here is what makes the first session's settings authoritative; gating only
+	// session_start would leave the same clobber one call earlier.
+	const isProviderOwner = !providerOwnerClaimed;
+	providerOwnerClaimed = true;
+
+	const load = loadDirs(pi);
+	const config = loadConfig(load.cwd, load.agentDir);
+	debug("loadConfig:", JSON.stringify(config), `cwd=${load.cwd} agentDir=${load.agentDir} owner=${isProviderOwner}`);
+	if (isProviderOwner) {
+		applyLongContextConfig(config);
+		applyProviderConfig(config, load.agentDir);
+	}
+	// Always from the settings in force, never from this run's config: a
+	// non-owner run must register (if it registers at all) the same list the
+	// owner did, or pi would list a context window the bridge no longer requests.
 	const registeredModels = applyLongContext(MODELS, longContextSettings);
 
 	// Reset shared session on pi session lifecycle events
@@ -1631,6 +1699,35 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.on("session_start", (event, ctx) => {
 		piUI = ctx.ui;
+		// The only place the session cwd is offered to an extension. Pi's stream
+		// options carry no cwd, so without caching it here every downstream caller
+		// falls back to process.cwd() - the directory the host process started in,
+		// which is not the session's directory for any SDK or harness caller.
+		sessionCwd = ctx.cwd;
+		// Only the first closure in this module instance may re-point the settings
+		// every request reads. Pi caches the extension module per cwd, so two
+		// same-cwd sessions share these module-level bindings while both route
+		// through one streamSimple (see ACTIVE_STREAM_SIMPLE_KEY); letting the
+		// second one apply its own agentDir would hand the first a different Claude
+		// profile mid-session. Sharing sessionCwd is harmless for the same reason
+		// the sharing exists: a changed cwd evicts the cached module, so every
+		// session on one instance has the same cwd. Known gap: if the first session
+		// ends while a later closure lives on, nobody re-applies config for the
+		// survivor and these keep the last applied value.
+		if (isProviderOwner) {
+			// Load-time config came from loadDirs(), which falls back to the process
+			// dirs on pi builds without pi.cwd/pi.agentDir. ctx reports the dirs the
+			// session actually uses on every build, so re-resolve before the first
+			// request reads effectiveClaudeConfigDir and picks a Claude profile.
+			// longContextSettings stays frozen: the model list it produced is already
+			// registered, and pi flushed that before this event.
+			const agentDir = sessionAgentDir(ctx);
+			const sessionConfig = loadConfig(ctx.cwd, agentDir);
+			debug("loadConfig(session):", JSON.stringify(sessionConfig), `cwd=${ctx.cwd} agentDir=${agentDir}`);
+			applyProviderConfig(sessionConfig, agentDir);
+		} else {
+			debug(`session_start: not the first closure in this instance, keeping applied config (module=${moduleInstanceId})`);
+		}
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
@@ -1719,7 +1816,10 @@ export default function (pi: ExtensionAPI) {
 	const allowFull = askConf?.allowFullMode !== false;
 	const defaultMode = askConf?.defaultMode ?? "read";
 	const defaultIsolated = askConf?.defaultIsolated ?? false;
-	askClaudeToolName = askConf?.name ?? "AskClaude";
+	// Module-level, and read by the shared streamClaudeAgentSdk, so it follows the
+	// same owner gate as the provider settings. The four locals above stay
+	// per-closure: they only shape the tool this closure registers.
+	if (isProviderOwner) askClaudeToolName = askConf?.name ?? "AskClaude";
 
 	const modeValues = allowFull ? ["read", "full", "none"] as const : ["read", "none"] as const;
 	let modeDesc = `"read" (default): questions about the codebase — review, analysis, explain. "none": general knowledge only (no file access).`;
@@ -1816,6 +1916,7 @@ export default function (pi: ExtensionAPI) {
 						thinking: params.thinking,
 						isolated,
 						context: isolated ? undefined : buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"],
+						cwd: ctx.cwd,
 					});
 					clearInterval(progressInterval);
 					onUpdate?.({ content: [{ type: "text", text: "" }], details: {} });

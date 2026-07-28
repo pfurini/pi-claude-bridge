@@ -1,11 +1,14 @@
-// User-facing extension config. Loaded once at extension registration from
-// the global agent dir (getAgentDir(), e.g. ~/.pi/agent/claude-bridge.json)
-// and the project Pi config directory, project overriding global. Missing or
-// unparseable files are ignored (error to console.error, empty object
-// returned) so the extension always starts.
+// User-facing extension config. Loaded from an agent dir
+// (e.g. ~/.pi/agent/claude-bridge.json) and the project Pi config directory,
+// project overriding global. Missing or unparseable files are ignored (error
+// to console.error, empty object returned) so the extension always starts.
+//
+// Loaded twice: once at extension load, from loadDirs(), and again on
+// session_start against the dirs ctx reports. See loadDirs() and
+// sessionAgentDir() for why the two can disagree.
 
 import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { isAbsolute, join } from "path";
 import { defaultClaudeConfigDir } from "./claude-config.js";
@@ -68,8 +71,8 @@ export function normalizeAskClaudeDefaultMode(
 	return defaultMode;
 }
 
-// loadConfig runs at activation and again on every compaction, so an invalid value
-// would otherwise reprint its warning over the TUI on each call.
+// loadConfig runs at extension load and again on session_start, so an invalid
+// value would otherwise reprint its warning over the TUI on each call.
 const warnedClaudeConfigDirs = new Set<string>();
 
 export function normalizeClaudeConfigDir(
@@ -89,8 +92,31 @@ export function normalizeClaudeConfigDir(
 	return fallback;
 }
 
-export function loadConfig(cwd: string): Config {
-	const global = tryParseJson(join(getAgentDir(), "claude-bridge.json"));
+// The agent dir backing a session. pi.createAgentSession({ agentDir }) lets a
+// harness isolate a run under its own dir, and only ctx reports it; getAgentDir()
+// is process-wide and would hand that run the operator's personal profile.
+// ctx.agentDir is absent on pi builds that predate it, hence the fallback.
+export function sessionAgentDir(ctx: ExtensionContext): string {
+	return (ctx as ExtensionContext & { agentDir?: string }).agentDir ?? getAgentDir();
+}
+
+// The same dirs at extension load, where the factory registers models and the
+// AskClaude tool. Those registrations are flushed before any event fires, so
+// session_start is too late to correct them. pi.cwd/pi.agentDir are absent on
+// pi builds that predate them (including published 0.82.1), where the process
+// dirs were the only option.
+//
+// Where they are present, these are still the dirs of whichever session first
+// loaded this module: pi keys its extension-module cache on the cwd alone, so a
+// second same-cwd session re-runs the factory with its own dirs against shared
+// module state. See providerOwnerClaimed in index.ts for who wins.
+export function loadDirs(pi: ExtensionAPI): { cwd: string; agentDir: string } {
+	const api = pi as ExtensionAPI & { cwd?: string; agentDir?: string };
+	return { cwd: api.cwd ?? process.cwd(), agentDir: api.agentDir ?? getAgentDir() };
+}
+
+export function loadConfig(cwd: string, agentDir: string = getAgentDir()): Config {
+	const global = tryParseJson(join(agentDir, "claude-bridge.json"));
 	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
 	const askClaude = { ...global.askClaude, ...project.askClaude } as NonNullable<Config["askClaude"]> & {
 		defaultMode?: unknown;
