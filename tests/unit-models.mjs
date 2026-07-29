@@ -145,7 +145,7 @@ describe("MODELS projection", () => {
 describe("Claude Code runtime model policy", () => {
 	it("uses measured Pro defaults", () => {
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-5", PRO), { cliModelId: "claude-opus-5", contextWindow: 1000000 });
-		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-8", PRO), { cliModelId: "claude-opus-4-8[1m]", contextWindow: 1000000 });
+		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-8", PRO), { cliModelId: "claude-opus-4-8", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-7", PRO), { cliModelId: "claude-opus-4-7", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-6", PRO), { cliModelId: "claude-opus-4-6", contextWindow: 200000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-sonnet-4-6", PRO), { cliModelId: "claude-sonnet-4-6", contextWindow: 200000 });
@@ -154,7 +154,7 @@ describe("Claude Code runtime model policy", () => {
 
 	it("plan max only changes Opus 4.6", () => {
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-5", MAX), { cliModelId: "claude-opus-5", contextWindow: 1000000 });
-		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-8", MAX), { cliModelId: "claude-opus-4-8[1m]", contextWindow: 1000000 });
+		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-8", MAX), { cliModelId: "claude-opus-4-8", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-7", MAX), { cliModelId: "claude-opus-4-7", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-opus-4-6", MAX), { cliModelId: "claude-opus-4-6[1m]", contextWindow: 1000000 });
 		assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-sonnet-4-6", MAX), { cliModelId: "claude-sonnet-4-6", contextWindow: 200000 });
@@ -186,7 +186,7 @@ describe("claudeCodeModelId", () => {
 
 	it("returns the measured SDK request id", () => {
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-5"), PRO), "claude-opus-5");
-		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-8"), PRO), "claude-opus-4-8[1m]");
+		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-8"), PRO), "claude-opus-4-8");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-7"), PRO), "claude-opus-4-7");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-6"), PRO), "claude-opus-4-6");
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-6"), MAX), "claude-opus-4-6[1m]");
@@ -298,8 +298,8 @@ describe("resolveModel", () => {
 		const model = resolveModel(oneMModels, "opus");
 		assert.equal(model.id, "claude-opus-5");
 		assert.equal(claudeCodeModelId(model, PRO), "claude-opus-5");
-		// Explicit Opus 4.8 keeps its own [1m] request policy.
-		assert.equal(claudeCodeModelId(resolveModel(oneMModels, "claude-opus-4-8"), PRO), "claude-opus-4-8[1m]");
+		// Explicit Opus 4.8 is native 1M on the bare id, same as Opus 5.
+		assert.equal(claudeCodeModelId(resolveModel(oneMModels, "claude-opus-4-8"), PRO), "claude-opus-4-8");
 	});
 });
 
