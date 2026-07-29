@@ -119,12 +119,16 @@ export function assertClaudeCodeModelAvailable(modelId: string, settings: LongCo
 // eligibility still differs by model. See the Phase 8 upgrade record.
 export function resolveClaudeCodeRuntimeModel(modelId: string, settings: LongContextSettings): ClaudeCodeRuntimeModel {
 	switch (modelId) {
-		// Opus 5 is native 1M on the bare id — no [1m] suffix, no plan or Extra
-		// Usage gate. Measured on Claude Code 2.1.220.
+		// Opus 5 and Opus 4.8 are native 1M on the bare id — no [1m] suffix, no
+		// plan or Extra Usage gate. Measured on Claude Code 2.1.220 (Max account):
+		// `--model claude-opus-4-8` reports canonical=claude-opus-4-8 ctx=1000000,
+		// identical to the suffixed form. The bare id is preferred because it is
+		// what Claude Code reports back as canonical, so exact identity checks
+		// (benchmark harnesses, logging) match without suffix-stripping.
 		case "claude-opus-5":
 			return { cliModelId: "claude-opus-5", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-8":
-			return { cliModelId: "claude-opus-4-8[1m]", contextWindow: ONE_M_CONTEXT };
+			return { cliModelId: "claude-opus-4-8", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-7":
 			return { cliModelId: "claude-opus-4-7", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-6": {
