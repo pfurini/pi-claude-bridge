@@ -79,11 +79,36 @@ describe("MODELS projection", () => {
 		assert.deepEqual(find(models, "claude-opus-5")?.thinkingLevelMap, catalogMap);
 	});
 
-	it("zeros out cost regardless of pi-ai pricing", () => {
-		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
-		for (const m of models) {
-			assert.deepEqual(m.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-		}
+	it("forwards pi-ai pricing so usage can be valued", () => {
+		// Cost used to be zeroed here (#9): Claude Code bills by subscription, so a
+		// per-token total in the footer reads as a bill nobody is paying. Hiding it
+		// also took the numbers from every other consumer, leaving a provider that
+		// reports usage but values it at zero - nothing could compare this provider
+		// against another. The figure is what the tokens would cost at API rates.
+		const priced = {
+			...mockPiAiModel("claude-opus-5"),
+			cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		};
+		assert.deepEqual(find(buildModels([priced]), "claude-opus-5")?.cost, {
+			input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25,
+		});
+	});
+
+	it("completes a partial cost table instead of emitting undefined members", () => {
+		// pi multiplies these fields directly, so a missing member gives NaN totals
+		// rather than an absent one - worse than a zero, because it propagates.
+		const partial = { ...mockPiAiModel("claude-opus-5"), cost: { input: 5, output: 25 } };
+		assert.deepEqual(find(buildModels([partial]), "claude-opus-5")?.cost, {
+			input: 5, output: 25, cacheRead: 0, cacheWrite: 0,
+		});
+	});
+
+	it("still yields a complete zero table when the catalog has no pricing", () => {
+		const unpriced = { ...mockPiAiModel("claude-opus-5") };
+		delete unpriced.cost;
+		assert.deepEqual(find(buildModels([unpriced]), "claude-opus-5")?.cost, {
+			input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+		});
 	});
 
 	it("leaves display names bare before plan-specific context is applied", () => {

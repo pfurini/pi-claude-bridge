@@ -75,12 +75,33 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 		.filter((m) => m != null)
 		// Forward thinkingLevelMap so pi-ai's per-model overrides (e.g. opus-4-8
 		// mapping xhigh→xhigh and max→max) are visible to the effort lookup.
-		.map(({ id, name, reasoning, input, contextWindow, maxTokens, thinkingLevelMap }) => ({
+		//
+		// Cost is forwarded from the catalog rather than zeroed. It was zeroed in
+		// e1e5675 (#9) because Claude Code bills through a subscription, so a
+		// per-token total in the footer reads as a bill that nobody is paying.
+		// The cost of hiding it is that every consumer loses the numbers as well:
+		// a model registered here reports usage but values it at zero, so anything
+		// comparing this provider against another - a benchmark, a budget, a
+		// question as ordinary as which of two approaches burned more - has no
+		// figure to work with, and pi's own providers all supply one.
+		//
+		// The number means "what these tokens would cost at API rates", which is
+		// the right basis for comparing efficiency and the wrong one for reading
+		// as an invoice.
+		.map(({ id, name, reasoning, input, contextWindow, maxTokens, thinkingLevelMap, cost }) => ({
 			id,
 			name,
 			reasoning, input, contextWindow, maxTokens,
 			thinkingLevelMap: thinkingLevelMap ?? DEFAULT_THINKING_LEVEL_MAPS[id],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			// A catalog entry without pricing still has to produce a complete cost
+			// table: pi multiplies these fields directly, and an undefined member
+			// yields NaN totals rather than a missing one.
+			cost: {
+				input: cost?.input ?? 0,
+				output: cost?.output ?? 0,
+				cacheRead: cost?.cacheRead ?? 0,
+				cacheWrite: cost?.cacheWrite ?? 0,
+			},
 		}));
 }
 
