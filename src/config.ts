@@ -27,6 +27,13 @@ export interface Config {
 	/** Low-level Claude Agent SDK plumbing. Most users won't need these. */
 	provider?: {
 		appendSystemPrompt?: boolean;
+		// Which Claude Code settings tiers the spawned binary may load. DEFAULT [].
+		// Pi owns rules and context: with the default, Claude Code reads no
+		// settings.json of any tier and no CLAUDE.md of its own - project rules
+		// reach it only through pi's forwarded context block. Opting in re-enables
+		// Claude-Code-native behaviour explicitly (e.g. ["user","project","local"]).
+		// Independent of appendSystemPrompt by design: a prompt flag must never
+		// silently change which settings files load.
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;

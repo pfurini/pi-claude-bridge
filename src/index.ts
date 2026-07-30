@@ -18,7 +18,7 @@ import { extractAllToolResults as _extractAllToolResults, type McpResult } from 
 import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, loadDirs, sessionAgentDir, type Config } from "./config.js";
 import { defaultClaudeConfigDir } from "./claude-config.js";
-import { extractAgentsAppend } from "./agents-md.js";
+import { extractProjectContextBlock } from "./project-context.js";
 import { typeBoxToolToSdkMcpTool } from "./typebox-to-zod.js";
 import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions, getAskClaudeDisallowedTools } from "./sdk-options.js";
 import { buildHarnessCorrections } from "./harness-prompt.js";
@@ -132,10 +132,6 @@ reportMissingModelIds(PI_AI_MODELS);
 // the session_start handler.
 let providerSettings: NonNullable<Config["provider"]> = {};
 let effectiveClaudeConfigDir = defaultClaudeConfigDir();
-// Backs the global AGENTS.md fallback, same lifecycle as the two above.
-// undefined until the factory runs, where agents-md's own default (the process
-// agent dir) is the only value we could supply anyway.
-let effectiveAgentDir: string | undefined;
 // Load-time only, unlike the three above. applyLongContext() bakes these into
 // the model list pi registers, and pi flushes registrations before the first
 // event fires, so session_start cannot correct them. Re-reading them per
@@ -1225,18 +1221,23 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		? wrapPromptStream(promptBlocks)
 		: promptText;
 	const mcpServers = buildMcpServers(mcpTools, queryCtx);
+	// PI OWNS THE RULES. appendSystemPrompt gates exactly one thing: whether
+	// pi's own content (context files, skills) is forwarded. The context files
+	// come from pi's assembled system prompt - the same canonical set, order and
+	// dedup a native pi session gets - never from a bridge-side re-discovery.
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
-	const agentsAppend = appendSystemPrompt ? extractAgentsAppend(cwd, effectiveAgentDir) : undefined;
+	const agentsAppend = appendSystemPrompt ? extractProjectContextBlock(context.systemPrompt) : undefined;
 	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
 
-	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
-	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
-	// token overhead. The typed strictMcpConfig option tells the binary to use only
-	// programmatic mcpServers and ignore filesystem MCP entries. It is enabled by
-	// default because settingSources=undefined still loads Claude Code defaults.
-	const settingSources: SettingSource[] | undefined = appendSystemPrompt
-		? undefined
-		: providerSettings.settingSources ?? ["user", "project"];
+	// PURE CLAUDE CODE BY DEFAULT. settingSources defaults to [] so the spawned
+	// Claude Code loads no settings tiers and no CLAUDE.md of its own - rules
+	// reach the model only through pi's channel above, in pi's order. Anything
+	// Claude-Code-native (user/project/local settings, hooks, native CLAUDE.md
+	// pickup) is explicit opt-in via provider.settingSources. This used to be
+	// coupled to appendSystemPrompt, which silently changed which settings files
+	// loaded when a user toggled a prompt flag, and let CC load the project's
+	// CLAUDE.md natively next to pi's forwarded copy.
+	const settingSources: SettingSource[] = providerSettings.settingSources ?? [];
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
@@ -1656,10 +1657,9 @@ export default function (pi: ExtensionAPI) {
 			longContextExtraUsage: provider.longContextExtraUsage ?? false,
 		};
 	};
-	const applyProviderConfig = (config: Config, agentDir: string) => {
+	const applyProviderConfig = (config: Config) => {
 		providerSettings = config.provider ?? {};
 		effectiveClaudeConfigDir = providerSettings.claudeConfigDir ?? defaultClaudeConfigDir();
-		effectiveAgentDir = agentDir;
 	};
 
 	// Claimed before anything is applied, because this factory body is itself a
@@ -1676,7 +1676,7 @@ export default function (pi: ExtensionAPI) {
 	debug("loadConfig:", JSON.stringify(config), `cwd=${load.cwd} agentDir=${load.agentDir} owner=${isProviderOwner}`);
 	if (isProviderOwner) {
 		applyLongContextConfig(config);
-		applyProviderConfig(config, load.agentDir);
+		applyProviderConfig(config);
 	}
 	// Always from the settings in force, never from this run's config: a
 	// non-owner run must register (if it registers at all) the same list the
@@ -1724,7 +1724,7 @@ export default function (pi: ExtensionAPI) {
 			const agentDir = sessionAgentDir(ctx);
 			const sessionConfig = loadConfig(ctx.cwd, agentDir);
 			debug("loadConfig(session):", JSON.stringify(sessionConfig), `cwd=${ctx.cwd} agentDir=${agentDir}`);
-			applyProviderConfig(sessionConfig, agentDir);
+			applyProviderConfig(sessionConfig);
 		} else {
 			debug(`session_start: not the first closure in this instance, keeping applied config (module=${moduleInstanceId})`);
 		}
