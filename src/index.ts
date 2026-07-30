@@ -19,6 +19,7 @@ import { QueryContext, ctx } from "./query-state.js";
 import { loadConfig, loadDirs, sessionAgentDir, type Config } from "./config.js";
 import { defaultClaudeConfigDir } from "./claude-config.js";
 import { extractProjectContextBlock } from "./project-context.js";
+import { steeringAppendFor } from "./steering.js";
 import { typeBoxToolToSdkMcpTool } from "./typebox-to-zod.js";
 import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions, getAskClaudeDisallowedTools } from "./sdk-options.js";
 import { buildHarnessCorrections } from "./harness-prompt.js";
@@ -1256,7 +1257,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		cliModelId: cliModel,
 		toolsAreMcpOnly: true,
 	});
-	const appendParts = [agentsAppend, skillsAppend, corrections]
+	// Steering is bridge-owned and model-scoped like the corrections, NOT pi
+	// content: it applies only to models it was validated on, so it is not gated
+	// on appendSystemPrompt.
+	const steeringAppend = steeringAppendFor(model.id, providerSettings.steeringModels);
+	const appendParts = [agentsAppend, skillsAppend, steeringAppend, corrections]
 		.filter((part): part is string => Boolean(part));
 	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 

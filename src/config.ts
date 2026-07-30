@@ -36,6 +36,11 @@ export interface Config {
 		// silently change which settings files load.
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
+		// Models that receive the bridge's steering rules (engineering-discipline
+		// system prompt block). Default: the models the rules were validated on
+		// (see steering.ts). Set to false or [] to disable, or list model ids to
+		// extend - extending to unvalidated models is at your own risk.
+		steeringModels?: string[] | false;
 		pathToClaudeCodeExecutable?: string;
 		claudeConfigDir?: string;
 		// Subscription plan tier. Setting to "max" makes Fable 5 available and enables
