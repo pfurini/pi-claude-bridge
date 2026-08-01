@@ -717,11 +717,23 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 
 // --- Usage helpers ---
 
-function updateUsage(output: AssistantMessage, usage: Record<string, number | undefined>, model: Model<any>): void {
-	if (usage.input_tokens != null) output.usage.input = usage.input_tokens;
-	if (usage.output_tokens != null) output.usage.output = usage.output_tokens;
-	if (usage.cache_read_input_tokens != null) output.usage.cacheRead = usage.cache_read_input_tokens;
-	if (usage.cache_creation_input_tokens != null) output.usage.cacheWrite = usage.cache_creation_input_tokens;
+function updateUsage(
+	output: AssistantMessage,
+	usage: Record<string, number | undefined>,
+	model: Model<any>,
+	c: QueryContext = ctx(),
+): void {
+	// The live response's values are assignments (message_start then
+	// message_delta refine the same response); the turn's reported usage is the
+	// sum of completed responses plus the live one. See QueryContext.usageBase.
+	if (usage.input_tokens != null) c.usageLive.input = usage.input_tokens;
+	if (usage.output_tokens != null) c.usageLive.output = usage.output_tokens;
+	if (usage.cache_read_input_tokens != null) c.usageLive.cacheRead = usage.cache_read_input_tokens;
+	if (usage.cache_creation_input_tokens != null) c.usageLive.cacheWrite = usage.cache_creation_input_tokens;
+	output.usage.input = c.usageBase.input + c.usageLive.input;
+	output.usage.output = c.usageBase.output + c.usageLive.output;
+	output.usage.cacheRead = c.usageBase.cacheRead + c.usageLive.cacheRead;
+	output.usage.cacheWrite = c.usageBase.cacheWrite + c.usageLive.cacheWrite;
 	// Claude Code may report reasoning/thinking tokens separately, while pi's Usage type does not model that field.
 	const reasoning = usage.reasoning_tokens ?? usage.thinking_tokens;
 	if (reasoning != null) (output.usage as typeof output.usage & { reasoning?: number }).reasoning = reasoning;
@@ -830,7 +842,10 @@ function processStreamEvent(
 	if (event?.type === "message_start") {
 		c.turnToolCallIds = [];
 		c.nextHandlerIdx = 0;
-		if (event.message?.usage) updateUsage(c.turnOutput, event.message.usage, model);
+		// A new API response begins here: bank the previous one before its
+		// successor's values start overwriting the live slot.
+		c.beginUsageResponse();
+		if (event.message?.usage) updateUsage(c.turnOutput, event.message.usage, model, c);
 		return;
 	}
 
@@ -902,7 +917,7 @@ function processStreamEvent(
 
 	if (event?.type === "message_delta") {
 		c.turnOutput.stopReason = mapStopReason(event.delta?.stop_reason);
-		if (event.usage) updateUsage(c.turnOutput, event.usage, model);
+		if (event.usage) updateUsage(c.turnOutput, event.usage, model, c);
 		return;
 	}
 
@@ -974,7 +989,12 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 			debug("processAssistantMessage: unhandled block type", block.type);
 		}
 	}
-	if (assistantMsg.usage && c.turnOutput) updateUsage(c.turnOutput, assistantMsg.usage, model);
+	// Non-streaming assistant message: its own API response, so bank the
+	// previous one first.
+	if (assistantMsg.usage && c.turnOutput) {
+		c.beginUsageResponse();
+		updateUsage(c.turnOutput, assistantMsg.usage, model, c);
+	}
 
 	// End the stream on tool_use, same as processStreamEvent's message_stop handler.
 	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) {
