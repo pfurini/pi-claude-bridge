@@ -1,6 +1,6 @@
 /**
- * Steering rules are model-scoped: validated on Opus 4.8 and Opus 5 in a
- * blind-graded A/B, injected for exactly those models and nothing else. The
+ * Steering rules are model-scoped: validated on Opus 4.8, Opus 5 and Fable 5 in
+ * blind-graded A/Bs, injected for exactly those models and nothing else. The
  * scope IS the contract - generality of wording is not generality of evidence.
  */
 import { describe, it } from "node:test";
@@ -16,9 +16,21 @@ describe("steeringAppendFor", () => {
 	});
 
 	it("does not inject for unvalidated models, including other Claude tiers", () => {
-		for (const id of ["claude-fable-5", "claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-6"]) {
+		for (const id of ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-6"]) {
 			assert.equal(steeringAppendFor(id), undefined, id);
 		}
+	});
+
+	it("pins the three models an A/B actually measured - and only those", () => {
+		// One entry here equals one blind-graded campaign. Fable 5 earned its place
+		// on 2026-08-04 (40 cells, 3 Sonnet graders unanimous, H01 0/5 -> 5/5
+		// pass^k, H07 0/5 -> 4/5, canaries H02/H03 5/5 pass^k, zero refusals) and
+		// NOT by resembling Opus - its failure signature is the opposite one.
+		// Adding an id without a campaign behind it should break this test.
+		assert.deepEqual(
+			[...DEFAULT_STEERING_MODELS].sort(),
+			["claude-fable-5", "claude-opus-4-8", "claude-opus-5"],
+		);
 	});
 
 	it("false disables entirely; [] disables; explicit list overrides", () => {
