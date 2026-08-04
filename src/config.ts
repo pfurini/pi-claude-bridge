@@ -9,11 +9,13 @@
 
 import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "fs";
-import { isAbsolute, join } from "path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { dirname, isAbsolute, join } from "path";
 import { defaultClaudeConfigDir } from "./claude-config.js";
 
 export interface Config {
+	/** Date (YYYY-MM-DD) the one-time startup notice was shown. Written by the extension, not the user. */
+	startupNoticeShown?: string;
 	askClaude?: {
 		enabled?: boolean;
 		name?: string;
@@ -41,6 +43,10 @@ export interface Config {
 		// (see steering.ts). Set to false or [] to disable, or list model ids to
 		// extend - extending to unvalidated models is at your own risk.
 		steeringModels?: string[] | false;
+		// Claude Code auto-memory. Default false: the spawned binary gets
+		// CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 plus the SDK settings layer off.
+		// Opting in drops both. Isolated compaction queries always disable it.
+		autoMemoryEnabled?: boolean;
 		pathToClaudeCodeExecutable?: string;
 		claudeConfigDir?: string;
 		// Subscription plan tier. Setting to "max" makes Fable 5 available and enables
@@ -61,6 +67,28 @@ export function tryParseJson(path: string): Partial<Config> {
 		console.error(`claude-bridge: failed to parse ${path}: ${e}`);
 		return {};
 	}
+}
+
+export function claudeCodeSettings(provider: Config["provider"] = {}): { autoMemoryEnabled: boolean } {
+	return { autoMemoryEnabled: provider.autoMemoryEnabled ?? false };
+}
+
+// The agent dir is a parameter, not getAgentDir(), for the same isolation reason
+// as sessionAgentDir() below: a harness session runs under its own dir, and the
+// notice flag must land in that profile, not the operator's.
+export function globalConfigPath(agentDir: string = getAgentDir()): string {
+	return join(agentDir, "claude-bridge.json");
+}
+
+/** Record today's date in the global config so the startup notice shows once. Preserves every other field. */
+export function markStartupNoticeShown(agentDir: string = getAgentDir()): string {
+	const path = globalConfigPath(agentDir);
+	// en-CA renders YYYY-MM-DD in local time; toISOString() would report UTC.
+	const today = new Date().toLocaleDateString("en-CA");
+	const next = { ...tryParseJson(path), startupNoticeShown: today };
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
+	return path;
 }
 
 export function normalizeAskClaudeDefaultMode(
@@ -128,7 +156,7 @@ export function loadDirs(pi: ExtensionAPI): { cwd: string; agentDir: string } {
 }
 
 export function loadConfig(cwd: string, agentDir: string = getAgentDir()): Config {
-	const global = tryParseJson(join(agentDir, "claude-bridge.json"));
+	const global = tryParseJson(globalConfigPath(agentDir));
 	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
 	const askClaude = { ...global.askClaude, ...project.askClaude } as NonNullable<Config["askClaude"]> & {
 		defaultMode?: unknown;
@@ -151,6 +179,7 @@ export function loadConfig(cwd: string, agentDir: string = getAgentDir()): Confi
 		globalClaudeConfigDir,
 	);
 	return {
+		startupNoticeShown: project.startupNoticeShown ?? global.startupNoticeShown,
 		askClaude: askClaude as NonNullable<Config["askClaude"]>,
 		provider: provider as NonNullable<Config["provider"]>,
 	};

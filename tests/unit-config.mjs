@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { loadConfig, normalizeAskClaudeDefaultMode } from "../src/config.js";
+import { claudeCodeSettings, loadConfig, markStartupNoticeShown, normalizeAskClaudeDefaultMode } from "../src/config.js";
 import { defaultClaudeConfigDir } from "../src/claude-config.js";
 
 function withTempHome(fn) {
@@ -20,6 +21,16 @@ function withTempHome(fn) {
 	}
 }
 
+describe("claudeCodeSettings", () => {
+	it("disables auto-memory by default", () => {
+		assert.deepEqual(claudeCodeSettings(), { autoMemoryEnabled: false });
+	});
+
+	it("allows auto-memory to be enabled", () => {
+		assert.deepEqual(claudeCodeSettings({ autoMemoryEnabled: true }), { autoMemoryEnabled: true });
+	});
+});
+
 describe("loadConfig", () => {
 	it("loads project config from Pi's configured project directory", () => withTempHome((home) => {
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
@@ -32,6 +43,7 @@ describe("loadConfig", () => {
 			}));
 
 			assert.deepEqual(loadConfig(cwd), {
+				startupNoticeShown: undefined,
 				provider: { plan: "max", claudeConfigDir: defaultClaudeConfigDir(home) },
 				askClaude: { enabled: false },
 			});
@@ -52,12 +64,13 @@ describe("loadConfig", () => {
 				askClaude: { enabled: true, defaultMode: "read" },
 			}));
 			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
-				provider: { plan: "max", claudeConfigDir: "/project/claude" },
+				provider: { plan: "max", claudeConfigDir: "/project/claude", autoMemoryEnabled: true },
 				askClaude: { enabled: false },
 			}));
 
 			assert.deepEqual(loadConfig(cwd), {
-				provider: { plan: "max", strictMcpConfig: true, claudeConfigDir: "/project/claude" },
+				startupNoticeShown: undefined,
+				provider: { plan: "max", strictMcpConfig: true, claudeConfigDir: "/project/claude", autoMemoryEnabled: true },
 				askClaude: { enabled: false, defaultMode: "read" },
 			});
 		} finally {
@@ -113,6 +126,39 @@ describe("loadConfig", () => {
 			]);
 		} finally {
 			console.warn = originalWarn;
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	}));
+
+	it("markStartupNoticeShown records today's date without dropping existing settings", () => withTempHome(() => {
+		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
+		try {
+			const globalDir = getAgentDir();
+			mkdirSync(globalDir, { recursive: true });
+			const path = join(globalDir, "claude-bridge.json");
+			writeFileSync(path, JSON.stringify({
+				askClaude: { enabled: false },
+				provider: { strictMcpConfig: false },
+			}));
+
+			assert.equal(markStartupNoticeShown(), path);
+			const written = JSON.parse(readFileSync(path, "utf-8"));
+			assert.match(written.startupNoticeShown, /^\d{4}-\d{2}-\d{2}$/);
+			assert.deepEqual(written.askClaude, { enabled: false });
+			assert.deepEqual(written.provider, { strictMcpConfig: false });
+			assert.equal(loadConfig(cwd).startupNoticeShown, written.startupNoticeShown);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	}));
+
+	it("markStartupNoticeShown creates the config when there is none", () => withTempHome(() => {
+		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
+		try {
+			assert.equal(loadConfig(cwd).startupNoticeShown, undefined);
+			markStartupNoticeShown();
+			assert.match(loadConfig(cwd).startupNoticeShown, /^\d{4}-\d{2}-\d{2}$/);
+		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	}));
@@ -234,6 +280,7 @@ describe("loadConfig", () => {
 			}));
 
 			assert.deepEqual(loadConfig(cwd), {
+				startupNoticeShown: undefined,
 				provider: { plan: "max", claudeConfigDir: defaultClaudeConfigDir(home) },
 				askClaude: {},
 			});

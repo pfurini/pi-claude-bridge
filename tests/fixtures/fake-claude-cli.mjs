@@ -188,7 +188,13 @@ function handleMcpControlResponse(message) {
         jsonrpc: "2.0",
         id: 3,
         method: "tools/call",
-        params: { name: tool.name, arguments: toolInput },
+        // Real Claude Code stamps every tools/call with the id of the tool_use
+        // block it came from; the bridge pairs results by that id.
+        params: {
+          name: tool.name,
+          arguments: toolInput,
+          _meta: { "claudecode/toolUseId": "fake-tool-use-1" },
+        },
       });
       break;
     }

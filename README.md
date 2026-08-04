@@ -25,7 +25,7 @@ pi install npm:pi-claude-bridge
 
 Use `/model` to select `claude-bridge/claude-fable-5`, `claude-bridge/claude-opus-5`, `claude-bridge/claude-opus-4-8`, `claude-bridge/claude-opus-4-7`, `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-5`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
 
-Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider.
+Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider. Steering works mid-turn: a message sent while Claude is running a tool reaches it at that tool boundary, not after the whole turn finishes.
 
 **1M Context:** Opus 5, Opus 4.7, and Opus 4.8 get 1M context by default. Opus 5 is native 1M: it is requested by its bare model ID and depends on neither `provider.plan` nor `provider.longContextExtraUsage`. Opus 4.6 only gets 1M if you're on a Max plan or pay for Extra Usage. Sonnet 4.6 only gets 1M if you pay for Extra Usage. You will need to set `provider.plan` and/or `provider.longContextExtraUsage` for 1M context in Opus 4.6/Sonnet 4.6 as described in [Configuration](#configuration).
 
@@ -92,11 +92,12 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 - `appendSkills` — forward pi's skills block into the system prompt (default `true`). Note that `full` mode always sends Claude Code's system prompt regardless of this setting, since it grants shell and filesystem access and needs the accompanying safety guidance; `read` and `none` send it only when there is something to append. See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md).
 
 `provider`:
-- `plan` (default `"pro"`) — set to `"max"` for Max (or Team Premium/Enterprise) to enable Opus 4.6 with 1M context.
+- `plan` (default `"pro"`) — set to `"max"` for Max (or Team Premium/Enterprise) to enable Opus 4.6 with 1M context. If it's unset, the first interactive session points this out once, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
 - `longContextExtraUsage` — set to `true` to enable 1M models that cost money through Extra Usage. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro. Not needed for Opus 4.7 or 4.8.
-- `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`). This covers pi's own content only. On the provider path a short `# Harness corrections` block is appended regardless of this setting, because Claude Code's preset prompt otherwise names tools and a model ID that do not exist here. AskClaude receives corrections only when it is already forwarding a skills block. See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md).
+- `appendSystemPrompt` — append pi's project context files (global and ancestor `AGENTS.md` / `CLAUDE.md`) and skills (default `true`). This covers pi's own content only. On the provider path a short `# Harness corrections` block is appended regardless of this setting, because Claude Code's preset prompt otherwise names tools and a model ID that do not exist here. AskClaude receives corrections only when it is already forwarding a skills block. See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md).
 - `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
 - `strictMcpConfig` — block MCP servers from the isolated profile's `.claude.json` and project `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
+- `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`). The default off both sets the SDK settings layer and passes `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` to the subprocess; opting in drops both.
 - `claudeConfigDir` — absolute path to the Claude Code filesystem profile (default `~/.pi/agent/claude`). Each config file is validated on its own, so an invalid or relative value warns and falls back to the next valid setting (a bad project value falls back to your global one, not to the default). An inherited `CLAUDE_CONFIG_DIR` does not override this setting.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 
@@ -109,12 +110,14 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 
 `npm test` for the full suite, which adds integration tests that hit APIs (`tests/int-*.{sh,mjs}`: smoke, multi-turn, cache, session-resume, session-rebuild, tool-message). Set `CLAUDE_BRIDGE_TESTING_ALT_MODEL` in `.env.test` for the alt-provider smoke test (e.g. `openrouter/z-ai/glm-4.7-flash`).
 
+Integration tests spawn real `pi` and Claude Code subprocesses, so they need write access to `~/.claude` for CC's session state — a sandbox that blocks it makes the next turn's `--resume` fail with `No conversation found with session ID`. The RPC harness probes for this at startup and fails fast.
+
 ## Debugging
 
 Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 
 - **Bridge log** at `~/.pi/agent/claude-bridge.log` — every provider call, session sync decision, tool result delivery, and CC's stderr. Override location with `CLAUDE_BRIDGE_DEBUG_PATH`.
-- **Per-query Claude Code CLI logs** at `~/.pi/agent/cc-cli-logs/<timestamp>-<tag>-<seq>.log` — the CC subprocess's own debug stream, one file per `query()` call. Tags are `provider` (main turn), `continuation` (steer replay), or `askclaude` (sub-delegation). Useful when a resume fails or CC misbehaves internally — shows the CLI's own view of session loading, API requests, and tool calls.
+- **Per-query Claude Code CLI logs** at `~/.pi/agent/cc-cli-logs/<timestamp>-<tag>-<seq>.log` — the CC subprocess's own debug stream, one file per `query()` call. Tags are `provider` (main turn) or `askclaude` (sub-delegation). Useful when a resume fails or CC misbehaves internally — shows the CLI's own view of session loading, API requests, and tool calls.
 
 When filing a bug about a session-resume failure (e.g. "No conversation found"), the most useful attachments are the `syncResult:` lines from the bridge log plus the matching `cc-cli-logs/` file for the failing query.
 

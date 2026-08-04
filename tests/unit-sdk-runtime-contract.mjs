@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createSdkMcpServer, query } from "@anthropic-ai/claude-agent-sdk";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Type } from "typebox";
 import {
   buildAskClaudeQueryOptions,
@@ -17,7 +17,7 @@ import {
   reduceSdkMessage,
 } from "../src/sdk-messages.js";
 import { MCP_SERVER_NAME } from "../src/skills.js";
-import { typeBoxToolToSdkMcpTool } from "../src/typebox-to-zod.js";
+import { createToolServer } from "../src/mcp-server.js";
 
 const require = createRequire(import.meta.url);
 const fakeClaude = fileURLToPath(
@@ -220,31 +220,22 @@ describe("offline Agent SDK process contracts", () => {
       count: Type.Integer({ description: "Number of repetitions" }),
       enabled: Type.Optional(Type.Boolean({ description: "Enable the echo" })),
     });
-    const server = createSdkMcpServer({
-      name: MCP_SERVER_NAME,
-      version: "1.0.0",
-      alwaysLoad: true,
-      tools: [
-        typeBoxToolToSdkMcpTool(
-          {
-            name: "phase2_echo",
-            description: "Echoes validated Phase 2 input",
-            parameters: typeBoxSchema,
-          },
-          async (args) => {
-            calls.push(args);
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `${args.message}:${args.count}:${args.enabled}`,
-                },
-              ],
-            };
-          },
-        ),
-      ],
-    });
+    // The production server pairs calls to results by the tool_use id Claude
+    // stamps in _meta, and never reads the arguments (pi validates and runs the
+    // tool itself). The handler therefore sees the id, not the args.
+    const server = createToolServer(MCP_SERVER_NAME, [
+      {
+        name: "phase2_echo",
+        description: "Echoes validated Phase 2 input",
+        inputSchema: typeBoxSchema,
+        handler: async (toolCallId) => {
+          calls.push(toolCallId);
+          return {
+            content: [{ type: "text", text: "phase two:2:true" }],
+          };
+        },
+      },
+    ]);
 
     try {
       const messages = await runFakeQuery({
@@ -260,9 +251,7 @@ describe("offline Agent SDK process contracts", () => {
         { name: MCP_SERVER_NAME, status: "connected" },
       ]);
       assert.ok(init.tools.includes(`mcp__${MCP_SERVER_NAME}__phase2_echo`));
-      assert.deepEqual(calls, [
-        { message: "phase two", count: 2, enabled: true },
-      ]);
+      assert.deepEqual(calls, ["fake-tool-use-1"]);
       assert.equal(terminalResult(messages).result, "phase two:2:true");
 
       const protocol = readFileSync(logPath, "utf8")

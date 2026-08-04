@@ -99,7 +99,7 @@ export function getAskClaudeDisallowedTools(mode: AskClaudeMode): string[] {
 	return getAskClaudeToolPolicy(mode).disallowedTools;
 }
 
-// Isolation switches shared by the provider and AskClaude paths.
+// Isolation switches shared by every spawn path (provider, AskClaude, compaction).
 // CLAUDE_CODE_DISABLE_AUTO_MEMORY=1: Claude Code's auto-memory section instructs
 // the model to write memory files with the native Write tool, which neither path
 // exposes (the provider sends tools: [] and AskClaude restricts the inventory),
@@ -107,11 +107,22 @@ export function getAskClaudeDisallowedTools(mode: AskClaudeMode): string[] {
 // the preset prompt: on Claude Code 2.1.220 it accounts for roughly half of the
 // legacy-family prompt (Sonnet 5: 26,762 -> 13,880 chars) and about a fifth of the
 // new-family one (Opus 5: 9,287 -> 7,145). See diag/SYSTEM-PROMPTS.md.
-const CLAUDE_ISOLATION_ENV = {
+//
+// Auto-memory is additionally disabled through the SDK's flag-settings layer
+// (settings.autoMemoryEnabled, the highest-priority settings tier), belt and
+// braces with the env var. provider.autoMemoryEnabled=true opts back in and
+// drops both; compaction summaries never opt in.
+export const CLAUDE_ISOLATION_ENV_BASE = {
 	ENABLE_CLAUDEAI_MCP_SERVERS: "0",
 	DISABLE_AUTO_COMPACT: "1",
-	CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
 } as const;
+
+export function claudeIsolationEnv(autoMemoryEnabled: boolean): Record<string, string> {
+	return {
+		...CLAUDE_ISOLATION_ENV_BASE,
+		...(autoMemoryEnabled ? {} : { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" }),
+	};
+}
 
 export interface ProviderQueryOptionsInput {
 	cwd: string;
@@ -125,6 +136,7 @@ export interface ProviderQueryOptionsInput {
 	resumeSessionId?: string | null;
 	claudeExecutable?: string;
 	strictMcpConfigEnabled: boolean;
+	autoMemoryEnabled?: boolean;
 	debugOptions?: CliDebugOptions;
 }
 
@@ -133,12 +145,12 @@ export function buildProviderQueryOptions(
 ): Options {
 	const extraArgs: Record<string, string | null> = { model: input.cliModel };
 	if (input.effort) extraArgs["thinking-display"] = "summarized";
+	const autoMemoryEnabled = input.autoMemoryEnabled ?? false;
 
 	return {
 		cwd: input.cwd,
-		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
-			...CLAUDE_ISOLATION_ENV,
-		}),
+		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, claudeIsolationEnv(autoMemoryEnabled)),
+		settings: { autoMemoryEnabled },
 		tools: [],
 		permissionMode: "bypassPermissions",
 		allowDangerouslySkipPermissions: true,
@@ -178,6 +190,7 @@ export interface AskClaudeQueryOptionsInput {
 	resumeSessionId?: string | null;
 	isolated?: boolean;
 	claudeExecutable?: string;
+	autoMemoryEnabled?: boolean;
 	debugOptions?: CliDebugOptions;
 }
 
@@ -187,6 +200,7 @@ export function buildAskClaudeQueryOptions(
 	const extraArgs: Record<string, string | null> = { model: input.cliModel };
 	if (input.effort) extraArgs["thinking-display"] = "summarized";
 	const policy = getAskClaudeToolPolicy(input.mode);
+	const autoMemoryEnabled = input.autoMemoryEnabled ?? false;
 
 	// `systemPrompt: undefined` means no preset at all on this path, not "the SDK
 	// default": measured on 2.1.220, it yields a 136-character system prompt with no
@@ -204,9 +218,8 @@ export function buildAskClaudeQueryOptions(
 
 	return {
 		cwd: input.cwd,
-		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
-			...CLAUDE_ISOLATION_ENV,
-		}),
+		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, claudeIsolationEnv(autoMemoryEnabled)),
+		settings: { autoMemoryEnabled },
 		permissionMode: "bypassPermissions",
 		allowDangerouslySkipPermissions: true,
 		strictMcpConfig: true,
@@ -252,10 +265,9 @@ export function buildIsolatedSummaryQueryOptions(
 ): Options {
 	return {
 		cwd: input.cwd,
-		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, {
-			DISABLE_AUTO_COMPACT: "1",
-			CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-		}),
+		// Compaction never opts into auto-memory, regardless of provider config.
+		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, claudeIsolationEnv(false)),
+		settings: { autoMemoryEnabled: false },
 		tools: [],
 		strictMcpConfig: true,
 		settingSources: [],

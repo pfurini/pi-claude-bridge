@@ -3,8 +3,9 @@
  * Provides spawn, send, event waiting, and text collection utilities.
  */
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { getClaudeDir } from "cc-session-io";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { assertClaudeAuthenticated } from "./claude-auth.mjs";
@@ -15,6 +16,31 @@ const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 // (`node --import tsx --test tests/int-foo.mjs`) and not just via `npm test`.
 const ENV_FILE = resolve(DIR, ".env.test");
 if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
+
+// Claude Code persists session state under its config dir. A sandbox that blocks
+// those writes lets the first query succeed and then fails the next turn's
+// --resume with "No conversation found with session ID", which reads like a
+// bridge bug. Surface the real cause up front.
+//
+// Resolve that dir the way the bridge and cc-session-io do, honouring
+// CLAUDE_CONFIG_DIR: probing a hardcoded ~/.claude reports a sandbox failure
+// when CLAUDE_CONFIG_DIR points somewhere writable, and misses a real one when
+// it points somewhere that isn't. Create it first so a fresh config dir reads
+// as writable rather than as a blocked write.
+// Per-pid name: `npm test` runs the int-*.mjs files concurrently, and a shared
+// probe path lets one process delete the file another is still using.
+const CLAUDE_DIR = getClaudeDir();
+const PROBE = resolve(CLAUDE_DIR, `.int-test-write-probe-${process.pid}`);
+try {
+	mkdirSync(CLAUDE_DIR, { recursive: true });
+	writeFileSync(PROBE, "");
+	rmSync(PROBE);
+} catch (err) {
+	throw new Error(
+		`Integration tests need write access to ${CLAUDE_DIR} for Claude Code session state (got ${err.code}). ` +
+			`Re-run outside the sandbox, or point CLAUDE_CONFIG_DIR at a writable directory.`,
+	);
+}
 
 const DEFAULT_SHUTDOWN_GRACE_MS = 2_000;
 const DEFAULT_SHUTDOWN_KILL_MS = 2_000;
@@ -197,7 +223,7 @@ export function createRpcHarness(opts) {
 	function send(cmd, timeout = defaultTimeout) {
 		const id = `req_${++reqId}`;
 		const full = { ...cmd, id };
-		rpcLog.write(`> ${JSON.stringify(full)}\n`);
+		rpcLog?.write(`> ${JSON.stringify(full)}\n`);
 		pi.stdin.write(JSON.stringify(full) + "\n");
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => reject(new Error(`Timeout: ${cmd.type}`)), timeout);
