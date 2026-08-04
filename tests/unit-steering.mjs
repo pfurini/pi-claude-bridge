@@ -5,14 +5,24 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_STEERING_MODELS, STEERING_RULES, steeringAppendFor } from "../src/steering.js";
+import { DEFAULT_STEERING_MODELS, FABLE_IRREVERSIBLE_RULE, MODEL_EXTRA_RULES, STEERING_RULES, steeringAppendFor } from "../src/steering.js";
 import { applyLongContext, buildModels, resolveModel } from "../src/models.js";
 
 describe("steeringAppendFor", () => {
 	it("injects for exactly the validated models by default", () => {
 		for (const id of DEFAULT_STEERING_MODELS) {
-			assert.equal(steeringAppendFor(id), STEERING_RULES);
+			assert.ok(steeringAppendFor(id)?.startsWith(STEERING_RULES), id);
 		}
+	});
+
+	it("per-model extras append AFTER the shared rules, only for their model", () => {
+		// Candidate rule under A/B: Fable gets base + irreversibility, the Opus
+		// models get exactly the base. An extra leaking to a model it was not
+		// measured on is the scope violation this file exists to prevent.
+		assert.equal(steeringAppendFor("claude-fable-5"), `${STEERING_RULES}\n\n${FABLE_IRREVERSIBLE_RULE}`);
+		assert.equal(steeringAppendFor("claude-opus-5"), STEERING_RULES);
+		assert.equal(steeringAppendFor("claude-opus-4-8"), STEERING_RULES);
+		assert.deepEqual(Object.keys(MODEL_EXTRA_RULES), ["claude-fable-5"]);
 	});
 
 	it("does not inject for unvalidated models, including other Claude tiers", () => {
