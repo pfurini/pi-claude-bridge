@@ -49,6 +49,10 @@ const flag = (name, fallback) => {
 	return i === -1 ? fallback : args[i + 1];
 };
 const since = args.includes("--since") ? Date.parse(flag("--since")) : null;
+// `at` is already a numeric epoch (Date.parse(ts) in parse()); compare numerically.
+// The old `Date.parse(b.at)` re-parsed a number as a string → NaN → every windowed
+// comparison was false, so `--since` could never flag a rebuild-boundary break.
+const recentAt = (at) => since === null || at >= since;
 // The 28% boundary rate documented in diag/AUDIT.md is an open
 // finding, not a regression, so the ceiling is a knob: set it just above the
 // current rate to catch it getting *worse* while the root cause is unresolved.
@@ -108,6 +112,11 @@ function run() {
 		benign.set(reason, b);
 	};
 	const group = { "in-query": { n: 0, breaks: 0, tokens: 0 }, boundary: { n: 0, breaks: 0, tokens: 0 } };
+	// Windowed counterpart of `group`, used for the exit decision only. With no
+	// --since, recentAt() is always true so groupWin equals group; with --since it
+	// counts only pairs whose current request lands in the window, so both the
+	// numerator (breaks) and denominator (n) of the boundary rate are windowed.
+	const groupWin = { "in-query": { n: 0, breaks: 0 }, boundary: { n: 0, breaks: 0 } };
 	const breaks = [];
 	let requests = 0;
 
@@ -146,6 +155,7 @@ function run() {
 
 			const kind = fresh ? "boundary" : "in-query";
 			group[kind].breaks++; group[kind].tokens += shortfall;
+			if (recentAt(cur.at)) groupWin[kind].breaks++;
 			breaks.push({ kind, ...cur, shortfall, expected, path: sync?.[1] ?? (fresh ? "?" : "in-query") });
 		}
 		// Denominators: every comparable pair, break or not.
@@ -155,7 +165,9 @@ function run() {
 			if (cur.marks.some((m) => RESET.test(m))) continue;
 			const fresh = cur.marks.map((m) => FRESH.exec(m)).filter(Boolean).at(-1);
 			if (fresh && fresh[4] === "none") continue;
-			group[fresh ? "boundary" : "in-query"].n++;
+			const kind = fresh ? "boundary" : "in-query";
+			group[kind].n++;
+			if (recentAt(cur.at)) groupWin[kind].n++;
 		}
 	}
 
@@ -186,13 +198,14 @@ function run() {
 	}
 
 	// Exit reflects only the window: the log spans months of already-fixed bugs.
-	const recent = (b) => since === null || Date.parse(b.at) >= since;
-	const windowed = onRebuild.filter(recent);
-	const excess = rate(group.boundary) > ceiling && group.boundary.breaks >= 10;
+	// Both the rebuild-boundary list and the ceiling rate are windowed; the printed
+	// stats above stay full-corpus. groupWin equals group when --since is absent.
+	const windowed = onRebuild.filter((b) => recentAt(b.at));
+	const excess = rate(groupWin.boundary) > ceiling && groupWin.boundary.breaks >= 10;
 	console.log();
-	if (excess) console.log(`FAIL: boundary break rate ${(rate(group.boundary) * 100).toFixed(1)}% exceeds ceiling ${(ceiling * 100).toFixed(0)}% — suspect a prefix-mutation regression`);
+	if (excess) console.log(`FAIL: boundary break rate ${(rate(groupWin.boundary) * 100).toFixed(1)}% exceeds ceiling ${(ceiling * 100).toFixed(0)}%${since === null ? "" : " in window"} — suspect a prefix-mutation regression`);
 	else if (windowed.length) console.log(`FAIL: ${windowed.length} break(s) on a rebuild boundary${since === null ? "" : " in window"} — inspect the rewritten session`);
-	else console.log(`OK: boundary rate ${(rate(group.boundary) * 100).toFixed(1)}% vs in-query control ${(rate(group["in-query"]) * 100).toFixed(1)}% — residual is at the server-side eviction floor`);
+	else console.log(`OK: boundary rate ${(rate(groupWin.boundary) * 100).toFixed(1)}% vs in-query control ${(rate(groupWin["in-query"]) * 100).toFixed(1)}%${since === null ? "" : " in window"} — residual is at the server-side eviction floor`);
 
 	process.exit(excess || windowed.length ? 1 : 0);
 }

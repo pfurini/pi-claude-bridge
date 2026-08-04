@@ -28,7 +28,7 @@
   "scripts": {
     "test:unit": "node --import tsx --import ./tests/lib/setup.mjs --test tests/unit-*.mjs",
     "test:auth-preflight": "node --import tsx tests/lib/claude-auth.mjs",
-    "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && npm run test:auth-preflight && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs",
+    "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && npm run test:auth-preflight && rm -f .test-output/*-debug.log && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs && node diag/gate-warnings.mjs .test-output",
     "test:usage": "tests/usage-test.sh",
     "typecheck": "tsc --noEmit"
   },

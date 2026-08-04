@@ -1,0 +1,15 @@
+# Allowlist for diag/gate-warnings.mjs — bridge WARNING:/BUG: lines that an
+# integration test induces on purpose, and which therefore must not fail the run.
+#
+# Format (one per line):
+#   <log-name-substring> :: <message-substring>
+# A warning is allowed when the log's basename contains <log-name-substring> AND
+# the raw message contains <message-substring>. Drop the `<name> ::` prefix to
+# allow a message in any log. `#` starts a comment.
+#
+# Curate this as the integration suite is run: when the gate fails, it prints the
+# offending line and a ready-made allowlist entry. Add the entry ONLY if that test
+# is meant to provoke the warning; otherwise the warning is a real defect to fix.
+#
+# (No entries yet — the first integration run under this gate will surface any
+# deliberately-induced warnings to record here.)

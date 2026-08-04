@@ -15,6 +15,19 @@ export interface PendingToolCall {
 	resolve: (result: McpResult) => void;
 }
 
+/** The token fields accumulated per segment and per query. The first four are the
+ *  billable set reconciled against CC's result.usage; `reasoning` is a subset of
+ *  `output`, carried informationally and never reconciled or added to totals. */
+export interface UsageTokens {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	reasoning: number;
+}
+const USAGE_KEYS = ["input", "output", "cacheRead", "cacheWrite", "reasoning"] as const;
+const zeroUsageTokens = (): UsageTokens => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
+
 export class QueryContext {
 	// Query-scoped (fully isolated per query)
 	activeQuery: unknown | null = null;
@@ -44,18 +57,75 @@ export class QueryContext {
 	// response's values are assigned as they refine, and the reported usage is
 	// base + live. message_start marks the boundary where the live response
 	// folds into the base.
-	usageBase = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-	usageLive = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+	usageBase: UsageTokens = zeroUsageTokens();
+	usageLive: UsageTokens = zeroUsageTokens();
 	turnStarted = false;
 	turnSawStreamEvent = false;
 	turnSawToolCall = false;
+	/** True once any API response this turn carried a reasoning/thinking breakdown.
+	 *  Gates whether `usage.reasoning` and the `reasoning=` debug field are emitted,
+	 *  so non-thinking traffic keeps its shape. */
+	turnSawReasoning = false;
+
+	// QUERY-SCOPED TOTALS — the sum across every API response of the whole query()
+	// call, which is what CC's result.usage reports. One pi query wraps many pi
+	// messages (one per tool round-trip); usageBase/usageLive above are per-message
+	// and are wiped by resetTurnState on each tool-result delivery. These survive
+	// that wipe: closeSegment() folds a message's usage in as it closes, and
+	// queryTokenTotal() adds the still-open final segment. Cleared only by
+	// beginQuery() where a query begins — never by resetTurnState.
+	queryTotals: UsageTokens = zeroUsageTokens();
+	/** Sum of closed segments' estimated `cost.total`. The final segment's cost is
+	 *  trued-up to CC's figure at result time, so it is deliberately NOT banked here. */
+	queryBankedCost = 0;
+	/** Per-closed-segment token snapshots, for the reconciler's diag breakdown on a
+	 *  mismatch. The still-open final segment is not here — the reconciler appends it. */
+	querySegments: UsageTokens[] = [];
 
 	/** Fold the live response into the base; call when a new API response starts. */
 	beginUsageResponse(): void {
-		for (const k of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+		for (const k of USAGE_KEYS) {
 			this.usageBase[k] += this.usageLive[k];
 			this.usageLive[k] = 0;
 		}
+	}
+
+	/** Clear the query-scoped accumulator. Call once where a query begins (the
+	 *  fresh-query path reusing the top-level ctx(); reentrant contexts are fresh
+	 *  instances that already start clean). Without this the totals would carry
+	 *  from the previous query and trip the reconciler on every later turn. */
+	beginQuery(): void {
+		this.queryTotals = zeroUsageTokens();
+		this.queryBankedCost = 0;
+		this.querySegments = [];
+	}
+
+	/** Bank the current segment (this pi message) into the query totals before
+	 *  resetTurnState wipes usageBase/usageLive on the next tool-result delivery.
+	 *  Folds the live response into the base first (the closing response's tokens
+	 *  are still in the live slot at a tool boundary), then adds the whole segment
+	 *  to the query totals and banks its estimated cost. Idempotent: it zeroes the
+	 *  per-segment slots, so a redundant call adds nothing. */
+	closeSegment(): void {
+		this.beginUsageResponse();
+		const segment = zeroUsageTokens();
+		for (const k of USAGE_KEYS) {
+			segment[k] = this.usageBase[k];
+			this.queryTotals[k] += this.usageBase[k];
+			this.usageBase[k] = 0;
+		}
+		this.querySegments.push(segment);
+		this.queryBankedCost += this.turnOutput?.usage.cost.total ?? 0;
+	}
+
+	/** The query's token sum so far: closed segments plus the still-open segment
+	 *  (usageBase + usageLive). At result time this equals CC's result.usage. */
+	queryTokenTotal(): UsageTokens {
+		const out = { ...this.queryTotals };
+		for (const k of USAGE_KEYS) {
+			out[k] += this.usageBase[k] + this.usageLive[k];
+		}
+		return out;
 	}
 
 	get turnBlocks(): Array<any> {
@@ -85,8 +155,9 @@ export class QueryContext {
 		this.turnStarted = false;
 		this.turnSawStreamEvent = false;
 		this.turnSawToolCall = false;
-		this.usageBase = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-		this.usageLive = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+		this.turnSawReasoning = false;
+		this.usageBase = zeroUsageTokens();
+		this.usageLive = zeroUsageTokens();
 		// turnToolCallIds is NOT reset — it persists across tool-result delivery
 		// callbacks within the same assistant message so results can be routed to
 		// this query while its handlers are still pending.

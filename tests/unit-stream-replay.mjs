@@ -14,37 +14,19 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { QueryContext } from "../src/query-state.js";
+import { driveConsumeQuery, loadFixture, resultUsage } from "./lib/replay.mjs";
 
 const { __test } = await import("../src/index.js");
 
-// `cost` matters: a recorded stream carries real usage, so consumeQuery reaches
-// pi-ai's cost calculation, which the hand-built streams never exercise. Zeros are
-// what buildModels ships (src/models.ts) since Claude Code billing is per-plan.
-const model = {
-	api: "anthropic-messages", provider: "anthropic", id: "claude-haiku-4-5",
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-};
-
-function fixture(name) {
-	const path = new URL(`./fixtures/sdk-streams/${name}.jsonl`, import.meta.url);
-	return readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-}
-
-/** Replays a fixture through the real consumeQuery, collecting the pi-side events. */
-async function replay(name, { toolNames = ["read"] } = {}) {
-	const events = [];
-	const c = new QueryContext();
-	c.currentPiStream = { push: (e) => events.push(e), end: () => events.push({ type: "end" }) };
-	c.resetTurnState(model);
-	// The map the provider path builds from the served tool list: SDK name → pi name.
-	const customToolNameToPi = new Map(toolNames.map((n) => [`mcp__custom-tools__${n}`, n]));
-
-	const messages = fixture(name);
-	async function* stream() { for (const m of messages) yield m; }
-	const { capturedSessionId } = await __test.consumeQuery(stream(), customToolNameToPi, model, () => false, c);
-	return { events, ctx: c, messages, capturedSessionId };
+// buildModels (src/models.ts) forwards each catalog entry's real pricing; the zero
+// cost in the shared harness model is a deliberate test choice — cost adoption
+// trues the final segment up to the fixture's own `total_cost_usd`, so the reported
+// cost is independent of the model's local price table (see the cost-adoption suite).
+async function replay(name, opts = {}) {
+	const messages = loadFixture(name);
+	const { events, ctx, capturedSessionId } = await driveConsumeQuery(__test.consumeQuery, QueryContext, messages, opts);
+	return { events, ctx, messages, capturedSessionId };
 }
 
 const blocks = (ctx, type) => ctx.turnOutput.content.filter((b) => b.type === type);
@@ -66,6 +48,39 @@ describe("replaying a recorded text-only turn", () => {
 		assert.ok(ctx.turnOutput.usage.input + ctx.turnOutput.usage.cacheRead + ctx.turnOutput.usage.cacheWrite > 0, "prompt tokens");
 		assert.match(capturedSessionId ?? "", /^[0-9a-f-]{36}$/);
 	});
+
+	it("accumulates reasoning from output_tokens_details.thinking_tokens", async () => {
+		const { ctx } = await replay("text");
+		// The recorded turn thinks 39 of its 47 output tokens.
+		assert.equal(ctx.turnOutput.usage.reasoning, 39);
+		assert.ok(ctx.turnOutput.usage.reasoning < ctx.turnOutput.usage.output, "reasoning is a subset of output");
+	});
+
+	it("the query token total equals CC's result.usage", async () => {
+		const { ctx, messages } = await replay("text");
+		const total = ctx.queryTokenTotal();
+		const cc = resultUsage(messages);
+		assert.deepEqual(
+			{ input: total.input, output: total.output, cacheRead: total.cacheRead, cacheWrite: total.cacheWrite },
+			cc,
+		);
+	});
+
+	it("clears the accumulator between queries (twice through one context)", async () => {
+		// Reusing the top-level ctx() is the real production path; a missing
+		// beginQuery would leave the first query's totals to double the second.
+		const c = new QueryContext();
+		await replay("text", { ctx: c });
+		const first = c.queryTokenTotal();
+		const { messages } = await replay("text", { ctx: c });
+		const second = c.queryTokenTotal();
+		assert.deepEqual(second, first, "second query must not inherit the first query's totals");
+		const cc = resultUsage(messages);
+		assert.deepEqual(
+			{ input: second.input, output: second.output, cacheRead: second.cacheRead, cacheWrite: second.cacheWrite },
+			cc,
+		);
+	});
 });
 
 describe("replaying a recorded single-tool turn", () => {
@@ -78,6 +93,20 @@ describe("replaying a recorded single-tool turn", () => {
 		assert.ok(calls[0].id.startsWith("toolu_"));
 		assert.equal(ctx.turnSawToolCall, true);
 		assert.deepEqual(ctx.turnToolCallIds, [calls[0].id]);
+	});
+
+	// The load-bearing fold-order pin at the call site: segment 1 closes at the
+	// tool boundary, and closeSegment must bank it BEFORE the delivery path's
+	// resetTurnState wipes usageLive. Pre-fix this yields only segment 1's tokens.
+	it("sums both segments into the query total, matching result.usage", async () => {
+		const { ctx, messages } = await replay("single-tool", { rearm: true });
+		const total = ctx.queryTokenTotal();
+		const cc = resultUsage(messages);
+		assert.deepEqual(
+			{ input: total.input, output: total.output, cacheRead: total.cacheRead, cacheWrite: total.cacheWrite },
+			cc,
+			"query total must equal CC's result.usage across the tool boundary",
+		);
 	});
 });
 
@@ -100,5 +129,15 @@ describe("replaying a recorded parallel-tool turn", () => {
 
 		assert.equal(blocks(ctx, "toolCall").length, 0, "unserved names must not reach pi");
 		assert.equal(ctx.turnSawToolCall, false);
+	});
+
+	it("sums both segments into the query total, matching result.usage", async () => {
+		const { ctx, messages } = await replay("parallel-tools", { rearm: true });
+		const total = ctx.queryTokenTotal();
+		const cc = resultUsage(messages);
+		assert.deepEqual(
+			{ input: total.input, output: total.output, cacheRead: total.cacheRead, cacheWrite: total.cacheWrite },
+			cc,
+		);
 	});
 });

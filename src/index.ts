@@ -1,4 +1,4 @@
-import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type UserMessage } from "@earendil-works/pi-ai";
+import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type Usage, type UserMessage } from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, keyHint, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
@@ -25,7 +25,7 @@ import { createToolServer } from "./mcp-server.js";
 import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions, getAskClaudeDisallowedTools } from "./sdk-options.js";
 import { buildHarnessCorrections } from "./harness-prompt.js";
 import { createSdkMessageState, parseSdkResult, parseSdkSystemInit, rateLimitResetDate, rateLimitUtilizationPercent, reduceSdkMessage, type SdkTerminalResult } from "./sdk-messages.js";
-import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
+import { buildActionSummary, formatUsageLine, type ToolCallState } from "./askclaude-ui.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
 const _piAi = piAi as any;
@@ -39,7 +39,11 @@ const newAssistantMessageEventStream: () => AssistantMessageEventStream =
 
 const DEBUG = process.env.CLAUDE_BRIDGE_DEBUG === "1";
 const DEBUG_LOG_PATH = process.env.CLAUDE_BRIDGE_DEBUG_PATH || join(homedir(), ".pi", "agent", "claude-bridge.log");
-const DIAG_LOG_PATH = join(homedir(), ".pi", "agent", "claude-bridge-diag.log");
+// Redirectable so the unit suite's diagDump entries land in a throwaway dir
+// instead of the real ~/.pi/agent/claude-bridge-diag.log. Explicit override wins;
+// otherwise it tracks the debug log's directory (which setup.mjs already points at
+// a temp dir), so setting CLAUDE_BRIDGE_DEBUG_PATH redirects both together.
+const DIAG_LOG_PATH = process.env.CLAUDE_BRIDGE_DIAG_PATH || join(dirname(DEBUG_LOG_PATH), "claude-bridge-diag.log");
 
 // CLAUDE_BRIDGE_RECORD_STREAM=<path> appends every SDK message consumeQuery sees,
 // one JSON object per line. Used by tests/lib/record-sdk-streams.mjs to capture
@@ -310,14 +314,14 @@ function extractUserPromptBlocks(messages: Context["messages"]): ContentBlockPar
 	return hasImage ? blocks : null;
 }
 
-function newAssistantOutput(model: Model<any>, text: string, stopReason: AssistantMessage["stopReason"], errorMessage?: string): AssistantMessage {
+function newAssistantOutput(model: Model<any>, text: string, stopReason: AssistantMessage["stopReason"], errorMessage?: string, usage?: Usage): AssistantMessage {
 	return {
 		role: "assistant",
 		content: text ? [{ type: "text", text }] : [],
 		api: model.api,
 		provider: model.provider,
 		model: model.id,
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+		usage: usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 		stopReason,
 		...(errorMessage ? { errorMessage } : {}),
@@ -400,6 +404,7 @@ async function runIsolatedSummary(
 
 		const messageState = createSdkMessageState();
 		let firstEventLogged = false;
+		let summaryUsage: Usage | undefined;
 
 		for await (const message of sdkQuery) {
 			if (!firstEventLogged) {
@@ -409,7 +414,17 @@ async function runIsolatedSummary(
 			if (wasAborted) break;
 
 			const reduced = reduceSdkMessage(messageState, message, { failureLabel: "Claude Code summary" });
-			if (reduced.result) logServedContextWindow("compact summary", message, model);
+			if (reduced.result) {
+				logServedContextWindow("compact summary", message, model);
+				// Attribute the summarization's own token/cost spend to the summary
+				// message. Verified in the fork: generateSummary returns the assistant
+				// message's usage (compaction.ts:685), which flows into the
+				// CompactionEntry.usage the summary is built with (compaction.ts:916),
+				// so it surfaces in the /usage "Tools/summaries" bucket instead of being
+				// silently discarded.
+				summaryUsage = resultFrameToPiUsage(message);
+				debug(`compact summary: usage in=${summaryUsage.input} out=${summaryUsage.output} cacheRead=${summaryUsage.cacheRead} cacheWrite=${summaryUsage.cacheWrite} cost=${summaryUsage.cost.total}`);
+			}
 		}
 
 		if (wasAborted) {
@@ -434,7 +449,7 @@ async function runIsolatedSummary(
 		}
 
 		debug(`compact summary: done textLen=${text.length}`);
-		stream.push({ type: "done", reason: "stop", message: newAssistantOutput(model, text, "stop") });
+		stream.push({ type: "done", reason: "stop", message: newAssistantOutput(model, text, "stop", undefined, summaryUsage) });
 		stream.end();
 	} catch (err) {
 		const msg = errorMessage(err);
@@ -650,6 +665,8 @@ export const __test = {
 	syncSharedSession,
 	deleteEphemeralSession,
 	extractUserPromptBlocks,
+	updateUsage,
+	resultFrameToPiUsage,
 	consumeQuery,
 	finalizeCurrentStream,
 	resultErrorText,
@@ -822,7 +839,7 @@ function buildMcpServers(tools: Tool[], queryCtx: QueryContext): Record<string, 
 
 function updateUsage(
 	output: AssistantMessage,
-	usage: Record<string, number | undefined>,
+	usage: Record<string, number | undefined> & { output_tokens_details?: { thinking_tokens?: number } },
 	model: Model<any>,
 	c: QueryContext = ctx(),
 ): void {
@@ -833,19 +850,165 @@ function updateUsage(
 	if (usage.output_tokens != null) c.usageLive.output = usage.output_tokens;
 	if (usage.cache_read_input_tokens != null) c.usageLive.cacheRead = usage.cache_read_input_tokens;
 	if (usage.cache_creation_input_tokens != null) c.usageLive.cacheWrite = usage.cache_creation_input_tokens;
+	// Reasoning/thinking tokens are a subset of output_tokens, carried under
+	// output_tokens_details.thinking_tokens (the top-level reasoning_tokens/
+	// thinking_tokens fields never appear — 0 of 14,994 logged usage lines). Fold
+	// through the same base+live pair so it sums across the turn's responses rather
+	// than reporting only the last one.
+	const thinkingTokens = (usage.output_tokens_details as { thinking_tokens?: number } | undefined)?.thinking_tokens;
+	if (thinkingTokens != null) {
+		c.usageLive.reasoning = thinkingTokens;
+		c.turnSawReasoning = true;
+	}
 	output.usage.input = c.usageBase.input + c.usageLive.input;
 	output.usage.output = c.usageBase.output + c.usageLive.output;
 	output.usage.cacheRead = c.usageBase.cacheRead + c.usageLive.cacheRead;
 	output.usage.cacheWrite = c.usageBase.cacheWrite + c.usageLive.cacheWrite;
-	// Claude Code may report reasoning/thinking tokens separately, while pi's Usage type does not model that field.
-	const reasoning = usage.reasoning_tokens ?? usage.thinking_tokens;
-	if (reasoning != null) (output.usage as typeof output.usage & { reasoning?: number }).reasoning = reasoning;
+	// Subset of output_tokens: informational only, never added to totalTokens.
+	const reasoning = c.usageBase.reasoning + c.usageLive.reasoning;
+	if (c.turnSawReasoning) output.usage.reasoning = reasoning;
 	output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 	calculateCost(model, output.usage);
 	const promptTokens = output.usage.input + output.usage.cacheRead + output.usage.cacheWrite;
 	const cachePct = promptTokens > 0 ? Math.round(output.usage.cacheRead / promptTokens * 100) : 0;
-	const reasoningText = reasoning != null ? ` reasoning=${reasoning}` : "";
+	const reasoningText = c.turnSawReasoning ? ` reasoning=${reasoning}` : "";
 	debug(`usage: in=${output.usage.input} out=${output.usage.output} cacheRead=${output.usage.cacheRead} cacheWrite=${output.usage.cacheWrite} total=${output.usage.totalTokens}${reasoningText} cachePct=${cachePct}% model=${model.id}`);
+}
+
+type TokenTotals = { input: number; output: number; cacheRead: number; cacheWrite: number };
+
+/** result.usage's four billable token fields, or undefined if the frame carried none. */
+function resultUsageTokens(message: SDKMessage): TokenTotals | undefined {
+	const raw = (message as SDKMessage & { usage?: Record<string, number | undefined> }).usage;
+	if (!raw) return undefined;
+	return {
+		input: raw.input_tokens ?? 0,
+		output: raw.output_tokens ?? 0,
+		cacheRead: raw.cache_read_input_tokens ?? 0,
+		cacheWrite: raw.cache_creation_input_tokens ?? 0,
+	};
+}
+
+/** Cross-check the sum of `modelUsage`'s per-model token totals against
+ *  `result.usage` (log-only). They should match; a divergence would reveal a
+ *  CC-internal side-model call that `result.usage` (top-level loop only) omits —
+ *  which cannot happen under the bridge's tools:[]/no-Task policies, so if it ever
+ *  logs it is a new finding, not a reconciliation failure. */
+function crossCheckModelUsage(message: SDKMessage, cc: TokenTotals): void {
+	const sum = sumModelUsageTokens(message);
+	if (!sum) return;
+	const diverges = (["input", "output", "cacheRead", "cacheWrite"] as const).some((k) => sum[k] !== cc[k]);
+	if (diverges) {
+		debug(`reconcile: WARNING modelUsage != result.usage (possible CC-internal side-model call) modelUsage(in=${sum.input} out=${sum.output} cacheRead=${sum.cacheRead} cacheWrite=${sum.cacheWrite}) result(in=${cc.input} out=${cc.output} cacheRead=${cc.cacheRead} cacheWrite=${cc.cacheWrite})`);
+	}
+}
+
+/** Adopt CC's `total_cost_usd` as the query's authoritative cost by truing up the
+ *  still-open final segment: set its `cost.total` to `cc − Σ(closed segments'
+ *  estimated cost.total)`, so pi's session sum (which reads `cost.total` per
+ *  message) equals CC's figure exactly. Per-component costs and the closed
+ *  segments' estimates are left untouched — only the final `total` is authoritative.
+ *  A negative true-up is allowed and logged (catalog drift); the session sum stays
+ *  exact regardless. Returns the cc/estimate/delta summary for the reconcile line,
+ *  or undefined when the frame carried no cost (estimates then survive unchanged).
+ *
+ *  The final segment is necessarily open here: this runs only on a *success* result,
+ *  which means the last response ended `end_turn`, so `closeSegment()` never banked
+ *  it — `queryBankedCost` excludes it and the true-up cannot double-count. A 429 or
+ *  other failure arriving after a tool boundary is an *error* result, which takes the
+ *  branch that skips both adoption and reconciliation, leaving estimates intact. */
+function adoptCcCost(message: SDKMessage, model: Model<any>, c: QueryContext): { cc: number; est: number; delta: number } | undefined {
+	const cc = (message as SDKMessage & { total_cost_usd?: unknown }).total_cost_usd;
+	if (typeof cc !== "number" || !c.turnOutput) {
+		debug(`cost: no total_cost_usd on result, keeping estimates model=${model.id}`);
+		return undefined;
+	}
+	const finalEstimate = c.turnOutput.usage.cost.total;
+	const est = c.queryBankedCost + finalEstimate;
+	const trueUp = cc - c.queryBankedCost;
+	c.turnOutput.usage.cost.total = trueUp;
+	const delta = cc - est;
+	debug(`cost: cc=${cc} est=${est} delta=${delta} banked=${c.queryBankedCost} finalCost=${trueUp} model=${model.id}`);
+	if (trueUp < 0) debug(`cost: WARNING negative final-segment cost.total=${trueUp} (catalog drift) — allowed, session sum stays exact`);
+	return { cc, est, delta };
+}
+
+/** Reconcile the query's stream-derived token sum against CC's own `result.usage`
+ *  at result time. Exact equality is expected (Decision 4): the provider runs CC
+ *  with tools:[] and no Task, so no CC-native subagents exist and result.usage
+ *  (top-level loop only) must equal our per-response sum. Match → one `reconcile:`
+ *  debug line (carrying the cost delta from adoptCcCost); mismatch → a `WARNING:`
+ *  line plus an unconditional diagDump carrying both sides and the per-segment
+ *  breakdown. */
+function reconcileQueryUsage(message: SDKMessage, model: Model<any>, c: QueryContext, cost?: { cc: number; est: number; delta: number }): void {
+	const cc = resultUsageTokens(message);
+	if (!cc) { debug("reconcile: result carried no usage, skipping"); return; }
+	crossCheckModelUsage(message, cc);
+
+	const total = c.queryTokenTotal();
+	const ours: TokenTotals = { input: total.input, output: total.output, cacheRead: total.cacheRead, cacheWrite: total.cacheWrite };
+	const keys = ["input", "output", "cacheRead", "cacheWrite"] as const;
+	const match = keys.every((k) => ours[k] === cc[k]);
+	const segments = c.querySegments.length + 1; // closed segments + the open final one
+
+	if (match) {
+		const costText = cost ? ` cc=${cost.cc} est=${cost.est} costDelta=${cost.delta}` : "";
+		debug(`reconcile: ok in=${ours.input} out=${ours.output} cacheRead=${ours.cacheRead} cacheWrite=${ours.cacheWrite} segments=${segments}${costText} model=${model.id}`);
+		return;
+	}
+
+	const delta: TokenTotals = { input: ours.input - cc.input, output: ours.output - cc.output, cacheRead: ours.cacheRead - cc.cacheRead, cacheWrite: ours.cacheWrite - cc.cacheWrite };
+	debug(`WARNING: reconcile mismatch model=${model.id} ours(in=${ours.input} out=${ours.output} cacheRead=${ours.cacheRead} cacheWrite=${ours.cacheWrite}) cc(in=${cc.input} out=${cc.output} cacheRead=${cc.cacheRead} cacheWrite=${cc.cacheWrite}) delta(in=${delta.input} out=${delta.output} cacheRead=${delta.cacheRead} cacheWrite=${delta.cacheWrite})`);
+	const openSegment = { input: c.usageBase.input + c.usageLive.input, output: c.usageBase.output + c.usageLive.output, cacheRead: c.usageBase.cacheRead + c.usageLive.cacheRead, cacheWrite: c.usageBase.cacheWrite + c.usageLive.cacheWrite, reasoning: c.usageBase.reasoning + c.usageLive.reasoning };
+	const session = typeof (message as SDKMessage & { session_id?: unknown }).session_id === "string" ? (message as SDKMessage & { session_id?: string }).session_id : undefined;
+	diagDump("reconcile_mismatch", { model: model.id, session, ours, cc, delta, closedSegments: c.querySegments, openSegment });
+}
+
+/** Sum `modelUsage`'s per-model token totals, or undefined when the frame carries
+ *  no modelUsage. Unlike result.usage (top-level loop only), this INCLUDES CC-native
+ *  subagent activity — the token counterpart of what total_cost_usd already bills. */
+function sumModelUsageTokens(message: SDKMessage): TokenTotals | undefined {
+	const modelUsage = (message as SDKMessage & { modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }> }).modelUsage;
+	if (!modelUsage) return undefined;
+	const entries = Object.values(modelUsage);
+	if (!entries.length) return undefined;
+	const sum: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+	for (const v of entries) {
+		sum.input += v.inputTokens ?? 0;
+		sum.output += v.outputTokens ?? 0;
+		sum.cacheRead += v.cacheReadInputTokens ?? 0;
+		sum.cacheWrite += v.cacheCreationInputTokens ?? 0;
+	}
+	return sum;
+}
+
+/** Build a pi `Usage` from an SDK result frame. Cost components are left zero and
+ *  `cost.total` adopts CC's `total_cost_usd` (Decision 6). Tokens prefer the
+ *  `modelUsage` sum, which includes CC-native subagent activity, falling back to
+ *  `result.usage` when modelUsage is absent — this matters for AskClaude read/full
+ *  modes, which retain delegation tools (Agent/Task/Workflow), so a subagent's
+ *  tokens would otherwise be undercounted while its cost was already billed.
+ *  Reasoning is read from result.usage (modelUsage has no thinking breakdown) as an
+ *  informational best-effort. Used by AskClaude and compaction summaries, which land
+ *  in the "Tools/summaries" bucket of pi's /usage breakdown. */
+function resultFrameToPiUsage(message: SDKMessage): Usage {
+	const raw = (message as SDKMessage & { usage?: Record<string, number | undefined> & { output_tokens_details?: { thinking_tokens?: number } } }).usage;
+	const totalCostUsd = (message as SDKMessage & { total_cost_usd?: unknown }).total_cost_usd;
+	const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: typeof totalCostUsd === "number" ? totalCostUsd : 0 };
+	const reasoning = raw?.output_tokens_details?.thinking_tokens;
+	const modelSum = sumModelUsageTokens(message);
+	const tokens = modelSum ?? {
+		input: raw?.input_tokens ?? 0,
+		output: raw?.output_tokens ?? 0,
+		cacheRead: raw?.cache_read_input_tokens ?? 0,
+		cacheWrite: raw?.cache_creation_input_tokens ?? 0,
+	};
+	return {
+		...tokens,
+		...(reasoning != null ? { reasoning } : {}),
+		totalTokens: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite,
+		cost,
+	};
 }
 
 // Log the *served* context window reported by an SDK result message
@@ -1033,6 +1196,10 @@ function processStreamEvent(
 		// assistant message for this turn, but currentPiStream=null causes
 		// consumeQuery to skip it. The MCP handler blocks the generator until
 		// pi delivers the tool result via the next streamSimple call.
+		//
+		// Bank this segment into the query totals BEFORE the tool-result delivery
+		// calls resetTurnState and wipes usageBase/usageLive — see closeSegment.
+		c.closeSegment();
 		c.turnOutput.stopReason = "toolUse";
 		const stream = c.currentPiStream;
 		stream!.push({ type: "done", reason: "toolUse", message: c.turnOutput });
@@ -1108,6 +1275,8 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 
 	// End the stream on tool_use, same as processStreamEvent's message_stop handler.
 	if (c.turnSawToolCall && c.currentPiStream && c.turnOutput) {
+		// Bank this segment before resetTurnState wipes it — see closeSegment.
+		c.closeSegment();
 		c.turnOutput.stopReason = "toolUse";
 		const stream = c.currentPiStream;
 		stream.push({ type: "done", reason: "toolUse", message: c.turnOutput });
@@ -1183,6 +1352,15 @@ async function consumeQuery(
 					queryCtx.turnOutput.stopReason = "error";
 					queryCtx.turnOutput.errorMessage = resultError;
 				}
+			} else if (queryCtx.turnOutput) {
+				// Success: adopt CC's total_cost_usd onto the still-open final segment,
+				// then reconcile the query's stream-derived token sum against CC's own
+				// result.usage. Both run above the currentPiStream guard so they fire
+				// even when the final segment's stream was already finalized; the final
+				// segment's turnOutput is finalized (pushed to pi) after consumeQuery,
+				// so the cost override lands on the message pi receives.
+				const cost = adoptCcCost(message, model, queryCtx);
+				reconcileQueryUsage(message, model, queryCtx, cost);
 			}
 		}
 		if (message.type === "rate_limit_event") {
@@ -1412,6 +1590,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// query's stdin, not just mismatching a map.
 	queryCtx.turnToolCallIds = [];
 	queryCtx.resetTurnState(model);
+	// Clear the query-scoped usage accumulator here, where a query begins —
+	// resetTurnState deliberately preserves it across tool-result deliveries.
+	queryCtx.beginQuery();
 	queryCtx.latestCursor = 0;
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, askClaudeToolName);
@@ -1663,7 +1844,7 @@ async function promptAndWait(
 		// to start in this module instance, so pass it whenever it is in hand.
 		cwd?: string;
 	},
-): Promise<{ responseText: string; stopReason: string }> {
+): Promise<{ responseText: string; stopReason: string; usage?: Usage }> {
 	const cwd = resolveCwd(options);
 	const requestedModel = options?.model ?? "opus";
 	const model = resolveModel(requestedModel);
@@ -1756,6 +1937,7 @@ async function promptAndWait(
 	let sdkMessageCount = 0;
 	const messageState = createSdkMessageState();
 	let resultSubtype: string | undefined;
+	let capturedUsage: Usage | undefined;
 
 	try {
 		for await (const message of sdkQuery) {
@@ -1784,17 +1966,18 @@ async function promptAndWait(
 				resultSubtype = reduced.result.subtype;
 				const result = message as SDKMessage & {
 					result?: unknown;
-					usage?: {
-						input_tokens?: number;
-						output_tokens?: number;
-						cache_read_input_tokens?: number;
-						cache_creation_input_tokens?: number;
-					};
+					usage?: Record<string, number | undefined> & { output_tokens_details?: { thinking_tokens?: number } };
+					total_cost_usd?: unknown;
 					num_turns?: number;
 				};
 				if (result.usage) {
 					debug(`askClaude: result usage: in=${result.usage.input_tokens} out=${result.usage.output_tokens} cacheRead=${result.usage.cache_read_input_tokens ?? 0} cacheWrite=${result.usage.cache_creation_input_tokens ?? 0} turns=${result.num_turns ?? "?"}`);
 				}
+				// Attach the delegation's own spend to the tool result so it lands in
+				// pi's /usage "Tools/summaries" bucket instead of being discarded. Tokens
+				// prefer modelUsage (subagent-inclusive), since read/full modes keep the
+				// delegation tools. Captured on failure too — a failed call still spent.
+				capturedUsage = resultFrameToPiUsage(message);
 				const resultText = typeof result.result === "string" ? result.result : "";
 				if (!responseText && reduced.result.successful && resultText) {
 					responseText = resultText;
@@ -1805,7 +1988,9 @@ async function promptAndWait(
 		if (!wasAborted && messageState.result && !messageState.result.successful) {
 			debugTerminalFailure("askClaude", messageState.result);
 			const failure = messageState.result.errorText ?? `Claude Code query failed: ${messageState.result.subtype}`;
-			throw new Error(failure);
+			// A failed call still spent tokens; carry the usage on the error so the
+			// tool result attributes it rather than losing it.
+			throw Object.assign(new Error(failure), capturedUsage ? { usage: capturedUsage } : {});
 		}
 
 		const stopReason = wasAborted ? "cancelled" : "stop";
@@ -1813,7 +1998,7 @@ async function promptAndWait(
 			`stopReason=${stopReason} resultSubtype=${resultSubtype ?? "none"}`,
 			`sdkMessages=${sdkMessageCount} textDeltas=${messageState.textDeltaCount} responseLen=${responseText.length}`,
 			`toolCalls=${toolCalls.size}`);
-		return { responseText, stopReason };
+		return { responseText, stopReason, usage: capturedUsage };
 	} finally {
 		signal?.removeEventListener("abort", onAbort);
 		sdkQuery.close();
@@ -2076,7 +2261,7 @@ export default function (pi: ExtensionAPI) {
 					return new Text(theme.fg("mdLink", "◉ Claude Code ") + theme.fg("muted", status), 0, 0);
 				}
 
-				const details = result.details as { prompt?: string; executionTime?: number; actions?: string; error?: boolean } | undefined;
+				const details = result.details as { prompt?: string; executionTime?: number; actions?: string; error?: boolean; usage?: { totalTokens?: number; cost?: number } } | undefined;
 				const body = result.content[0]?.type === "text" ? result.content[0].text : "";
 
 				let text = details?.error
@@ -2084,6 +2269,8 @@ export default function (pi: ExtensionAPI) {
 					: theme.fg("mdLink", "✓ Claude Code");
 
 				if (details?.executionTime) text += ` ${theme.fg("dim", `${(details.executionTime / 1000).toFixed(1)}s`)}`;
+				const usageLine = formatUsageLine(details?.usage);
+				if (usageLine) text += ` ${theme.fg("dim", usageLine)}`;
 				if (details?.actions) text += ` ${theme.fg("muted", details.actions)}`;
 
 				if (expanded) {
@@ -2145,15 +2332,23 @@ export default function (pi: ExtensionAPI) {
 						: result.responseText;
 					return {
 						content: [{ type: "text" as const, text }],
-						details: { prompt: params.prompt, executionTime, actions },
+						details: { prompt: params.prompt, executionTime, actions, ...(result.usage ? { usage: { totalTokens: result.usage.totalTokens, cost: result.usage.cost.total } } : {}) },
+						// Attach the delegation's spend so pi buckets it under "Tools/summaries"
+						// in /usage; the tool result is correctly excluded from context-window
+						// accounting by pi.
+						...(result.usage ? { usage: result.usage } : {}),
 					};
 				} catch (err) {
 					clearInterval(progressInterval);
 					debug(`askClaude error: mode=${mode}, model=${params.model ?? "default"}, isolated=${isolated}, elapsed=${((Date.now() - start) / 1000).toFixed(1)}s, error=`, err);
 					const msg = errorMessage(err);
+					// A failed delegation still spent tokens; promptAndWait attaches the
+					// usage to the thrown error so it is not lost from /usage accounting.
+					const failedUsage = (err as { usage?: Usage })?.usage;
 					return {
 						content: [{ type: "text" as const, text: `Error: ${msg}` }],
-						details: { prompt: params.prompt, executionTime: Date.now() - start, error: true },
+						details: { prompt: params.prompt, executionTime: Date.now() - start, error: true, ...(failedUsage ? { usage: { totalTokens: failedUsage.totalTokens, cost: failedUsage.cost.total } } : {}) },
+						...(failedUsage ? { usage: failedUsage } : {}),
 					};
 				}
 			},

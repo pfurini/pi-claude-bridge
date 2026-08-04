@@ -16,12 +16,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
-// Anchoring on the bridge's own line prefix is load-bearing, not cosmetic: tool
-// output is echoed into this log verbatim, so a bare /WARNING:/ grep matches
-// compiler output, other tools' logs, and any file the agent happened to read.
-const LINE = /^\[(\d{4}-\d{2}-\d{2})T([\d:.]+)Z\] \[([a-z0-9]+)\] (.*)$/;
-const NOTABLE = /^(WARNING|BUG)\b/;
+import { LINE, NOTABLE } from "./warning-lines.mjs";
 
 const WAITING = /^mcp handler: (\S+) \[(\S+)\] → waiting/;
 const RESOLVING = /^provider: resolving \S+ \[(\S+)\]/;

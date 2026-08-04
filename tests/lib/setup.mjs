@@ -17,4 +17,9 @@ import { join } from "node:path";
 
 const logDir = mkdtempSync(join(tmpdir(), "claude-bridge-test-log-"));
 process.env.CLAUDE_BRIDGE_DEBUG_PATH = join(logDir, "claude-bridge.log");
+// diagDump() writes here; redirect it too so tests that exercise a diagDump path
+// (e.g. the reconciler's mismatch branch) don't pollute the real diag log. Kept
+// explicit rather than relying on the dirname-derivation so a test can read it
+// back straight from the env var.
+process.env.CLAUDE_BRIDGE_DIAG_PATH = join(logDir, "claude-bridge-diag.log");
 process.on("exit", () => rmSync(logDir, { recursive: true, force: true }));

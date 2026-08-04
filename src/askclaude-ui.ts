@@ -71,6 +71,18 @@ export function formatToolAction(tc: ToolCallState): string | undefined {
 	return tc.name;
 }
 
+/** Compact "12.4k tok · $0.31" line for the AskClaude result row. Tokens are the
+ *  delegation's total; cost is CC's `total_cost_usd`. Returns "" when there is
+ *  nothing to show (no tokens and no cost), so the caller can skip it cleanly. */
+export function formatUsageLine(usage: { totalTokens?: number; cost?: number } | undefined): string {
+	if (!usage) return "";
+	const tokens = usage.totalTokens ?? 0;
+	const cost = usage.cost ?? 0;
+	if (tokens <= 0 && cost <= 0) return "";
+	const tokText = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k tok` : `${tokens} tok`;
+	return cost > 0 ? `${tokText} · $${cost.toFixed(2)}` : tokText;
+}
+
 export function buildActionSummary(calls: Map<string, ToolCallState>): string {
 	const parts: string[] = [];
 	let prevVerb = "";
