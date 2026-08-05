@@ -173,3 +173,56 @@ export function ctx(): QueryContext { return _ctx; }
 export function resetCtx(): void {
 	_ctx = new QueryContext();
 }
+
+/** Abort teardown for one query: settle everything that would otherwise be left
+ *  awaiting a subprocess we are about to kill. The pump abandons iteration on
+ *  abort, so an in-flight prompt-stream push would hang forever and take
+ *  tool-result delivery with it. `reason` is the text handed to parked MCP
+ *  handlers and the failed prompt stream; it defaults to the abort wording so the
+ *  onAbort call site is unchanged. */
+export function drainForAbort(c: QueryContext, promptStream: PromptStream, reason = "Operation aborted"): void {
+	promptStream.fail(new Error(reason));
+	c.releasePendingToolCalls(reason);
+}
+
+/** The minimal live-query handle the reaper drives (the SDK `query()` result). */
+interface ReapableQuery {
+	interrupt(): Promise<unknown>;
+	close(): void;
+}
+
+/** Kill every Claude Code child still parked in `contexts` and empty the set.
+ *  Pure and importable (takes the set explicitly) so it is unit-testable without
+ *  activating the extension. Snapshots first: each query's own `.finally()` deletes
+ *  from `contexts` as it settles, so iterating the live set would skip entries.
+ *  Each context is torn down in its own try/catch so one throwing handle cannot
+ *  strand the rest. */
+export function reapLiveQueries(contexts: Set<QueryContext>, reason: string): void {
+	for (const queryCtx of [...contexts]) {
+		try {
+			if (queryCtx.promptStream) drainForAbort(queryCtx, queryCtx.promptStream, reason);
+			const q = queryCtx.activeQuery as ReapableQuery | null;
+			if (q) {
+				// interrupt() asks the CLI to stop gracefully; close() kills it. Both
+				// are needed (interrupt alone lets the current API call finish), and
+				// interrupt must NOT be awaited before close — a sync try/catch would
+				// not catch its rejection, so swallow it on the promise instead.
+				void q.interrupt().catch(() => {});
+				try { q.close(); } catch {}
+			}
+			queryCtx.activeQuery = null;
+			contexts.delete(queryCtx);
+		} catch {
+			// A single context's teardown throwing must not stop the others.
+		}
+	}
+}
+
+/** Owner-gated wrapper over `reapLiveQueries`. The gate is a separate pure seam so
+ *  the non-owner no-op is unit-testable; the pure reaper itself takes no ownership
+ *  input. Only the provider-owner instance reaps, mirroring the existing
+ *  ACTIVE_STREAM_SIMPLE_KEY guard, so a non-owner same-cwd session's shutdown does
+ *  not tear down the owner's queries. */
+export function reapLiveQueriesIfOwner(isOwner: boolean, contexts: Set<QueryContext>, reason: string): void {
+	if (isOwner) reapLiveQueries(contexts, reason);
+}

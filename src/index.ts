@@ -15,12 +15,12 @@ import { applyLongContext, ASK_CLAUDE_THINKING_LEVELS, assertClaudeCodeModelAvai
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx } from "./query-state.js";
+import { QueryContext, ctx, drainForAbort, reapLiveQueriesIfOwner } from "./query-state.js";
 import { loadConfig, loadDirs, markStartupNoticeShown, sessionAgentDir, type Config } from "./config.js";
 import { defaultClaudeConfigDir } from "./claude-config.js";
 import { extractProjectContextBlock } from "./project-context.js";
 import { steeringAppendFor } from "./steering.js";
-import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
+import { makePromptStream, userMessage } from "./prompt-stream.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions, getAskClaudeDisallowedTools } from "./sdk-options.js";
 import { buildHarnessCorrections } from "./harness-prompt.js";
@@ -1500,15 +1500,6 @@ async function deliverToolResults(
 	}
 }
 
-/** Abort teardown for one query: settle everything that would otherwise be left
- *  awaiting a subprocess we are about to kill. The pump abandons iteration on
- *  abort, so an in-flight prompt-stream push would hang forever and take
- *  tool-result delivery with it. */
-function drainForAbort(c: QueryContext, promptStream: PromptStream): void {
-	promptStream.fail(new Error("Operation aborted"));
-	c.releasePendingToolCalls("Operation aborted");
-}
-
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
@@ -2134,7 +2125,16 @@ export default function (pi: ExtensionAPI) {
 		const options = event.systemPromptOptions;
 		userSystemPrompt = { custom: options?.customPrompt, append: options?.appendSystemPrompt };
 	});
-	pi.on("session_shutdown", () => clearSession("session_shutdown"));
+	pi.on("session_shutdown", () => {
+		// Reap parked Claude Code children before clearing session state: clearSession
+		// nulls sharedSession and the ACTIVE_STREAM_SIMPLE_KEY global but never touches
+		// activeQueryContexts, so a child parked under a settled run would otherwise
+		// survive host teardown (CC has no parent-death watchdog and reparents). Only
+		// the provider owner reaps; the reap is NOT added to clearSession itself, which
+		// also runs on session_start (new/resume/fork) and would kill live queries on /new.
+		reapLiveQueriesIfOwner(isProviderOwner, activeQueryContexts, "session_shutdown");
+		clearSession("session_shutdown");
+	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
