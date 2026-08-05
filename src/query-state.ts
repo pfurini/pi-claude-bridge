@@ -195,26 +195,28 @@ interface ReapableQuery {
  *  Pure and importable (takes the set explicitly) so it is unit-testable without
  *  activating the extension. Snapshots first: each query's own `.finally()` deletes
  *  from `contexts` as it settles, so iterating the live set would skip entries.
- *  Each context is torn down in its own try/catch so one throwing handle cannot
- *  strand the rest. */
+ *  Draining is guarded separately from the kill: settling parked handlers is
+ *  best-effort, but the kill and the set removal must happen even when a drain
+ *  throws — a context skipped here is exactly the orphaned child this exists to
+ *  prevent. */
 export function reapLiveQueries(contexts: Set<QueryContext>, reason: string): void {
 	for (const queryCtx of [...contexts]) {
 		try {
 			if (queryCtx.promptStream) drainForAbort(queryCtx, queryCtx.promptStream, reason);
-			const q = queryCtx.activeQuery as ReapableQuery | null;
-			if (q) {
-				// interrupt() asks the CLI to stop gracefully; close() kills it. Both
-				// are needed (interrupt alone lets the current API call finish), and
-				// interrupt must NOT be awaited before close — a sync try/catch would
-				// not catch its rejection, so swallow it on the promise instead.
-				void q.interrupt().catch(() => {});
-				try { q.close(); } catch {}
-			}
-			queryCtx.activeQuery = null;
-			contexts.delete(queryCtx);
 		} catch {
-			// A single context's teardown throwing must not stop the others.
+			// Best-effort settling only; the kill below still runs.
 		}
+		const q = queryCtx.activeQuery as ReapableQuery | null;
+		if (q) {
+			// interrupt() asks the CLI to stop gracefully; close() kills it. Both
+			// are needed (interrupt alone lets the current API call finish), and
+			// interrupt must NOT be awaited before close — a sync try/catch would
+			// not catch its rejection, so swallow it on the promise instead.
+			try { void q.interrupt().catch(() => {}); } catch {}
+			try { q.close(); } catch {}
+		}
+		queryCtx.activeQuery = null;
+		contexts.delete(queryCtx);
 	}
 }
 

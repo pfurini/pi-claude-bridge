@@ -9,6 +9,13 @@
  *
  * These drive the pure reaper (and its owner-gate seam) directly, with real
  * QueryContexts and spy query handles — no extension activation, no CC spawn.
+ *
+ * KNOWN GAP (accepted): the handler wiring in index.ts (session_shutdown →
+ * reapLiveQueriesIfOwner(isProviderOwner, activeQueryContexts, ...) before
+ * clearSession) is not exercised here — activating the full extension needs a
+ * stubbed ExtensionAPI plus the module's load-time side effects, which is what
+ * the optional int test (int-shutdown-reaps-parked-subagent, not yet written)
+ * would cover with a parked subagent child and a real host shutdown.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -81,7 +88,7 @@ describe("reapLiveQueries: kill parked children on host teardown", () => {
 		assert.equal(contexts.size, 0);
 	});
 
-	it("one throwing context does not stop the others", () => {
+	it("a throwing drain does not spare that context's child, nor stop the others", () => {
 		const contexts = new Set();
 		const bad = parkedContext({ failThrows: true }); // throws inside drainForAbort
 		const good = parkedContext();
@@ -90,17 +97,21 @@ describe("reapLiveQueries: kill parked children on host teardown", () => {
 
 		reapLiveQueries(contexts, "session_shutdown");
 
-		// The good context is fully reaped despite the earlier throw.
+		// Draining is best-effort; the kill is not. The context whose drain threw
+		// must STILL be interrupted, closed, cleared, and removed — a context
+		// skipped on a drain failure is exactly the orphaned child this reaper
+		// exists to prevent.
+		assert.equal(bad.q.calls.interrupt, 1, "the throwing context must still be interrupted");
+		assert.equal(bad.q.calls.close, 1, "the throwing context must still be closed");
+		assert.equal(bad.c.activeQuery, null, "the throwing context's activeQuery is cleared");
+		assert.equal(contexts.has(bad.c), false, "the throwing context is removed from the set");
+
+		// And the later context is fully reaped despite the earlier throw.
 		assert.equal(good.q.calls.interrupt, 1, "the later context must still be interrupted");
 		assert.equal(good.q.calls.close, 1, "the later context must still be closed");
 		assert.equal(good.c.activeQuery, null);
 		assert.equal(contexts.has(good.c), false, "the good context is removed");
-
-		// The throw is contained to the bad context: it never reached its own kill
-		// and stays in the set (proving the loop swallowed the throw rather than
-		// aborting mid-iteration).
-		assert.equal(bad.q.calls.close, 0, "the throwing context did not reach close");
-		assert.equal(contexts.has(bad.c), true, "the throwing context is left in the set");
+		assert.equal(contexts.size, 0, "the set is emptied even with a throwing drain");
 	});
 });
 
