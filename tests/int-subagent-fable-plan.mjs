@@ -16,9 +16,13 @@
 //
 // The success assertion is end-to-end but rides on Anthropic's *current*
 // enforcement of this signature, which the bridge does not control and could
-// change independently. The debug-marker assertion (sanitizeHarnessPrompt
-// stripped harness boilerplate) is the durable pin of bridge behavior and
-// holds regardless of what Anthropic does with the resulting request.
+// change independently. The debug-marker assertion holds regardless of what
+// Anthropic does with the resulting request, but it pins only that the
+// sanitizer ran and changed *something*: the marker fires on a dedupe-only
+// strip too, so it would still pass if the skeleton anchors drifted out of
+// sync with the fork and the boilerplate survived. Anchor drift is caught by
+// tests/unit-sanitize-prompt.mjs, which builds its fixture from the fork's
+// own buildSystemPrompt.
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
