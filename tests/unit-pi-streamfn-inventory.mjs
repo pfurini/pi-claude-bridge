@@ -38,7 +38,9 @@ const PI_DIST = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding
  *  A changed count is not automatically a bug; it means read the diff and re-decide. */
 const HANDLED = {
 	"agent-session.js": { mentions: 1, why: "the one hand-off: `streamFn: this.agent.streamFunction` into generateBranchSummary" },
-	"sdk.js": { mentions: 2, why: "constructs the agent, does not summarize" },
+	"sdk.js": { mentions: 3, why: "constructs the agent (session stream fn) and documents composed-default routing; does not summarize or route independently" },
+	"default-stream-fn.js": { mentions: 9, why: "fork's composed default-stream dispatch for bare Agent/loop callers without an explicit streamFn (piForkCapabilities: composed-default-stream-fn). A bare Agent inside a session scope routes to this provider, but pi's context and skills still forward through context.systemPrompt; only a bare Agent's own --system-prompt/--append-system-prompt is missed (bare Agents do not set one, and userSystemPrompt degrades to {}). Re-decide if the count drifts after a pi upgrade." },
+	"fork-capabilities.js": { mentions: 1, why: "marker module (the piForkCapabilities Set); the single streamFn reference is a doc comment, not a code path, so it cannot route a call" },
 	"compaction/compaction.js": { mentions: 13, why: "taken over via session_before_compact -> isolatedStreamFn" },
 	"compaction/branch-summarization.js": { mentions: 2, why: "taken over via session_before_tree -> isolatedStreamFn" },
 };
