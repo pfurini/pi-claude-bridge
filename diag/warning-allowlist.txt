@@ -11,5 +11,8 @@
 # offending line and a ready-made allowlist entry. Add the entry ONLY if that test
 # is meant to provoke the warning; otherwise the warning is a real defect to fix.
 #
-# (No entries yet — the first integration run under this gate will surface any
-# deliberately-induced warnings to record here.)
+# int-shutdown-kills-cc.mjs shuts pi down with a SlowTool call still in flight, so
+# session_shutdown's reportLeaks necessarily sees the not-yet-cleared context (the
+# reap and clearSession run right after). Induced on purpose; the gate's suggested
+# entry is NOT used — its digit→N normalization never substring-matches the raw line.
+shutdown-kills-cc :: WARNING: session_shutdown left state behind

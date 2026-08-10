@@ -77,6 +77,7 @@ run "provider: print mode responds" '[Yy][Ee][Ss]' \
 # test passes or fails on whichever model that happens to be. Assert the model that
 # actually answered, not merely that something did.
 run "provider: --provider + --model resolve to the bridge" \
+  'claude-bridge/claude-haiku-4-5' \
   bash -c "pi --no-session -ne -e '$DIR' --provider claude-bridge --model claude-haiku-4-5 --mode json \
     -p \"Reply with just the word 'yes'\" 2>/dev/null \
     | jq -r 'select(.message.role==\"assistant\") | .message.provider + \"/\" + .message.model' \
