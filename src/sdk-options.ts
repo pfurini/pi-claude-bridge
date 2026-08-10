@@ -124,6 +124,19 @@ export function claudeIsolationEnv(autoMemoryEnabled: boolean): Record<string, s
 	};
 }
 
+// Pi owns context files on every spawn path, so Claude Code must not load its
+// own on top: a project CLAUDE.md would arrive twice, and the user's
+// ~/.claude/CLAUDE.md — a persona for a different harness, stamped "These
+// instructions OVERRIDE any default behavior" — would outrank pi's AGENTS.md.
+//
+// Excludes rather than settingSources: the source gate that suppresses CLAUDE.md
+// is the same one that reads settings.json, where Bedrock/Vertex users keep `env`
+// and `apiKeyHelper`. It bites hardest on the AskClaude path, which loads the user
+// and project tiers by default. Patterns match with picomatch against absolute
+// paths; "**/CLAUDE.md" covers the user, ancestor, project and .claude/ copies,
+// while rules need their own. Managed/policy memory is not excludable by design.
+export const CLAUDE_MD_EXCLUDES = ["**/CLAUDE.md", "**/.claude/rules/**"];
+
 export interface ProviderQueryOptionsInput {
 	cwd: string;
 	baseEnv: NodeJS.ProcessEnv;
@@ -150,7 +163,7 @@ export function buildProviderQueryOptions(
 	return {
 		cwd: input.cwd,
 		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, claudeIsolationEnv(autoMemoryEnabled)),
-		settings: { autoMemoryEnabled },
+		settings: { autoMemoryEnabled, claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 		tools: [],
 		permissionMode: "bypassPermissions",
 		allowDangerouslySkipPermissions: true,
@@ -219,7 +232,7 @@ export function buildAskClaudeQueryOptions(
 	return {
 		cwd: input.cwd,
 		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, claudeIsolationEnv(autoMemoryEnabled)),
-		settings: { autoMemoryEnabled },
+		settings: { autoMemoryEnabled, claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 		permissionMode: "bypassPermissions",
 		allowDangerouslySkipPermissions: true,
 		strictMcpConfig: true,
@@ -267,7 +280,7 @@ export function buildIsolatedSummaryQueryOptions(
 		cwd: input.cwd,
 		// Compaction never opts into auto-memory, regardless of provider config.
 		env: claudeChildEnv(input.claudeConfigDir, input.baseEnv, claudeIsolationEnv(false)),
-		settings: { autoMemoryEnabled: false },
+		settings: { autoMemoryEnabled: false, claudeMdExcludes: CLAUDE_MD_EXCLUDES },
 		tools: [],
 		strictMcpConfig: true,
 		settingSources: [],

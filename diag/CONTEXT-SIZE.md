@@ -234,6 +234,11 @@ states:
 API Error: 400 This authentication style is incompatible with the long context beta header.
 ```
 
+A third message shares this shape — `"You're out of extra usage. Add more at
+claude.ai/settings/usage and keep going."` (400) — but is *not* a long-context
+entitlement failure: it fires intermittently on models otherwise served 1M, and
+Max serves 1M with credits off. See [EXTRA-USAGE-400.md](./EXTRA-USAGE-400.md).
+
 ## Differences from the Claude Code 2.1.141 record
 
 Compared with the earlier 2026-06-26 Pro measurements using Agent SDK

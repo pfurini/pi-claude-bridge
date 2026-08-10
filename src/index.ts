@@ -1,12 +1,12 @@
 import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type Usage, type UserMessage } from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
-import { buildSessionContext, compact, keyHint, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, compact, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type SDKMessage, type SDKRateLimitInfo, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
-import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
+import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
 import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
@@ -21,6 +21,7 @@ import { defaultClaudeConfigDir } from "./claude-config.js";
 import { extractProjectContextBlock } from "./project-context.js";
 import { steeringAppendFor } from "./steering.js";
 import { makePromptStream, userMessage } from "./prompt-stream.js";
+import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
 import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions, getAskClaudeDisallowedTools } from "./sdk-options.js";
 import { buildHarnessCorrections } from "./harness-prompt.js";
@@ -193,19 +194,43 @@ interface SessionState {
 	forceRotate?: boolean;
 }
 
+/**
+ * Claude Code's `@file` expansions from the session about to be replaced.
+ *
+ * Must be called before `deleteSession`, which wipes the file they live in —
+ * reading after it yields nothing, with no error to notice.
+ */
+function readCarriedAttachments(sessionId: string, cwd: string): CarriedAttachment[] {
+	try {
+		const previous = openSession({ sessionId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+		return collectCarriedAttachments(previous.records);
+	} catch (error) {
+		// A post-abort rebuild reads a file the killed CC subprocess may have been
+		// midway through writing, and cc-session-io parses each line with a bare
+		// JSON.parse, so a truncated last line throws. Throwing here would turn a
+		// lost attachment into a failed turn; carrying none is exactly what happened
+		// before this existed, so the failure mode is bounded by the status quo.
+		debug(`WARNING: could not read attachments from session ${sessionId.slice(0, 8)}:`, error);
+		return [];
+	}
+}
+
 let sharedSession: SessionState | null = null;
 
 // Convert pi messages to Anthropic API format for session import.
-// Lossy: non-Anthropic thinking blocks are dropped (no valid signature), and only
-// text/image/toolCall block types are handled. If all blocks in an assistant message
-// are filtered, the message is dropped — which can create invalid sequences (e.g.
-// two user messages in a row, or tool_result without preceding tool_use).
+// Lossy: only text, thinking and toolCall blocks survive, and thinking only when
+// Claude Code itself minted the signature. An assistant message whose blocks all
+// filter out keeps its slot with a placeholder, since dropping it can create a
+// tool_result with no preceding tool_use. A turn aborted before anything streamed
+// is dropped instead — it never had content, and inventing one diverges from the
+// prefix Claude Code cached.
 function convertAndImportMessages(
 	session: ReturnType<typeof createSession>,
 	messages: Context["messages"],
 	customToolNameToSdk?: Map<string, string>,
+	carried?: readonly CarriedAttachment[],
 ): void {
-	const { anthropicMessages, sanitizedIds } = convertPiMessages(messages, customToolNameToSdk);
+	const { anthropicMessages, sanitizedIds, dropped } = convertPiMessages(messages, customToolNameToSdk);
 
 	debug(`convertAndImportMessages: ${messages.length} pi msgs → ${anthropicMessages.length} anthropic msgs`);
 	debug(`convertAndImportMessages: imported roles:`, anthropicMessages.map((m, i) => {
@@ -214,6 +239,16 @@ function convertAndImportMessages(
 		if (Array.isArray(c)) return `[${i}]${m.role}:${(c).map((b) => b.type).join("+")}`;
 		return `[${i}]${m.role}:?`;
 	}).join(" "));
+	// The roles line above shows only what survived, so a stripped block is
+	// indistinguishable there from one that never existed. Name the losses.
+	const droppedParts = [
+		dropped.thinking ? `${dropped.thinking} thinking (${[...dropped.providers].sort().join(", ")})` : "",
+		dropped.abortedTurns ? `${dropped.abortedTurns} aborted turn(s)` : "",
+		...[...dropped.other].map(([type, n]) => `${n} ${type}`),
+	].filter(Boolean);
+	if (droppedParts.length > 0) {
+		debug(`convertAndImportMessages: dropped ${droppedParts.join(", ")}`);
+	}
 	if (sanitizedIds.size > 0) {
 		debug(`convertAndImportMessages: sanitized ${sanitizedIds.size} tool IDs:`,
 			[...sanitizedIds.entries()].map(([orig, clean]) => orig === clean ? orig : `${orig}→${clean}`).join(", "));
@@ -223,7 +258,21 @@ function convertAndImportMessages(
 	if (repaired.length !== anthropicMessages.length) {
 		debug(`convertAndImportMessages: repairToolPairing ${anthropicMessages.length} → ${repaired.length} msgs`);
 	}
-	if (repaired.length) session.importMessages(repaired);
+	// Placement runs against the repaired array because that is the index space
+	// importMessages reads. Attachments are links in CC's uuid chain, so they have
+	// to be written in order with the messages, not appended afterwards.
+	const placed = carried?.length
+		? placeCarriedAttachments(carried, repaired as unknown as { role: string; content: unknown }[])
+		: undefined;
+	if (placed?.skipped.length) {
+		debug(`convertAndImportMessages: dropped ${placed.skipped.length} carried attachment(s): ${placed.skipped.join("; ")}`);
+	}
+	if (placed?.attachments.length) {
+		debug(`convertAndImportMessages: carrying ${placed.attachments.length} attachment(s) across the rebuild`);
+	}
+	if (repaired.length) {
+		session.importMessages(repaired, placed?.attachments.length ? { attachments: placed.attachments } : undefined);
+	}
 }
 
 // Pi doesn't pass tool results directly — it appends them to the context and calls
@@ -624,6 +673,8 @@ function syncSharedSession(
 	// and for any tools that key off them. Skipped only when there's a
 	// concurrent writer we shouldn't race — see forceRotate docs above.
 	const preserveId = previousSessionId !== undefined && !sharedSession?.forceRotate;
+	// Before deleteSession — it wipes the file these live in.
+	const carried = previousSessionId !== undefined ? readCarriedAttachments(previousSessionId, cwd) : [];
 	if (preserveId) {
 		// Wipe prior jsonl + companion dir (no-op if nothing to wipe).
 		deleteSession(previousSessionId!, cwd, claudeConfigDir);
@@ -634,17 +685,19 @@ function syncSharedSession(
 		...(preserveId ? { sessionId: previousSessionId } : {}),
 		...(modelId ? { model: modelId } : {}),
 	});
-	convertAndImportMessages(session, priorMessages, customToolNameToSdk);
+	convertAndImportMessages(session, priorMessages, customToolNameToSdk, carried);
 	session.save();
-	verifyWrittenSession(session.jsonlPath, session.sessionId, session.messages.length, cwd, claudeConfigDir);
+	// records, not messages: `messages` filters out the attachment records that
+	// carrying an `@file` expansion across a rebuild writes into the same file.
+	verifyWrittenSession(session.jsonlPath, session.sessionId, session.records.length, cwd, claudeConfigDir);
 	sharedSession = { sessionId: session.sessionId, cursor: priorMessages.length, cwd };
 	if (previousSessionId === undefined) {
-		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.messages.length} records`);
+		debug(`Case 2: first turn with ${priorMessages.length} prior messages → session ${session.sessionId.slice(0, 8)}, ${session.records.length} records`);
 	} else if (preserveId) {
 		const missedCount = priorMessages.length - previousCursor;
-		debug(`Case 4: ${missedCount} missed messages, ${priorMessages.length} total → rewrote session ${session.sessionId.slice(0, 8)} (same id), ${session.messages.length} records`);
+		debug(`Case 4: ${missedCount} missed messages, ${priorMessages.length} total → rewrote session ${session.sessionId.slice(0, 8)} (same id), ${session.records.length} records`);
 	} else {
-		debug(`Case 4 post-abort: ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId.slice(0, 8)}, rotated to avoid race with orphan writer), ${session.messages.length} records`);
+		debug(`Case 4 post-abort: ${priorMessages.length} total → new session ${session.sessionId.slice(0, 8)} (was ${previousSessionId.slice(0, 8)}, rotated to avoid race with orphan writer), ${session.records.length} records`);
 	}
 	debugSessionPaths(`${session.sessionId.slice(0, 8)}`, cwd, session.jsonlPath, claudeConfigDir);
 	debug(`syncResult: path=rebuild sessionId=${session.sessionId} priors=${priorMessages.length} ${previousSessionId === undefined ? "first" : preserveId ? "preserved" : "rotated-post-abort"}`);
@@ -662,6 +715,9 @@ export const __test = {
 	getSharedSession() {
 		return sharedSession;
 	},
+	setPiUI(ui: ExtensionUIContext | null) {
+		piUI = ui;
+	},
 	syncSharedSession,
 	deleteEphemeralSession,
 	extractUserPromptBlocks,
@@ -673,6 +729,7 @@ export const __test = {
 	deliverToolResults,
 	drainForAbort,
 	buildMcpServers,
+	branchSummaryOutcome,
 };
 
 // --- Provider helpers: tool name mapping ---
@@ -733,38 +790,78 @@ function mapToolArgs(
 // Global (not query state):
 let piUI: ExtensionUIContext | null = null;
 let piMode: ExtensionContext["mode"] | null = null;
-const activeQueryContexts = new Set<QueryContext>();
-
-// `plan` is the one setting whose default silently costs the user something (no
-// Opus 1M on Max), so announce it once. Deferred to the first bridge query
-// rather than session_start: the notice persists a flag to the global config,
-// and firing it on startup would write that file for every pi session that
-// merely has this extension installed.
-let planNoticePending = false;
-// The agent dir the applied config came from, so the notice flag lands in the
-// session's profile rather than the process-wide one (isolation, like
-// effectiveClaudeConfigDir above). Undefined until a config is applied, which
-// makes markStartupNoticeShown fall back to getAgentDir().
-let effectiveAgentDir: string | undefined;
-
-function showPlanNoticeOnce(): void {
-	// `hasUI` is true in RPC mode too — it means dialogs are possible, not that a
-	// human is watching. Only a terminal user can act on this.
-	if (!planNoticePending || piMode !== "tui") return;
-	planNoticePending = false;
-	const path = markStartupNoticeShown(effectiveAgentDir);
-	piUI?.notify(
-		`Claude bridge: assuming a Pro plan. On Max (or Team Premium/Enterprise), set provider.plan to "max" in ${path} to unlock Opus at 1M context.`,
-		"info",
-	);
-}
-
 // The user's own system prompt customisation (`--system-prompt`,
 // `--append-system-prompt`), captured from before_agent_start. pi's assembled
 // `context.systemPrompt` can't be forwarded wholesale — it describes pi's tools
 // and harness and would fight Claude Code's own preset — but the user's text is
 // theirs and has to reach the model, so it is kept separately.
 let userSystemPrompt: { custom?: string; append?: string } = {};
+const activeQueryContexts = new Set<QueryContext>();
+
+// Defaults that silently cost the user something (no Opus 1M on Max, no
+// AskClaude tool) are announced once. Deferred to the first bridge query rather
+// than session_start: the notice persists a flag to the global config, and
+// firing it on startup would write that file for every pi session that merely
+// has this extension installed. One message, because consecutive info notifies
+// overwrite each other in the TUI.
+let pendingNotices: string[] = [];
+// The agent dir the applied config came from, so the notice flag lands in the
+// session's profile rather than the process-wide one (isolation, like
+// effectiveClaudeConfigDir above). Undefined until a config is applied, which
+// makes markStartupNoticeShown fall back to getAgentDir().
+let effectiveAgentDir: string | undefined;
+
+function showStartupNoticeOnce(): void {
+	// `hasUI` is true in RPC mode too — it means dialogs are possible, not that a
+	// human is watching. Only a terminal user can act on this.
+	if (pendingNotices.length === 0 || piMode !== "tui") return;
+	const notices = pendingNotices;
+	pendingNotices = [];
+	const path = markStartupNoticeShown(effectiveAgentDir);
+	// pi wraps the whole notify string in the theme's dim foreground; the inner reset
+	// drops back to the terminal default rather than dim, which is fine here.
+	const title = `\x1b[33mWelcome to pi-claude-bridge\x1b[39m — settings live in ${path}`;
+	const bullets = [...notices, "This message only appears once. See README.md for more."].map((n) => `• ${n}`);
+	piUI?.notify([title, ...bullets, "─".repeat(64)].join("\n"), "info");
+}
+
+/** Whatever a settled session left behind, named in one greppable line.
+ *
+ *  Every one of these should be empty once the last turn ends, and each is a leak
+ *  that costs something real: a retained context routes a later orphaned tool result
+ *  into the delivery path and returns a stream nobody ends; a pending tool call is an
+ *  MCP handler Claude Code is still waiting on; a live prompt stream is an unresolved
+ *  ack. The activeQueryContexts leak was present on every single happy-path run and
+ *  no test noticed, because nothing asserted that anything ends clean — so assert it
+ *  where the real sessions are, and let diag/audit-warnings.mjs scan for it. */
+function reportLeaks(label: string): void {
+	const pendingCalls = [...activeQueryContexts].reduce((n, c) => n + c.pendingToolCalls.size, 0);
+	const liveStreams = [...activeQueryContexts].filter((c) => c.promptStream !== null).length;
+	if (activeQueryContexts.size === 0 && pendingCalls === 0 && liveStreams === 0) return;
+	debug(
+		`WARNING: ${label} left state behind — contexts=${activeQueryContexts.size} `
+		+ `pendingToolCalls=${pendingCalls} promptStreams=${liveStreams}`,
+	);
+}
+
+/** What pi's branch summary means for the navigation it was asked for.
+ *
+ *  Cancelling on failure matches pi's own path, which rethrows a summary error out
+ *  of the navigation rather than moving without one. Separated from the event
+ *  handler so this decision is testable without a Claude Code subprocess — driving
+ *  `generateBranchSummary` itself would only be testing pi. */
+function branchSummaryOutcome(result: BranchSummaryResult): { cancel: true } | { summary: { summary: string; details: unknown; usage?: BranchSummaryResult["usage"] } } {
+	if (result.aborted) return { cancel: true };
+	if (result.error) throw new Error(result.error);
+	debug(`session_before_tree: takeover complete summaryLen=${result.summary?.length ?? 0}`);
+	return {
+		summary: {
+			summary: result.summary ?? "",
+			details: { readFiles: result.readFiles ?? [], modifiedFiles: result.modifiedFiles ?? [] },
+			usage: result.usage,
+		},
+	};
+}
 
 function contextForToolResults(results: McpResult[]): QueryContext | undefined {
 	for (const result of results) {
@@ -1503,7 +1600,7 @@ async function deliverToolResults(
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
-	showPlanNoticeOnce();
+	showStartupNoticeOnce();
 	const stream = newAssistantMessageEventStream();
 
 	// DEBUG: trace followUp message triggering
@@ -1570,6 +1667,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const isReentrant = activeQuery;
 	const queryCtx = isReentrant ? new QueryContext() : ctx();
 	debug(`provider: fresh query setup, isReentrant=${isReentrant}, activeContexts=${activeQueryContexts.size}`);
+
 
 	// 2. Fresh child context — constructor already gave us clean Maps and empty
 	//    arrays. For a reused top-level context, clear explicitly.
@@ -1802,12 +1900,15 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			// hasn't already claimed the shared context.
 			promptStream.fail(new Error("query ended"));
 			if (queryCtx.promptStream === promptStream) queryCtx.promptStream = null;
-			if (queryCtx.activeQuery === sdkQuery) {
+			// A later query claiming this context sets activeQuery to its own handle;
+			// null means the .then/.catch above cleared ours and nothing replaced it.
+			// Testing only for `=== sdkQuery` would never fire on the non-reentrant
+			// path, leaving the top-level context in the routing set forever — where a
+			// later orphaned tool result matches its stale turnToolCallIds and takes
+			// the delivery branch, returning a stream nothing ends.
+			if (queryCtx.activeQuery === sdkQuery || queryCtx.activeQuery === null) {
 				queryCtx.releasePendingToolCalls("Query ended");
 				queryCtx.activeQuery = null;
-				// Guarded like the two cleanups above: if a later query has already
-				// claimed this context, removing it from the routing set would send
-				// that query's tool results down the orphan path and strand its handler.
 				activeQueryContexts.delete(queryCtx);
 			}
 			sdkQuery.close();
@@ -1861,9 +1962,14 @@ async function promptAndWait(
 		}
 	}
 
-	// Skills append
-	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt
-		? extractSkillsBlock(options.systemPrompt) : undefined;
+	// Skills append. AskClaude runs on Claude Code's native tools, so pass
+	// rewriteReadTool: false — the generic "Use the read tool" line stays correct,
+	// where naming pi's MCP read tool would point the sub-agent at one it lacks. In
+	// none mode Read is disallowed, so skip the block entirely: the sub-agent cannot
+	// open a skill file, and forwarding the catalog would be pure token overhead.
+	const readDisallowed = getAskClaudeDisallowedTools(mode).includes("Read");
+	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt && !readDisallowed
+		? extractSkillsBlock(options.systemPrompt, { rewriteReadTool: false }) : undefined;
 
 	// Corrections are only meaningful when the preset is actually sent, so this
 	// mirrors the `usePreset` union in buildAskClaudeQueryOptions. Keep the two in
@@ -1897,6 +2003,11 @@ async function promptAndWait(
 		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
 		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
 
+	// skills: [] suppresses Claude Code's own skill listing, a system-reminder naming every
+	// skill under the ~/.claude estate. The provider path gets this for free — `tools: []`
+	// removes the Skill tool and the listing with it — but AskClaude runs on CC's native
+	// tools, so it has to be asked for. Pi-side skills still arrive via skillsBlock below,
+	// which is meant to be the only channel.
 	const sdkQuery = query({
 		prompt,
 		options: buildAskClaudeQueryOptions({
@@ -2065,7 +2176,10 @@ export default function (pi: ExtensionAPI) {
 	// owner did, or pi would list a context window the bridge no longer requests.
 	const registeredModels = applyLongContext(MODELS, longContextSettings);
 
-	planNoticePending = config.provider?.plan === undefined && !config.startupNoticeShown;
+	if (!config.startupNoticeShown) {
+		if (config.provider?.plan === undefined) pendingNotices.push('Are you using a Max plan? You need to set provider.plan to "max" to unlock 1M context in Opus.');
+		if (config.askClaude?.enabled === undefined) pendingNotices.push("The AskClaude tool is opt-in only. Set askClaude.enabled to use it.");
+	}
 
 	// Reset shared session on pi session lifecycle events
 	const clearSession = (event: string) => {
@@ -2126,6 +2240,7 @@ export default function (pi: ExtensionAPI) {
 		userSystemPrompt = { custom: options?.customPrompt, append: options?.appendSystemPrompt };
 	});
 	pi.on("session_shutdown", () => {
+		reportLeaks("session_shutdown");
 		// Reap parked Claude Code children before clearing session state: clearSession
 		// nulls sharedSession and the ACTIVE_STREAM_SIMPLE_KEY global but never touches
 		// activeQueryContexts, so a child parked under a settled run would otherwise
@@ -2185,6 +2300,38 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_compact", (event) => markRebuild(`session_compact:${event.reason}:willRetry=${event.willRetry}`));
 	pi.on("session_tree", () => markRebuild("session_tree"));
 
+	// Branch summarization — rewind or fork-at-point with "summarize" — is the other
+	// place pi asks the model for a summary, and unlike compaction it runs through
+	// the *agent's* stream function (agent-session passes `streamFn:
+	// this.agent.streamFunction`). On a bridge model that reaches this provider
+	// carrying pi's internal summarization prompt, which no `before_agent_start`
+	// ever recorded, so the prompt-capture resolver has nothing to resolve it to.
+	// Take it over the way compaction is taken over: the summary runs as its own
+	// Claude Code subprocess, never touching the live session or the resolver.
+	pi.on("session_before_tree", async (event, ctx) => {
+		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
+		const { entriesToSummarize, userWantsSummary, customInstructions, replaceInstructions } = event.preparation;
+		if (!userWantsSummary || entriesToSummarize.length === 0) return undefined;
+		debug(`session_before_tree: takeover entries=${entriesToSummarize.length} target=${event.preparation.targetId.slice(0, 8)}`);
+		try {
+			const result = await generateBranchSummary(entriesToSummarize, {
+				model: ctx.model,
+				signal: event.signal,
+				customInstructions,
+				replaceInstructions,
+				streamFn: isolatedStreamFn,
+			});
+			return branchSummaryOutcome(result);
+		} catch (err) {
+			debug("session_before_tree: takeover failed; cancelling navigation", err);
+			ctx.ui?.notify?.(
+				`Claude bridge branch summary failed (${errorMessage(err)}); navigation cancelled.`,
+				"error",
+			);
+			return { cancel: true };
+		}
+	});
+
 	// --- Provider ---
 	//
 	// Guard against re-registration when the module is loaded multiple times
@@ -2227,7 +2374,7 @@ export default function (pi: ExtensionAPI) {
 	let modeDesc = `"read" (default): questions about the codebase — review, analysis, explain. "none": general knowledge only (no file access).`;
 	if (allowFull) modeDesc += ` "full": allows writing and bash execution (careful: runs without feedback to pi).`;
 
-	if (askConf?.enabled !== false) {
+	if (askConf?.enabled) {
 		const askClaudeParams = Type.Object({
 			prompt: Type.String({ description: "The question or task for Claude Code. By default Claude sees the full conversation history. Don't research up front, let Claude explore." }),
 			mode: Type.Optional(StringEnum(modeValues, { description: modeDesc })),

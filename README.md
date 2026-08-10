@@ -2,13 +2,13 @@
 
 [![npm version](https://img.shields.io/npm/v/pi-claude-bridge)](https://www.npmjs.com/package/pi-claude-bridge)
 
-Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript). Based initially on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal. This fork adds streaming, MCP tool bridging, custom pi tool bridging, session resume/persistence, context sync, thinking support, skills forwarding, and the AskClaude tool.
+Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript). Based initially on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal. This fork adds streaming, MCP tool bridging, custom pi tool bridging, session resume/persistence, context sync, thinking support, skills forwarding, and many correctness fixes.
 
 1. **Provider** — Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI
 2. **AskClaude tool** — Delegate tasks or questions to Claude Code when using another provider
 
 
-**FYI:** Anthropic [announced and then unannounced](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) a change to how you would be billed for tools that use the Agent SDK like this one. As of June 15, 2026 it uses subscription quota just like Claude Code direct does.
+**FYI:** Anthropic [announced and then unannounced](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) a change to how you would be billed for tools that use the Agent SDK like this one. It currently uses your regular subscription quota just like Claude Code.
 
 <p>
 <a href="assets/claude-bridge1.png"><img src="assets/claude-bridge1.png" width="49%"></a>&nbsp;
@@ -33,7 +33,7 @@ Behind the scenes, pi's tools are bridged to Claude Code but it should all work 
 
 ## AskClaude Tool
 
-Available when using any non-claude-bridge provider. Pi's LLM can delegate tasks to Claude Code and wait for it to answer a question or perform a task. Examples of how to use:
+Opt-in: set `askClaude.enabled` to `true` (see [Configuration](#configuration)). Available when using any non-claude-bridge provider. Pi's LLM can delegate tasks to Claude Code and wait for it to answer a question or perform a task. Examples of how to use:
 
 - "Ask Claude to plan a fix"
 - "If you get stuck, ask claude for help"
@@ -82,7 +82,7 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 ```
 
 `askClaude`:
-- `enabled` — register the AskClaude tool (default `true`)
+- `enabled` — register the AskClaude tool (default `false`). If it's unset, the startup notice below points this out once.
 - `name` — override the tool's pi-side name (default `"AskClaude"`)
 - `label` — override the TUI label (default `"Ask Claude Code"`)
 - `description` — override the tool description. Default when `allowFullMode: true`: *"Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories), or to autonomously handle a task. Defaults to read-only mode — use full mode when the user wants to delegate a task that requires changes. Prefer to handle straightforward tasks yourself."*
@@ -95,12 +95,14 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 - `plan` (default `"pro"`) — set to `"max"` for Max (or Team Premium/Enterprise) to enable Opus 4.6 with 1M context. If it's unset, the first interactive session points this out once, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
 - `longContextExtraUsage` — set to `true` to enable 1M models that cost money through Extra Usage. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro. Not needed for Opus 4.7 or 4.8.
 - `appendSystemPrompt` — append pi's project context files (global and ancestor `AGENTS.md` / `CLAUDE.md`) and skills (default `true`). This covers pi's own content only. On the provider path a short `# Harness corrections` block is appended regardless of this setting, because Claude Code's preset prompt otherwise names tools and a model ID that do not exist here. AskClaude receives corrections only when it is already forwarding a skills block. See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md).
-- `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
+- `settingSources` — which Claude Code settings tiers the spawned binary loads (`user`/`project`/`local`). Default `[]`: no `settings.json` of any tier and no `CLAUDE.md` of Claude Code's own, so pi's forwarded context block is the only channel for project rules. Independent of `appendSystemPrompt`. (The bridge also excludes `**/CLAUDE.md` on every spawn path, so opting a tier back in for its `settings.json` — e.g. Bedrock/Vertex `apiKeyHelper` — does not re-admit a native CLAUDE.md.)
 - `strictMcpConfig` — block MCP servers from the isolated profile's `.claude.json` and project `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`). The default off both sets the SDK settings layer and passes `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` to the subprocess; opting in drops both.
 - `claudeConfigDir` — absolute path to the Claude Code filesystem profile (default `~/.pi/agent/claude`). Each config file is validated on its own, so an invalid or relative value warns and falls back to the next valid setting (a bad project value falls back to your global one, not to the default). An inherited `CLAUDE_CONFIG_DIR` does not override this setting.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 
+
+**Startup notice:** the first interactive session to reach Claude Code lists whichever of `provider.plan` and `askClaude.enabled` you have left unset, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
 
 **Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not currently apply to extension-registered providers (like claude-bridge). Overriding `contextWindow` or other fields requires editing `src/models.ts` directly.
 
@@ -121,6 +123,10 @@ Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 
 When filing a bug about a session-resume failure (e.g. "No conversation found"), the most useful attachments are the `syncResult:` lines from the bridge log plus the matching `cc-cli-logs/` file for the failing query.
 
-## Maintenance
+## Known issues
 
 After a Claude Code release, review `getAskClaudeToolPolicy()` in `src/sdk-options.ts`. It gates which Claude Code tools the AskClaude subagent may invoke in `read`, `full`, and `none` modes. Add new agentic tools (PlanMode, Task spawning, and similar tools) to the appropriate policy if subagents should not use them.
+
+**Sessions get rebuilt more often than they need to be, and a rebuild is expensive.** The bridge rewrites Claude Code's session from pi's history whenever pi's messages move underneath it — after an abort, `/compact`, tree navigation, or an API error. Measured over this repo's own bridge log, a rebuild boundary loses the prompt cache roughly 58% of the time against 26% for a plain resume, so an abort-heavy session costs noticeably more than a clean one. Aborts alone are 46% of rebuilds.
+
+**Files Claude Code edits are not carried across a rebuild.** CC records the post-edit contents as an `edited_text_file` attachment; those aren't carried, because they hang off a tool-result record rather than a prompt and so have no stable position to restore them to. The edit itself survives — it's in the history as a tool call and its result — so this costs Claude the file snapshot, not the knowledge that it made the change. `@file` expansions *are* carried.
