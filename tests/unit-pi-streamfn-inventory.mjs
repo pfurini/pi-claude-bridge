@@ -1,0 +1,100 @@
+#!/usr/bin/env node
+
+/**
+ * Which pi modules can drive our provider.
+ *
+ * Anything pi hands a `streamFn` can route an LLM call through the registered
+ * provider — this one — carrying a system prompt we never recorded. Branch
+ * summarization did exactly that and nobody noticed until it started failing
+ * turns, because a behavioural contract test can only probe the entry points we
+ * already know about; it structurally cannot find the one we don't.
+ *
+ * So inventory the source instead. Claude Code is closed and has to be probed,
+ * but pi ships readable JS in node_modules, and a new consumer showing up there
+ * is exactly the thing we want to hear about at bump time rather than from a
+ * user. Read the *installed* dist, not reference-code/pi-mono, which lags for
+ * the same reason AGENTS.md distrusts claude-code-rip.
+ *
+ * If this fails: a pi upgrade added or moved a streamFn consumer. Work out
+ * whether it can reach a bridge model, and either handle it (the way
+ * `session_before_compact` and `session_before_tree` are taken over) or add it
+ * below with a note on why it is harmless.
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Located by path, not require.resolve: the package defines no `exports` main, so
+// it cannot be resolved by specifier at all.
+const PI_DIST = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core", import.meta.url));
+
+/** Consumers we have accounted for: what keeps each off the provider, and how many
+ *  times it mentions `streamFn`. The count matters as much as the filename — a new
+ *  entry point added *inside* an already-listed file is exactly the shape of the
+ *  branch-summarization miss, and a filename-only inventory would wave it through.
+ *  A changed count is not automatically a bug; it means read the diff and re-decide. */
+// Fork-only stream-fn consumers ship in the fork build (which carries
+// piForkCapabilities) and are absent on registry pi. Detect the fork by the
+// marker module's presence so this one test satisfies both CI jobs (the `fork`
+// job builds ../pi, the `stock` job installs registry pi).
+const onFork = existsSync(join(PI_DIST, "fork-capabilities.js"));
+
+const HANDLED = {
+	"agent-session.js": { mentions: 1, why: "the one hand-off: `streamFn: this.agent.streamFunction` into generateBranchSummary" },
+	// sdk.js gained a composed-default routing reference in the fork (2 -> 3); still only constructs the agent.
+	"sdk.js": { mentions: onFork ? 3 : 2, why: "constructs the agent (session stream fn); on the fork also documents composed-default routing. Does not summarize or route independently." },
+	"compaction/compaction.js": { mentions: 13, why: "taken over via session_before_compact -> isolatedStreamFn" },
+	"compaction/branch-summarization.js": { mentions: 2, why: "taken over via session_before_tree -> isolatedStreamFn" },
+	...(onFork ? {
+		"default-stream-fn.js": { mentions: 9, why: "fork's composed default-stream dispatch for bare Agent/loop callers without an explicit streamFn (piForkCapabilities: composed-default-stream-fn). A bare Agent inside a session scope routes to this provider, but pi's context and skills still forward through context.systemPrompt; only a bare Agent's own --system-prompt/--append-system-prompt is missed (bare Agents do not set one, and userSystemPrompt degrades to {}). Re-decide if the count drifts after a pi upgrade." },
+		"fork-capabilities.js": { mentions: 1, why: "marker module (the piForkCapabilities Set); the single streamFn reference is a doc comment, not a code path, so it cannot route a call" },
+	} : {}),
+};
+
+const mentionsOf = (text) => (text.match(/streamFn/g) ?? []).length;
+
+function jsFilesUnder(dir, prefix = "") {
+	return readdirSync(dir).flatMap((name) => {
+		const full = join(dir, name);
+		if (statSync(full).isDirectory()) return jsFilesUnder(full, `${prefix}${name}/`);
+		return name.endsWith(".js") ? [{ rel: `${prefix}${name}`, full }] : [];
+	});
+}
+
+describe("pi streamFn consumers", () => {
+	it("are all ones we have accounted for, in the same places", () => {
+		assert.ok(existsSync(PI_DIST), `pi's dist is not at ${PI_DIST} — its layout changed, so this inventory is blind`);
+		const found = new Map(
+			jsFilesUnder(PI_DIST)
+				.map(({ rel, full }) => [rel, mentionsOf(readFileSync(full, "utf8"))])
+				.filter(([, n]) => n > 0)
+				.sort(([a], [b]) => a.localeCompare(b)),
+		);
+
+		assert.ok(found.size > 0, `no streamFn consumers found under ${PI_DIST} — did pi's layout change?`);
+
+		const unexpected = [...found.keys()].filter((rel) => !(rel in HANDLED));
+		assert.deepEqual(
+			unexpected,
+			[],
+			`pi has streamFn consumers this bridge has never considered: ${unexpected.join(", ")}. `
+			+ `Each can route an LLM call through our provider with a system prompt no before_agent_start recorded.`,
+		);
+
+		// If one of these disappears, the takeover it justifies is now dead code.
+		const missing = Object.keys(HANDLED).filter((rel) => !found.has(rel));
+		assert.deepEqual(missing, [], `these no longer consume streamFn — is the takeover still needed? ${missing.join(", ")}`);
+
+		const drifted = [...found].filter(([rel, n]) => HANDLED[rel].mentions !== n)
+			.map(([rel, n]) => `${rel}: ${HANDLED[rel].mentions} -> ${n}`);
+		assert.deepEqual(
+			drifted,
+			[],
+			`pi changed how often these reference streamFn: ${drifted.join("; ")}. `
+			+ `Read the diff — a new call site inside a file we already trust is the case a filename-only inventory misses — then update the counts.`,
+		);
+	});
+});
