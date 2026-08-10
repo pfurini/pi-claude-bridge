@@ -19,6 +19,7 @@ import { QueryContext, ctx, drainForAbort, reapLiveQueriesIfOwner } from "./quer
 import { loadConfig, loadDirs, markStartupNoticeShown, sessionAgentDir, type Config } from "./config.js";
 import { defaultClaudeConfigDir } from "./claude-config.js";
 import { extractProjectContextBlock } from "./project-context.js";
+import { sanitizeHarnessPrompt } from "./sanitize-prompt.js";
 import { steeringAppendFor } from "./steering.js";
 import { makePromptStream, userMessage } from "./prompt-stream.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
@@ -1733,6 +1734,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
 	const agentsAppend = appendSystemPrompt ? extractProjectContextBlock(context.systemPrompt) : undefined;
 	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
+	// Same gate: sanitizeHarnessPrompt's block dedupe only removes byte-exact
+	// duplicates of what this session itself forwarded above, so it must see
+	// context.systemPrompt only when that forwarding actually happened.
+	const promptSanitizeSource = appendSystemPrompt ? context.systemPrompt : undefined;
 
 	// PURE CLAUDE CODE BY DEFAULT. settingSources defaults to [] so the spawned
 	// Claude Code loads no settings tiers and no CLAUDE.md of its own - rules
@@ -1765,7 +1770,19 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// what the user explicitly asked for wins over anything the bridge adds. It
 	// is also ungated by appendSystemPrompt: that setting suppresses content the
 	// bridge injects on its own, not what the user explicitly provided.
-	const appendParts = [agentsAppend, skillsAppend, steeringAppend, corrections, userSystemPrompt.custom, userSystemPrompt.append]
+	//
+	// pi-subagents' "append" prompt_mode embeds the parent's entire pi system
+	// prompt (skeleton included) into userSystemPrompt.custom/.append; sanitize
+	// strips that boilerplate so a subagent request doesn't carry pi's
+	// self-identifying signature (see plans/subagent-prompt-sanitize.md).
+	const sanitizedCustom = sanitizeHarnessPrompt(userSystemPrompt.custom, { sourcePrompt: promptSanitizeSource });
+	const sanitizedAppend = sanitizeHarnessPrompt(userSystemPrompt.append, { sourcePrompt: promptSanitizeSource });
+	if (sanitizedCustom !== userSystemPrompt.custom || sanitizedAppend !== userSystemPrompt.append) {
+		debug(
+			`provider: sanitizeHarnessPrompt stripped harness boilerplate, custom ${userSystemPrompt.custom?.length ?? 0}->${sanitizedCustom?.length ?? 0} chars, append ${userSystemPrompt.append?.length ?? 0}->${sanitizedAppend?.length ?? 0} chars`,
+		);
+	}
+	const appendParts = [agentsAppend, skillsAppend, steeringAppend, corrections, sanitizedCustom, sanitizedAppend]
 		.filter((part): part is string => Boolean(part));
 	const systemPromptAppend = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 
