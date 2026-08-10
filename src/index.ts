@@ -200,9 +200,9 @@ interface SessionState {
  * Must be called before `deleteSession`, which wipes the file they live in —
  * reading after it yields nothing, with no error to notice.
  */
-function readCarriedAttachments(sessionId: string, cwd: string): CarriedAttachment[] {
+function readCarriedAttachments(sessionId: string, cwd: string, claudeConfigDir: string): CarriedAttachment[] {
 	try {
-		const previous = openSession({ sessionId, projectPath: cwd, claudeDir: process.env.CLAUDE_CONFIG_DIR });
+		const previous = openSession({ sessionId, projectPath: cwd, claudeDir: claudeConfigDir });
 		return collectCarriedAttachments(previous.records);
 	} catch (error) {
 		// A post-abort rebuild reads a file the killed CC subprocess may have been
@@ -674,7 +674,7 @@ function syncSharedSession(
 	// concurrent writer we shouldn't race — see forceRotate docs above.
 	const preserveId = previousSessionId !== undefined && !sharedSession?.forceRotate;
 	// Before deleteSession — it wipes the file these live in.
-	const carried = previousSessionId !== undefined ? readCarriedAttachments(previousSessionId, cwd) : [];
+	const carried = previousSessionId !== undefined ? readCarriedAttachments(previousSessionId, cwd, claudeConfigDir) : [];
 	if (preserveId) {
 		// Wipe prior jsonl + companion dir (no-op if nothing to wipe).
 		deleteSession(previousSessionId!, cwd, claudeConfigDir);

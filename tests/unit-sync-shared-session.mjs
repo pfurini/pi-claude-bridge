@@ -183,4 +183,59 @@ describe("syncSharedSession", () => {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+
+	// Regression: attachments must be read from the threaded claudeConfigDir, not
+	// process.env.CLAUDE_CONFIG_DIR. Under config isolation the session lives in the
+	// explicit profile; reading the process env looked in the wrong one and silently
+	// dropped the carried @file across a rebuild. The env is pointed at a different,
+	// empty profile here so the pre-fix behaviour would carry nothing.
+	it("carries an attachment from the explicit profile, ignoring process.env.CLAUDE_CONFIG_DIR", () => {
+		const root = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
+		const cwd = join(root, "project");
+		const claudeConfigDir = join(root, "isolated-claude");
+		const sessionId = randomUUID();
+		const prompt = "Review @fixture.txt and remember it.";
+		const notices = [];
+		const prevEnv = process.env.CLAUDE_CONFIG_DIR;
+		process.env.CLAUDE_CONFIG_DIR = join(root, "process-env-claude");
+		try {
+			const seeded = createSession({ sessionId, projectPath: cwd, claudeDir: claudeConfigDir });
+			seeded.importMessages(
+				[
+					{ role: "user", content: prompt },
+					{ role: "assistant", content: [{ type: "text", text: "Noted." }] },
+				],
+				{
+					attachments: [{
+						afterIndex: 0,
+						attachment: {
+							type: "file",
+							filename: join(cwd, "fixture.txt"),
+							content: { type: "text", file: { filePath: join(cwd, "fixture.txt"), content: "token" } },
+						},
+					}],
+				},
+			);
+			seeded.save();
+
+			__test.setSharedSession({ sessionId, cursor: 0, cwd });
+			__test.setPiUI({ notify: (message) => notices.push(message) });
+			__test.syncSharedSession([
+				{ role: "user", content: prompt, timestamp: Date.now() },
+				{ role: "assistant", content: [{ type: "text", text: "Noted." }], timestamp: Date.now() },
+				{ role: "user", content: "Now what did it say?", timestamp: Date.now() },
+			], cwd, claudeConfigDir);
+
+			assert.equal(
+				openSession({ sessionId, projectPath: cwd, claudeDir: claudeConfigDir }).attachments.length,
+				1,
+				"the rebuild dropped the attachment — readCarriedAttachments read the wrong profile",
+			);
+			assert.deepEqual(notices, []);
+		} finally {
+			if (prevEnv === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+			else process.env.CLAUDE_CONFIG_DIR = prevEnv;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });
