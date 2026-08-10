@@ -13,6 +13,7 @@
 #
 # int-shutdown-kills-cc.mjs shuts pi down with a SlowTool call still in flight, so
 # session_shutdown's reportLeaks necessarily sees the not-yet-cleared context (the
-# reap and clearSession run right after). Induced on purpose; the gate's suggested
-# entry is NOT used — its digit→N normalization never substring-matches the raw line.
+# reap and clearSession run right after). Induced on purpose. The entry stops before
+# the counts so it survives contexts=2 etc.; the gate's printed suggestion carries
+# the raw numbers and would only match that exact leak shape.
 shutdown-kills-cc :: WARNING: session_shutdown left state behind

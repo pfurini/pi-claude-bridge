@@ -80,7 +80,11 @@ function run() {
 	console.log("FAIL: un-allowlisted WARNING/BUG lines (add to the allowlist only if a test induces them on purpose):");
 	for (const o of offenders) {
 		console.log(`  ${o.file}:${o.line}  ${o.msg.slice(0, 200)}`);
-		console.log(`    allowlist entry to silence: ${o.file.replace(/-debug\.log$/, "")} :: ${o.msg.replace(/\[[^\]]*\]/g, "[…]").replace(/\d+/g, "N").slice(0, 80)}`);
+		// Suggest the raw message, not a normalized one: allowlist matching is a
+		// substring test against the raw line, so the old digit→N / bracket→[…]
+		// "generalized" suggestion could never match anything. Generalizing volatile
+		// numbers is the curator's call, not the printer's.
+		console.log(`    allowlist entry to silence: ${o.file.replace(/-debug\.log$/, "")} :: ${o.msg.slice(0, 80)}`);
 	}
 	process.exit(1);
 }
