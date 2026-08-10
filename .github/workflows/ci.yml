@@ -91,7 +91,7 @@ jobs:
           types=node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts
           grep -q 'readonly agentDir: string' "$types" || {
             echo "::error::Linked pi lacks ExtensionAPI.agentDir. The fork is unbuilt or the link resolved to the registry."
-            echo "The fork and the published package both report 0.82.1, so a version check cannot catch this."
+            echo "The fork and the latest published package both report 0.84.1, so a version check cannot catch this."
             exit 1
           }
 

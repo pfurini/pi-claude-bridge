@@ -69,9 +69,12 @@ No build step — the package ships `src` TypeScript as-is (see `files` in `pack
 
 The three `@earendil-works/pi-*` devDependencies are `file:` links to the local
 fork at `../pi`, not registry installs. Check the fork, not `node_modules`, when
-you need to know what pi's API offers: the fork carries commits that published
-`0.82.1` does not, and both report the same version, so a registry install would
-silently give you an older surface under the same number.
+you need to know what pi's API offers: the fork carries commits stock pi does
+not (verified against registry `0.84.1`, which lacks `ExtensionAPI.cwd`,
+`ExtensionAPI.agentDir`, `ExtensionContext.agentDir`, `ExecOutputTruncation`,
+the `piForkCapabilities` marker, and `default-stream-fn`). Fork and registry
+both report `0.84.1`, so a registry install — even at the newest version —
+silently gives you an older API surface under an identical version number.
 
 - The fork must be built before its API changes reach `tsc`. Types come from
   `dist/*.d.ts`, and the build is order-dependent — run `npm run build:offline`
@@ -85,9 +88,11 @@ silently give you an older surface under the same number.
 
 CI (`.github/workflows/ci.yml`) runs both sides: a `fork` job that checks out
 `pfurini/pi` as a sibling and builds it, and a `stock` job that rewrites the
-three devDependencies to the registry `0.82.1` and drops the lockfile. Each job
-asserts which pi it actually got, because the two share a version number and no
-version check can tell them apart. Both jobs only compile and unit-test; nothing
+three devDependencies to the registry `0.82.1` (the peer floor) and drops the
+lockfile. Each job asserts which pi it actually got by probing for
+`ExtensionAPI.agentDir` rather than by version, because the fork and the latest
+registry release share a version number, so no version check can tell them
+apart. Both jobs only compile and unit-test; nothing
 in the unit suite loads an extension through pi's loader, so neither observes
 `loadDirs()` actually falling back at runtime. That needs an integration run.
 
