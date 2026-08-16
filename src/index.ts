@@ -1,6 +1,6 @@
 import { calculateCost, StringEnum, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type Usage, type UserMessage } from "@earendil-works/pi-ai";
 import * as piAi from "@earendil-works/pi-ai";
-import { getModels } from "@earendil-works/pi-ai/compat";
+import { getModels, registerApiProvider } from "@earendil-works/pi-ai/compat";
 import { buildSessionContext, compact, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type SDKMessage, type SDKRateLimitInfo, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
@@ -2368,6 +2368,23 @@ export default function (pi: ExtensionAPI) {
 			// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
 			streamSimple: streamClaudeAgentSdk as any,
 		});
+		// Extensions that call pi-ai's global dispatch (completeSimple/streamSimple
+		// from @earendil-works/pi-ai/compat, e.g. rpiv-btw's /btw) resolve the stream
+		// function by model.api in pi-ai's own api registry, which pi.registerProvider
+		// never touches — without this mirror they throw "No API provider registered
+		// for api: claude-bridge". Same first-instance guard as above: pi-ai's
+		// registry is a module-level Map shared with the host, so a subagent's
+		// registerApiProvider would overwrite the parent's function just as
+		// registerProvider would. Exported since stock pi-ai 0.82.1 (the peer floor),
+		// so no availability fallback is needed.
+		registerApiProvider(
+			{
+				api: PROVIDER_ID,
+				stream: streamClaudeAgentSdk,
+				streamSimple: streamClaudeAgentSdk,
+			},
+			"pi-claude-bridge",
+		);
 	} else {
 		// Subsequent instance (subagent session): skip registration entirely.
 		// The subagent already has access to claude-bridge models via the shared
