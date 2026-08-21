@@ -162,6 +162,39 @@ describe("sanitizeHarnessPrompt", () => {
 		assert.equal(twice, once);
 	});
 
+	it("AC11: strips preamble AND block for both pi preamble variants", () => {
+		// The forwarding extractor (src/skills.ts) keys off the versioned listing
+		// delimiters; this one keeps the prose markers on purpose (D4) — it must
+		// remove what pi *embedded*, preamble included, since that self-identifying
+		// boilerplate is what routes a request to metered usage. pi picks the
+		// instruction line from the active tool set, so pin both wordings.
+		const preambles = [
+			"Use the read tool to load a skill's file when the task matches its description.",
+			"Use the skill tool to invoke a skill and receive its rendered instructions when the task matches its description.",
+		];
+		for (const instructionLine of preambles) {
+			const span = [
+				"The following skills provide specialized instructions for specific tasks.",
+				instructionLine,
+				"When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
+				"",
+				'<available_skills version="2">',
+				"  <skill><name>br</name><location>/tmp/skills/br/SKILL.md</location></skill>",
+				"</available_skills>",
+			].join("\n");
+			const sourcePrompt = `Parent prompt head.\n\n${span}\n`;
+			const text = `Some custom prompt text.\n\n${span}\n\nTrailer text.`;
+
+			const result = sanitizeHarnessPrompt(text, { sourcePrompt });
+			assert.ok(result, `expected survivors for preamble variant: ${instructionLine}`);
+			assert.ok(!result.includes("The following skills"), "preamble survived");
+			assert.ok(!result.includes("available_skills"), "block survived");
+			assert.ok(!result.includes(instructionLine), "instruction line survived");
+			assert.ok(result.includes("Some custom prompt text."));
+			assert.ok(result.includes("Trailer text."));
+		}
+	});
+
 	it("passes undefined through unchanged", () => {
 		assert.equal(sanitizeHarnessPrompt(undefined), undefined);
 	});

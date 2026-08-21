@@ -28,6 +28,11 @@ const CWD_LINE = /^Current working directory: .*$/m;
 
 const PROJECT_CONTEXT_START = "<project_context>";
 const PROJECT_CONTEXT_END = "</project_context>";
+// Deliberately NOT the versioned listing delimiters src/skills.ts extracts by:
+// the forwarding extractor wants the block alone, but here the job is to strip
+// what pi *embedded* in a subagent prompt — preamble lines included, since that
+// self-identifying boilerplate is what routes the request to metered usage.
+// "Unifying" the two would leave three orphan lines of pi prose behind.
 const SKILLS_START =
 	"The following skills provide specialized instructions for specific tasks.";
 const SKILLS_END = "</available_skills>";

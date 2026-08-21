@@ -12,7 +12,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { applyLongContext, ASK_CLAUDE_THINKING_LEVELS, assertClaudeCodeModelAvailable, buildModels, claudeCodeModelId, type LongContextSettings, reportMissingModelIds, resolveEffort, resolveModel as _resolveModel } from "./models.js";
-import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
+import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlockForAskClaude, extractSkillsBlockForProvider } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx, drainForAbort, reapLiveQueriesIfOwner } from "./query-state.js";
@@ -1733,7 +1733,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// dedup a native pi session gets - never from a bridge-side re-discovery.
 	const appendSystemPrompt = providerSettings.appendSystemPrompt !== false;
 	const agentsAppend = appendSystemPrompt ? extractProjectContextBlock(context.systemPrompt) : undefined;
-	const skillsAppend = appendSystemPrompt ? extractSkillsBlock(context.systemPrompt) : undefined;
+	// The skills listing goes out as the bare block plus bridge-written framing;
+	// the framing names whichever tool can actually reach a skill in this session
+	// (the MCP skill tool when pi exposes it, the MCP read tool otherwise).
+	const skillsResult = appendSystemPrompt ? extractSkillsBlockForProvider(context.systemPrompt, context.tools) : undefined;
+	const skillsAppend = skillsResult ? `${skillsResult.framing}\n\n${skillsResult.block}` : undefined;
 	// Same gate: sanitizeHarnessPrompt's block dedupe only removes byte-exact
 	// duplicates of what this session itself forwarded above, so it must see
 	// context.systemPrompt only when that forwarding actually happened.
@@ -1979,14 +1983,14 @@ async function promptAndWait(
 		}
 	}
 
-	// Skills append. AskClaude runs on Claude Code's native tools, so pass
-	// rewriteReadTool: false — the generic "Use the read tool" line stays correct,
-	// where naming pi's MCP read tool would point the sub-agent at one it lacks. In
+	// Skills append. AskClaude runs on Claude Code's native tools and never
+	// receives the MCP skill tool, so the framing is always read-native (AC7). In
 	// none mode Read is disallowed, so skip the block entirely: the sub-agent cannot
 	// open a skill file, and forwarding the catalog would be pure token overhead.
 	const readDisallowed = getAskClaudeDisallowedTools(mode).includes("Read");
-	const skillsBlock = options?.appendSkills !== false && options?.systemPrompt && !readDisallowed
-		? extractSkillsBlock(options.systemPrompt, { rewriteReadTool: false }) : undefined;
+	const skillsResult = options?.appendSkills !== false && options?.systemPrompt && !readDisallowed
+		? extractSkillsBlockForAskClaude(options.systemPrompt) : undefined;
+	const skillsBlock = skillsResult ? `${skillsResult.framing}\n\n${skillsResult.block}` : undefined;
 
 	// Corrections are only meaningful when the preset is actually sent, so this
 	// mirrors the `usePreset` union in buildAskClaudeQueryOptions. Keep the two in
