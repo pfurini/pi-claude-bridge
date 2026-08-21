@@ -108,12 +108,18 @@ function freshQueryLines(debugLog) {
 		.filter((line) => line.includes("provider: fresh query model="));
 }
 
-test("AC12: default launch (no skill tool) — listing reaches Claude with read-mcp framing", {
+// AC12/AC13 pin the two framing branches by naming the tool set each one needs,
+// never by relying on what a default launch happens to activate. pi's default
+// has already flipped once (the skill tool was unreachable on the real path
+// until fork eee78cdf2), and a test that encodes which branch is "the default"
+// fails on the fix rather than on a regression.
+test("AC12: without the skill tool, the listing reaches Claude and is opened by reading the file", {
 	timeout: TIMEOUT + 30_000,
 }, async () => {
 	const turn = await runTurn({
 		name: "ac12",
 		skill: "probe-skill",
+		tools: "read,bash,edit,write",
 		prompt:
 			"Load the probe-skill skill from your available skills listing and follow its instructions exactly.",
 	});
@@ -124,7 +130,26 @@ test("AC12: default launch (no skill tool) — listing reaches Claude with read-
 	);
 	assert.ok(
 		!turn.debugLog.includes("mcp handler: skill ["),
-		"the skill tool was dispatched on a default launch — the pi-side defect may be fixed; update the branch table in the plan",
+		`the skill tool was dispatched although --tools excluded it:\n${turn.debugLog}`,
+	);
+});
+
+// Whichever branch the default launch selects, the catalog must still reach the
+// model and a skill must still load. Deliberately asserts nothing about which
+// tool got used, so it survives the next change to pi's defaults.
+test("AC12b: a default launch loads a skill, whichever framing it selects", {
+	timeout: TIMEOUT + 30_000,
+}, async () => {
+	const turn = await runTurn({
+		name: "ac12b",
+		skill: "probe-skill",
+		prompt:
+			"Load the probe-skill skill from your available skills listing and follow its instructions exactly.",
+	});
+	assert.match(
+		turn.stdout,
+		/ZANZIBAR-7731/,
+		`marker missing from reply: ${turn.stdout}\n${turn.stderr}`,
 	);
 });
 

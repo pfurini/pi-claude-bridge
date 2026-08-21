@@ -108,6 +108,13 @@ prompt-cache miss.
 
 ### pi-side defect (fork, not this repo — do not fix here)
 
+> **RESOLVED in fork `eee78cdf2` (2026-08-21), "activate skill/slash_command tools on
+> default launch".** The analysis below is kept as the record of why the branch
+> existed. What changed: the skill-tool branch is now the *default*, and the
+> no-skill-tool branch needs an explicit `--tools read,bash,edit,write`. Both are
+> still tested; `tests/int-skill-listing.mjs` names the tool set per branch rather
+> than relying on the default, so neither test encodes which branch is common.
+
 `skill` and `slash_command` are **never active on a default `pi` launch**.
 `core/sdk.ts:265-271` always computes `initialActiveToolNames`
 (`["read","bash","edit","write"]` minus exclusions, never `undefined`) and passes
@@ -122,9 +129,9 @@ definition (`:2313-2317`). Dates confirm it: the `_buildRuntime` list gained the
 two names in C1c (`a1ba977e9`, 12 Aug 2026); `sdk.ts` was last touched here in
 `2849623af` (4 Jan 2026), before skills existed.
 
-**Consequence for this plan:** the "no skill tool" branch is the *only* branch that
-executes today, and the "skill tool present" branch becomes the default once the
-fork is fixed. Both must work and both must be tested. `--tools read,bash,edit,write,skill`
+**Consequence for this plan** (as written, before the fork fix): the "no skill tool"
+branch is the *only* branch that executes today, and the "skill tool present" branch
+becomes the default once the fork is fixed. Both must work and both must be tested. `--tools read,bash,edit,write,skill`
 reproduces branch B today without any fork change.
 
 ---
