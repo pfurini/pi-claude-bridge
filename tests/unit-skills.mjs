@@ -8,17 +8,18 @@
  * from the session's active tool set (AC5-AC8). AC9/AC10 are fork drift
  * guards, skipped on stock pi.
  */
-import { describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as ca from "@earendil-works/pi-coding-agent";
 import {
 	SKILL_LISTING_END_DELIMITER,
 	SKILL_LISTING_START_DELIMITER,
 	SKILL_LISTING_VERSION,
+	__resetSkillListingWarnings,
 	extractSkillsBlock,
-	extractSkillsBlockForAskClaude,
-	extractSkillsBlockForProvider,
 } from "../src/skills.js";
+
+const { __test } = await import("../src/index.js");
 
 /** Run fn with console.warn captured; returns the warning strings. */
 function captureWarns(fn) {
@@ -32,6 +33,10 @@ function captureWarns(fn) {
 	}
 	return warnings;
 }
+
+// The warn-once Set is module state, so a case that expects a warning must not
+// inherit one already spent by an earlier case.
+beforeEach(() => __resetSkillListingWarnings());
 
 const SKILL_ENTRIES = `  <skill>
     <name>br</name>
@@ -77,6 +82,32 @@ ${SKILL_ENTRIES}
 
 Some other system prompt content after skills.`;
 
+/**
+ * A prompt shaped the way pi assembles one: the user's own text and the raw
+ * contents of every project context file land *before* pi's listing, so
+ * anything they quote is a decoy the extractor has to look past.
+ */
+function promptQuoting(decoy) {
+	return `You are a coding assistant.
+
+<project_context>
+
+<project_instructions path="/repo/AGENTS.md">
+Docs for this very contract:
+${decoy}
+</project_instructions>
+
+</project_context>
+
+${PREAMBLE_TOOL}
+
+${SKILL_LISTING_START_DELIMITER}
+${SKILL_ENTRIES}
+${SKILL_LISTING_END_DELIMITER}
+
+Current working directory: /repo`;
+}
+
 describe("skills listing detection", () => {
 	it("AC1: v2 block extracted by delimiter, block only — no preamble", () => {
 		const result = extractSkillsBlock(V2_PROMPT, { framing: "read-mcp" });
@@ -93,6 +124,11 @@ describe("skills listing detection", () => {
 			"preamble leaked into block",
 		);
 		assert.ok(!result.block.includes("Some other system prompt"));
+	});
+
+	it("AC1: append is the framing and the block, in that order", () => {
+		const result = extractSkillsBlock(V2_PROMPT, { framing: "read-mcp" });
+		assert.equal(result.append, `${result.framing}\n\n${result.block}`);
 	});
 
 	it("AC2: unversioned stock-pi block still extracted, legacy: true", () => {
@@ -131,6 +167,20 @@ describe("skills listing detection", () => {
 		);
 	});
 
+	it("AC3: the warning is not repeated on later requests of the same session", () => {
+		const prompt = `<available_skills version="3">\n${SKILL_ENTRIES}\n</available_skills>`;
+		const warnings = captureWarns(() => {
+			for (let i = 0; i < 5; i++) {
+				extractSkillsBlock(prompt, { framing: "read-mcp" });
+			}
+		});
+		assert.equal(
+			warnings.length,
+			1,
+			`extractSkillsBlock runs once per request; an unguarded warn reprints over the TUI every turn (got ${warnings.length})`,
+		);
+	});
+
 	it("AC4: no listing → undefined, no warning; malformed (start, no end) → undefined, no warning", () => {
 		const noListing = captureWarns(() => {
 			assert.strictEqual(
@@ -162,12 +212,66 @@ describe("skills listing detection", () => {
 		});
 		assert.deepEqual(malformed, [], "malformed listing must not warn");
 	});
+
+	it("AC4: an opening tag with no closing `>` → undefined, no warning", () => {
+		const warnings = captureWarns(() => {
+			assert.strictEqual(
+				extractSkillsBlock('prose about <available_skills version="2"', {
+					framing: "read-mcp",
+				}),
+				undefined,
+			);
+		});
+		assert.deepEqual(warnings, [], "a truncated tag is prose, not a version signal");
+	});
+});
+
+describe("decoy tags in user-controlled text", () => {
+	// pi assembles --append-system-prompt text and project context files before
+	// its own listing, so any of these can appear ahead of the real one. Keying
+	// off the bare `<available_skills` prefix let the first of them win.
+	it("a quoted complete listing does not preempt pi's own", () => {
+		const prompt = promptQuoting(
+			`${SKILL_LISTING_START_DELIMITER}\n  <skill><name>decoy</name></skill>\n${SKILL_LISTING_END_DELIMITER}`,
+		);
+		const result = extractSkillsBlock(prompt, { framing: "read-mcp" });
+		assert.ok(result);
+		assert.ok(!result.block.includes("decoy"), "forwarded the decoy listing");
+		assert.ok(result.block.includes("deep-research"), "lost the real listing");
+	});
+
+	it("a quoted opening tag alone does not swallow the prompt up to the real listing", () => {
+		const prompt = promptQuoting(`Open one with ${SKILL_LISTING_START_DELIMITER} and see.`);
+		const result = extractSkillsBlock(prompt, { framing: "read-mcp" });
+		assert.ok(result);
+		assert.ok(result.block.startsWith(SKILL_LISTING_START_DELIMITER));
+		assert.ok(
+			!result.block.includes("project_instructions"),
+			"block swallowed the project context that preceded the listing",
+		);
+		assert.ok(
+			!result.block.includes("The following skills"),
+			"block swallowed pi's preamble",
+		);
+	});
+
+	it("a quoted unknown version neither warns nor suppresses the real listing", () => {
+		const prompt = promptQuoting(
+			'A future format may look like <available_skills version="3">.',
+		);
+		let result;
+		const warnings = captureWarns(() => {
+			result = extractSkillsBlock(prompt, { framing: "read-mcp" });
+		});
+		assert.ok(result, "a documented future version disabled skills forwarding");
+		assert.ok(result.block.includes("deep-research"));
+		assert.deepEqual(warnings, [], "warned about a tag that was only being quoted");
+	});
 });
 
 describe("framing variants", () => {
 	it("AC5: skill-tool framing names mcp__custom-tools__skill and never tells the model to read the file", () => {
-		const result = extractSkillsBlockForProvider(V2_PROMPT, [{ name: "skill" }]);
-		assert.ok(result);
+		const result = extractSkillsBlock(V2_PROMPT, { framing: "skill-tool" });
 		assert.ok(result.framing.includes("mcp__custom-tools__skill"));
 		assert.ok(
 			!/read(ing)? the file/i.test(result.framing),
@@ -176,24 +280,13 @@ describe("framing variants", () => {
 	});
 
 	it("AC6: read-mcp framing names mcp__custom-tools__read and never claims a skill tool exists", () => {
-		const result = extractSkillsBlockForProvider(V2_PROMPT, [
-			{ name: "read" },
-			{ name: "bash" },
-		]);
-		assert.ok(result);
+		const result = extractSkillsBlock(V2_PROMPT, { framing: "read-mcp" });
 		assert.ok(result.framing.includes("mcp__custom-tools__read"));
 		assert.ok(!result.framing.includes("mcp__custom-tools__skill"));
 	});
 
-	it("AC6: missing tools list degrades to read-mcp, not a crash", () => {
-		const result = extractSkillsBlockForProvider(V2_PROMPT, undefined);
-		assert.ok(result);
-		assert.ok(result.framing.includes("mcp__custom-tools__read"));
-	});
-
-	it("AC7: AskClaude framing names the native Read tool and never the mcp__custom-tools__ prefix", () => {
-		const result = extractSkillsBlockForAskClaude(V2_PROMPT);
-		assert.ok(result);
+	it("AC7: read-native framing names the native Read tool and never the mcp__custom-tools__ prefix", () => {
+		const result = extractSkillsBlock(V2_PROMPT, { framing: "read-native" });
 		assert.ok(result.framing.includes("Read tool"));
 		assert.ok(
 			!result.framing.includes("mcp__custom-tools__"),
@@ -209,6 +302,69 @@ describe("framing variants", () => {
 				`${framing} framing lost the relative-path line`,
 			);
 		}
+	});
+});
+
+describe("provider call site", () => {
+	const { providerSkillsAppend } = __test;
+
+	it("AC5: with `skill` in context.tools the append names the MCP skill tool", () => {
+		const append = providerSkillsAppend(
+			{ systemPrompt: V2_PROMPT, tools: [{ name: "read" }, { name: "skill" }] },
+			true,
+		);
+		assert.ok(append.includes("mcp__custom-tools__skill"));
+		assert.ok(append.includes(SKILL_LISTING_START_DELIMITER), "listing not forwarded");
+	});
+
+	it("AC6: without `skill` in context.tools the append names the MCP read tool", () => {
+		const append = providerSkillsAppend(
+			{ systemPrompt: V2_PROMPT, tools: [{ name: "read" }, { name: "bash" }] },
+			true,
+		);
+		assert.ok(append.includes("mcp__custom-tools__read"));
+		assert.ok(!append.includes("mcp__custom-tools__skill"));
+	});
+
+	it("AC6: a missing tools list degrades to read-mcp, not a crash", () => {
+		const append = providerSkillsAppend({ systemPrompt: V2_PROMPT }, true);
+		assert.ok(append.includes("mcp__custom-tools__read"));
+	});
+
+	it("appendSystemPrompt: false forwards nothing", () => {
+		assert.strictEqual(
+			providerSkillsAppend(
+				{ systemPrompt: V2_PROMPT, tools: [{ name: "skill" }] },
+				false,
+			),
+			undefined,
+		);
+	});
+});
+
+describe("AskClaude call site", () => {
+	const { askClaudeSkillsAppend } = __test;
+
+	it("AC7: the append names the native Read tool, never the MCP prefix", () => {
+		const append = askClaudeSkillsAppend(V2_PROMPT, undefined, false);
+		assert.ok(append.includes("Read tool"));
+		assert.ok(
+			!append.includes("mcp__custom-tools__"),
+			"naming the MCP tool there points the sub-agent at a tool it does not have",
+		);
+		assert.ok(append.includes(SKILL_LISTING_START_DELIMITER), "listing not forwarded");
+	});
+
+	it("skips the catalog when Read is disallowed (none mode)", () => {
+		assert.strictEqual(askClaudeSkillsAppend(V2_PROMPT, undefined, true), undefined);
+	});
+
+	it("skips the catalog when the caller opts out", () => {
+		assert.strictEqual(askClaudeSkillsAppend(V2_PROMPT, false, false), undefined);
+	});
+
+	it("returns undefined without a system prompt, which leaves the preset off", () => {
+		assert.strictEqual(askClaudeSkillsAppend(undefined, undefined, false), undefined);
 	});
 });
 

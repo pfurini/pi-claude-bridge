@@ -195,6 +195,32 @@ describe("sanitizeHarnessPrompt", () => {
 		}
 	});
 
+	it("keeps the embedded listing when the caller forwarded none", () => {
+		// The forwarding extractor declines a listing version it does not know,
+		// while the prose markers here still match it. Stripping the embedded copy
+		// then leaves the subagent with no catalog from either channel.
+		const span = [
+			"The following skills provide specialized instructions for specific tasks.",
+			"Use the read tool to load a skill's file when the task matches its description.",
+			'<available_skills version="9">',
+			"  <skill><name>br</name><location>/tmp/skills/br/SKILL.md</location></skill>",
+			"</available_skills>",
+		].join("\n");
+		const sourcePrompt = `Parent prompt head.\n\n${span}\n`;
+		const text = `Some custom prompt text.\n\n${span}\n\nTrailer text.`;
+
+		const kept = sanitizeHarnessPrompt(text, { sourcePrompt, skillsForwarded: false });
+		assert.ok(kept.includes("<available_skills"), "stripped a catalog nothing replaced");
+
+		// The project-context half of the dedupe is unaffected by the skills gate.
+		const withContext = `${text}\n\n<project_context>\nrules\n</project_context>`;
+		const deduped = sanitizeHarnessPrompt(withContext, {
+			sourcePrompt: `${sourcePrompt}\n<project_context>\nrules\n</project_context>`,
+			skillsForwarded: false,
+		});
+		assert.ok(!deduped.includes("<project_context>"), "project context dedupe stopped firing");
+	});
+
 	it("passes undefined through unchanged", () => {
 		assert.equal(sanitizeHarnessPrompt(undefined), undefined);
 	});

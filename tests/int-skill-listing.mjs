@@ -149,7 +149,7 @@ test("AC13: with --tools …,skill the framing names the MCP skill tool and a ro
 });
 
 test("AC14: ephemeral effort/model overrides reach Claude Code and expire after their turn", {
-	timeout: 2 * TIMEOUT + 30_000,
+	timeout: 3 * TIMEOUT + 30_000,
 }, async () => {
 	// Downward effort override (upward is clamped on some models — see the
 	// fixtures README for the trap).

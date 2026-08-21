@@ -100,13 +100,19 @@ function removeAllExact(text: string, block: string | undefined): string {
  * gate is on: that is what makes the dedupe provably duplicate-only, since
  * with the gate off an embedded block may be the prompt's only copy.
  *
+ * `skillsForwarded: false` narrows that further, suppressing the skills half of
+ * the dedupe. The gate alone is not enough: the caller's skills extractor can
+ * decline a listing the prose markers here still match (an unrecognized listing
+ * version), and stripping a copy nothing re-forwarded leaves the subagent with
+ * no catalog at all.
+ *
  * A conservative no-op on plain user text or partial anchor matches. Returns
  * `undefined` when nothing but whitespace survives, so the caller can drop
  * the part entirely.
  */
 export function sanitizeHarnessPrompt(
 	text: string | undefined,
-	opts?: { sourcePrompt?: string },
+	opts?: { sourcePrompt?: string; skillsForwarded?: boolean },
 ): string | undefined {
 	if (!text) return text;
 	let result = text;
@@ -163,11 +169,9 @@ export function sanitizeHarnessPrompt(
 			PROJECT_CONTEXT_START,
 			PROJECT_CONTEXT_END,
 		);
-		const skillsBlock = extractRawBlock(
-			opts.sourcePrompt,
-			SKILLS_START,
-			SKILLS_END,
-		);
+		const skillsBlock = opts.skillsForwarded === false
+			? undefined
+			: extractRawBlock(opts.sourcePrompt, SKILLS_START, SKILLS_END);
 		const beforeLength = result.length;
 		result = removeAllExact(result, projectBlock);
 		result = removeAllExact(result, skillsBlock);
