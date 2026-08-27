@@ -100,11 +100,49 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`). The default off both sets the SDK settings layer and passes `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` to the subprocess; opting in drops both.
 - `claudeConfigDir` — absolute path to the Claude Code filesystem profile (default `~/.pi/agent/claude`). Each config file is validated on its own, so an invalid or relative value warns and falls back to the next valid setting (a bad project value falls back to your global one, not to the default). An inherited `CLAUDE_CONFIG_DIR` does not override this setting.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
+- `usageEvents` — publish Claude subscription usage on pi's `pi:provider-usage` event channel (default `true`). See [Usage events](#usage-events) below. An invalid value warns once and falls back to `true`.
 
 
 **Startup notice:** the first interactive session to reach Claude Code lists whichever of `provider.plan` and `askClaude.enabled` you have left unset, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
 
 **Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not currently apply to extension-registered providers (like claude-bridge). Overriding `contextWindow` or other fields requires editing `src/models.ts` directly.
+
+## Usage events
+
+The bridge publishes your Claude subscription usage on pi's shared event bus, on the channel `pi:provider-usage`, so a usage-indicator extension can render it in pi's footer. [`pi-usage-bars`](https://github.com/pfurini/pi-usage-bars) is the reference consumer.
+
+This has to come from the bridge. Claude Code owns its own OAuth session outside pi's credential store, so the bridge registers with a static placeholder credential, and no other extension can authenticate as `claude-bridge` and fetch the numbers itself. **No credential is ever published**: the payload carries only normalized percentages, labels, and timestamps.
+
+**What goes out.** A snapshot on `session_start`, and a refresh whenever Claude Code reports a rate limit event (which is used purely as a "something changed" trigger, never as a data source — it omits utilization while an account is healthy, so publishing it would disagree with the usage endpoint). The numbers themselves always come from `GET /api/oauth/usage`.
+
+```ts
+{
+  v: 1,
+  providerId: "claude-bridge",
+  capturedAt: "2026-08-27T12:00:00.000Z",   // when the numbers were true
+  quotas: [
+    { kind: "session", percent: 32, resetsAt: "2026-08-27T15:30:00.000Z" },
+    { kind: "weekly",  percent: 50, resetsAt: "2026-08-31T07:00:00.000Z" },
+    { kind: "scoped",  label: "Fable", percent: 64, resetsAt: "2026-08-31T07:00:00.000Z" },
+  ],
+  notice: "overage disabled",               // optional
+}
+```
+
+**When it cannot get the numbers**, the bridge says so rather than staying silent:
+
+```ts
+{ v: 1, providerId: "claude-bridge", quotas: [], capturedAt: "…", unavailable: { reason: "usage endpoint returned 503" } }
+```
+
+Silence would be unattributable: a consumer has no HTTP fallback for a bridge-provided provider ID, so a broken publisher and an absent one look identical, and the bar would sit on "waiting" forever. The reason is emitted **on transition**, not per attempt — a provider failing every poll produces one event, not one a minute — and re-emitted only when the reason changes. Recovery needs no separate message: a normal snapshot clears it. Reasons come from a closed set: credentials not found, credentials expired or rejected, rate limited, `usage endpoint returned <status>`, unreachable, unreadable.
+
+**`unavailable.reason` and `notice` are operator-facing text rendered verbatim in another extension's terminal UI.** They never carry a response body, an exception message, a file path, or anything credential-adjacent; the status code is the only dynamic part of a reason. The consumer truncates them to 80 and 120 characters respectively, but the bridge already bounds and strips control characters from both rather than relying on somebody else's sanitizer to make its own output renderable.
+
+**Request rate.** Usage is cached cross-process under the system temp directory, one file per Claude profile, with a 55-second TTL and a lock around the refresh, so twenty concurrent pi sessions cost the same as one. Ordinary failures are cached for 30 seconds and a 429 enters a cooldown starting at two minutes, doubling per consecutive rate limit and capped at thirty, honouring `Retry-After` within those bounds. `CLAUDE_BRIDGE_USAGE_CACHE_DIR` overrides the location.
+
+**Turning it off.** Set `provider.usageEvents` to `false`. Nothing is then emitted and no credential is read at all. Note what that means for a consumer: because a bridge-provided provider ID has no HTTP path of its own, a usage indicator will stay in its "waiting for claude-bridge" state for the whole session rather than falling back to fetching the numbers itself.
+
 
 ## Tests
 
