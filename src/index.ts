@@ -2304,10 +2304,10 @@ export default function (pi: ExtensionAPI) {
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
-		// Fire and forget. A consumer that has not loaded yet is a no-op emit, and
-		// the snapshot is cached cross-process anyway, so the one that loads next
-		// session renders numbers rather than waiting for a first query.
-		if (isProviderOwner) void usagePublisher?.publish();
+		// Deferred past this dispatch loop rather than emitted inline: pi runs
+		// session_start handlers in extension order, so an extension loaded after
+		// the bridge has not subscribed yet and would simply miss the emit.
+		if (isProviderOwner) usagePublisher?.publishOnStartup();
 	});
 	// `--system-prompt` replaces pi's default rather than adding to it, but Claude
 	// Code's preset carries its own tool and permission guidance that the bridge

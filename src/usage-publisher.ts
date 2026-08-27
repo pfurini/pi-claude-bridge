@@ -80,6 +80,7 @@ export class UsagePublisher {
 	// failing every poll should produce one event, not one per minute.
 	private lastUnavailableReason: string | undefined;
 	private pendingForce: { cancel: () => void } | undefined;
+	private pendingStartup: { cancel: () => void } | undefined;
 	private lastForcedAtMs: number | undefined;
 	private inFlight: Promise<void> | undefined;
 
@@ -98,6 +99,32 @@ export class UsagePublisher {
 		this.inFlight = run.catch(() => undefined);
 		return this.inFlight;
 	}
+
+	/**
+	 * Publishes once the whole startup has settled, rather than during it.
+	 *
+	 * Pi dispatches session_start sequentially in extension order, so an emit
+	 * made inside this bridge's own handler reaches only the subscribers that
+	 * came before it: an extension loaded after the bridge has not subscribed
+	 * yet, and a fire-and-forget emit to nobody is simply lost. Measured, not
+	 * assumed -- a probe extension received the snapshot when loaded first and
+	 * nothing at all when loaded second.
+	 *
+	 * That matters more than it looks, because unavailability is emitted on
+	 * transition: a missed first emit is not re-sent later, so a consumer would
+	 * sit on "waiting" for the whole session while the bridge believed it had
+	 * already reported the failure. Deferring past the dispatch loop makes the
+	 * load order immaterial, which is what the cross-repo integration check
+	 * requires.
+	 */
+	publishOnStartup(): void {
+		this.pendingStartup?.cancel();
+		this.pendingStartup = this.schedule(() => {
+			this.pendingStartup = undefined;
+			void this.publish();
+		}, 0);
+	}
+
 
 	/**
 	 * Records a rate limit event. The event is a trigger only: nothing it carries
@@ -120,6 +147,13 @@ export class UsagePublisher {
 	dispose(): void {
 		this.pendingForce?.cancel();
 		this.pendingForce = undefined;
+		this.pendingStartup?.cancel();
+		this.pendingStartup = undefined;
+	}
+
+	/** Resolves once any refresh already under way has finished, without starting one. */
+	settled(): Promise<void> {
+		return this.inFlight ?? Promise.resolve();
 	}
 
 	private async refresh(options: { force?: boolean }): Promise<void> {

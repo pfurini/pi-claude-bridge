@@ -93,8 +93,9 @@ function harness(options = {}) {
 				entry.ran = true;
 				entry.fn();
 			}
-			// Let the refresh the callback kicked off settle before asserting.
-			await publisher.publish();
+			// Await the refresh the callback kicked off without starting another,
+			// so a count assertion measures the trigger and nothing else.
+			await publisher.settled();
 		},
 		cleanup: () => { publisher.dispose(); rmSync(dir, { recursive: true, force: true }); },
 	};
@@ -194,6 +195,37 @@ describe("publishing a usage snapshot", () => {
 			assert.ok(!readFileSync(test.cacheFile, "utf8").includes("sk-ant"));
 		});
 	});
+
+	it("defers the startup publish past the session_start dispatch loop", async () => {
+		await withHarness({}, async (test) => {
+			test.publisher.publishOnStartup();
+
+			// Nothing yet: pi runs session_start handlers in extension order, so an
+			// emit made inside this bridge's own handler reaches only the
+			// subscribers loaded before it. Measured with a probe extension, which
+			// received the snapshot when loaded first and nothing when loaded
+			// second. It matters because unavailability is emitted on transition:
+			// a missed first emit is never re-sent, so the consumer would sit on
+			// "waiting" all session while the bridge believed it had reported.
+			assert.deepEqual(test.emitted, []);
+			assert.deepEqual(test.scheduled.map((entry) => entry.ms), [0]);
+
+			await test.runPending();
+			assert.equal(test.emitted.length, 1);
+		});
+	});
+
+	it("drops a deferred startup publish on dispose", () => {
+		const test = harness();
+		try {
+			test.publisher.publishOnStartup();
+			test.publisher.dispose();
+			assert.deepEqual(test.scheduled.filter((entry) => !entry.cancelled), []);
+		} finally {
+			test.cleanup();
+		}
+	});
+
 
 	it("is fire-and-forget: a throwing subscriber never surfaces (B4.10)", async () => {
 		await withHarness({
@@ -404,7 +436,7 @@ describe("the provider.usageEvents gate", () => {
 		const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
 		assert.ok(source.includes("normalizeUsageEvents(providerSettings.usageEvents)"),
 			"the gate must decide whether the publisher exists, not whether it emits");
-		assert.ok(source.includes("void usagePublisher?.publish()"));
+		assert.ok(source.includes("usagePublisher?.publishOnStartup()"));
 		assert.ok(source.includes("usagePublisher?.noteRateLimitEvent()"));
 	});
 });
