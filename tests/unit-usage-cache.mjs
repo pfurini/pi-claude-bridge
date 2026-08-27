@@ -352,14 +352,52 @@ describe("usage cache: locking", () => {
 		});
 	});
 
-	it("restores a lock it detached but does not own", async () => {
+	it("leaves a lock alone when it is not the instance expected (B1.7)", async () => {
 		await withTempCache((cacheFile) => {
 			const lockFile = `${cacheFile}.lock`;
 			writeFileSync(lockFile, JSON.stringify({ owner: "real-holder", pid: 1, beats: true }));
 
 			assert.equal(removeLockInstance(lockFile, "someone-else"), false);
-			assert.ok(existsSync(lockFile), "a lock that was not ours must be put back");
+			assert.ok(existsSync(lockFile), "a lock that was not ours must be left alone");
 			assert.equal(readOwner(lockFile), "real-holder");
+		});
+	});
+
+	it("is best-effort dedupe rather than mutual exclusion (B1.14)", async () => {
+		// The window between reading the owner and unlinking cannot be closed with
+		// path-based files, and the rename-aside protocol that looks like it closes
+		// it is worse: it leaves the path absent for the whole check, so a third
+		// process can create in the gap and co-hold. pi-usage-bars shipped and
+		// reverted exactly that (237fb35, 0300ace). What makes losing a race
+		// survivable is that nothing depends on the lock for integrity.
+		const source = readFileSync(new URL("../src/usage-cache.ts", import.meta.url), "utf8");
+		assert.ok(!/\blinkSync/.test(source), "no link-back restore: that is the reverted protocol");
+		assert.ok(!source.includes(".claim-"), "no rename-aside takeover (B1.14)");
+		// The cache write is atomic on its own, so a duplicate refresh costs one
+		// request and never a corrupt file.
+		assert.ok(source.includes("renameSync(tempFile, cacheFile)"));
+	});
+
+	it("beats a descriptor, so a released holder cannot refresh a successor's lock (B1.15)", async () => {
+		await withTempCache(async (cacheFile) => {
+			const lockFile = `${cacheFile}.lock`;
+			const first = await acquireUsageLock(lockFile, { waitMs: 50 });
+			assert.ok(first);
+
+			// The first holder is reclaimed and a successor takes the path. The
+			// successor writes no heartbeat of its own, so any refresh of its mtime
+			// can only have come from the first holder's timer -- give it one and
+			// the test proves nothing.
+			removeLockInstance(lockFile, readOwner(lockFile));
+			writeFileSync(lockFile, JSON.stringify({ owner: "successor", pid: 2, beats: true }));
+			const aged = new Date(Date.now() - 30_000);
+			utimesSync(lockFile, aged, aged);
+
+			await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+			assert.ok(Date.now() - statSync(lockFile).mtimeMs >= 29_000,
+				"the superseded holder's beat extended the successor's lease");
+			first.release();
 		});
 	});
 

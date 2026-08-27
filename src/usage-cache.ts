@@ -16,15 +16,13 @@ import { createHash, randomBytes } from "node:crypto";
 import {
 	chmodSync,
 	closeSync,
-	existsSync,
-	linkSync,
+	futimesSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
 	renameSync,
 	statSync,
 	unlinkSync,
-	utimesSync,
 	writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -186,6 +184,14 @@ function safeUnlink(path: string): void {
 	}
 }
 
+function closeQuietly(fd: number): void {
+	try {
+		closeSync(fd);
+	} catch {
+		// Already closed or invalid; the unlink is what releases the lock.
+	}
+}
+
 interface LockContents {
 	owner: string;
 	pid: number;
@@ -206,52 +212,27 @@ function staleThresholdFor(contents: LockContents | null): number {
 	return contents?.beats === true ? LOCK_STALE_MS : LEGACY_LOCK_STALE_MS;
 }
 
-// Removes one specific lock instance, or nothing at all.
+// Removes a lock only while it still appears to be the one we mean.
 //
-// Reading the owner and then unlinking the path is a check-then-act with a
-// window in between, so a lock replaced inside that window is destroyed by
-// whoever held the stale reading. `rename` has no such window: it detaches the
-// file from the path in one step, and a second caller racing for the same
-// instance gets ENOENT rather than operating on its successor.
+// This is check-then-act and has a window: a lock replaced between the read and
+// the unlink is destroyed by whoever held the stale reading. That window cannot
+// be closed with path-based files, and the obvious fix is worse. Renaming the
+// lock aside to verify it leaves the canonical path *absent* for the whole
+// check, so a third process can O_EXCL-create in the gap and co-hold with the
+// holder being verified, while the link-back restore loses that race with
+// EEXIST. `pi-usage-bars` shipped that protocol and reverted it (237fb35,
+// 0300ace); B1.14 now prohibits it here.
 //
-// Taking the file off the path before inspecting it means we can briefly hold a
-// lock that turns out not to be ours, so the mismatch path puts it back with
-// `link`, which fails rather than clobbering when a new lock already exists —
-// precisely the case where we must not win.
+// So this lock is **best-effort deduplication, not mutual exclusion**. Nothing
+// depends on it for integrity: losing a race costs one duplicate request, never
+// a corrupt cache, because the write itself is atomic on its own.
 export function removeLockInstance(lockFile: string, expectedOwner: string | null): boolean {
-	const claimPath = `${lockFile}.claim-${process.pid}-${randomBytes(6).toString("hex")}`;
-	try {
-		renameSync(lockFile, claimPath);
-	} catch {
-		return false;
-	}
-
-	if ((readLockFile(claimPath)?.owner ?? null) !== expectedOwner) {
-		restoreLock(claimPath, lockFile);
-		return false;
-	}
-	safeUnlink(claimPath);
+	const current = readLockFile(lockFile)?.owner ?? null;
+	// An unreadable owner means the file is corrupt or predates this format, and
+	// is treated as abandoned rather than left to wedge the path forever.
+	if (current !== null && current !== expectedOwner) return false;
+	safeUnlink(lockFile);
 	return true;
-}
-
-function restoreLock(claimPath: string, lockFile: string): void {
-	try {
-		linkSync(claimPath, lockFile);
-	} catch (error) {
-		// EEXIST means a new lock appeared while we were checking, so the path is
-		// legitimately its holder's and ours is the one to discard. Anything else
-		// (a filesystem without hard links) falls back to a rename, but only while
-		// the path is free, so a newer lock is still never clobbered.
-		if ((error as NodeJS.ErrnoException)?.code !== "EEXIST" && !existsSync(lockFile)) {
-			try {
-				renameSync(claimPath, lockFile);
-				return;
-			} catch {
-				// Nothing left to try: the next exclusive create wins the path.
-			}
-		}
-	}
-	safeUnlink(claimPath);
 }
 
 export interface LockHandle {
@@ -276,18 +257,22 @@ export async function acquireUsageLock(
 	for (;;) {
 		let fd: number | undefined;
 		try {
+			// The descriptor stays open for as long as the lock is held, so the
+			// heartbeat refreshes this exact inode rather than whatever the path
+			// points at later. Touching the path instead would be check-then-act:
+			// a lock replaced between the owner read and the touch would have
+			// somebody else's lease extended by our beat.
 			fd = openSync(lockFile, "wx", 0o600);
 			write(fd, JSON.stringify(contents));
-			closeSync(fd);
-			fd = undefined;
 
+			const held = fd;
 			const heartbeat = setInterval(() => {
 				try {
 					const stamp = new Date();
-					utimesSync(lockFile, stamp, stamp);
+					futimesSync(held, stamp, stamp);
 				} catch {
-					// The lock is gone (reclaimed, or the directory was removed).
-					// Nothing to refresh; release() still runs its ownership check.
+					// Closed or unlinked. A reclaimed holder's beat lands on an
+					// orphaned inode and does nothing, which is the point.
 				}
 			}, LOCK_HEARTBEAT_MS);
 			heartbeat.unref?.();
@@ -295,20 +280,17 @@ export async function acquireUsageLock(
 			return {
 				release: () => {
 					clearInterval(heartbeat);
-					// Only ever removes the instance we wrote, so a holder whose lock
-					// was reclaimed as stale cannot delete its successor's lock.
+					closeQuietly(held);
+					// Only removes the lock while it still looks like ours, so a
+					// holder reclaimed as stale does not delete its successor's.
 					removeLockInstance(lockFile, owner);
 				},
 			};
 		} catch (error) {
-			// An exception between create and close would otherwise leak the
+			// An exception between create and the return would otherwise leak the
 			// descriptor and orphan a lock file nobody owns.
 			if (fd !== undefined) {
-				try {
-					closeSync(fd);
-				} catch {
-					// Already closed.
-				}
+				closeQuietly(fd);
 				safeUnlink(lockFile);
 			}
 			if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") return null;
