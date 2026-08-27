@@ -56,6 +56,12 @@ export interface Config {
 		// Enables Fable 5 on Pro, Sonnet 4.6 [1m] on every plan, and Opus 4.6
 		// [1m] on Pro.
 		longContextExtraUsage?: boolean;
+		// Publish Claude subscription usage on pi's pi:provider-usage channel, so
+		// a usage indicator can render it. DEFAULT true. No credential is shared:
+		// only normalized percentages, labels and timestamps go out. Turning it
+		// off leaves a consumer permanently waiting rather than falling back to
+		// its own HTTP fetch, because a bridge-provided model id has no such path.
+		usageEvents?: boolean;
 	};
 }
 
@@ -144,6 +150,22 @@ export function normalizeClaudeConfigDir(
 		console.warn(warning);
 	}
 	return fallback;
+}
+
+// Same shape as normalizeClaudeConfigDir, including the warn-once set: an
+// invalid value falls back to the default rather than disabling the feature by
+// accident, because a typo should not silently take a usage bar away.
+const warnedUsageEvents = new Set<string>();
+
+export function normalizeUsageEvents(value: unknown): boolean {
+	if (value === undefined) return true;
+	if (typeof value === "boolean") return value;
+	const warning = `claude-bridge: invalid provider.usageEvents ${JSON.stringify(value)}; using true`;
+	if (!warnedUsageEvents.has(warning)) {
+		warnedUsageEvents.add(warning);
+		console.warn(warning);
+	}
+	return true;
 }
 
 // The agent dir backing a session. pi.createAgentSession({ agentDir }) lets a

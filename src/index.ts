@@ -16,8 +16,9 @@ import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, SKILL_TOOL_NAME, extractSkillsBlock }
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx, drainForAbort, reapLiveQueriesIfOwner } from "./query-state.js";
-import { loadConfig, loadDirs, markStartupNoticeShown, sessionAgentDir, type Config } from "./config.js";
+import { loadConfig, loadDirs, markStartupNoticeShown, normalizeUsageEvents, sessionAgentDir, type Config } from "./config.js";
 import { defaultClaudeConfigDir } from "./claude-config.js";
+import { UsagePublisher } from "./usage-publisher.js";
 import { extractProjectContextBlock } from "./project-context.js";
 import { sanitizeHarnessPrompt } from "./sanitize-prompt.js";
 import { steeringAppendFor } from "./steering.js";
@@ -148,6 +149,12 @@ reportMissingModelIds(PI_AI_MODELS);
 // the session_start handler.
 let providerSettings: NonNullable<Config["provider"]> = {};
 let effectiveClaudeConfigDir = defaultClaudeConfigDir();
+// Publishes subscription usage on pi:provider-usage. Owned by the provider
+// owner alone, for the same reason effectiveClaudeConfigDir is: a second
+// same-cwd session sharing this module must not repoint the profile whose usage
+// is being reported. Undefined when provider.usageEvents is off, which is what
+// makes the opt-out a genuine silence rather than a suppressed emit.
+let usagePublisher: UsagePublisher | undefined;
 // Load-time only, unlike the three above. applyLongContext() bakes these into
 // the model list pi registers, and pi flushes registrations before the first
 // event fires, so session_start cannot correct them. Re-reading them per
@@ -1439,6 +1446,11 @@ function processRateLimitMessage(message: SDKMessage): void {
 		const utilization = rateLimitUtilizationPercent(info.utilization);
 		piUI?.notify(`Claude rate limit warning: ${utilization}% used (${info.rateLimitType ?? ""})`, "warning");
 	}
+	// A trigger, never a source. This event omits utilization while an account is
+	// healthy, so rendering it would publish a partial picture that disagrees with
+	// the usage endpoint's; it only says "something changed", and the refresh it
+	// schedules is what produces the numbers (D6, D10).
+	usagePublisher?.noteRateLimitEvent();
 }
 
 /** Background consumer: iterates the SDK generator, pushing events to currentPiStream.
@@ -2199,6 +2211,20 @@ export default function (pi: ExtensionAPI) {
 	const applyProviderConfig = (config: Config) => {
 		providerSettings = config.provider ?? {};
 		effectiveClaudeConfigDir = providerSettings.claudeConfigDir ?? defaultClaudeConfigDir();
+
+		// Rebuilt rather than reconfigured, so a profile change starts from a
+		// clean transition state: the "already reported this failure" memory
+		// belongs to one profile's story, not to the process.
+		usagePublisher?.dispose();
+		usagePublisher = normalizeUsageEvents(providerSettings.usageEvents)
+			? new UsagePublisher({
+				emit: (channel, payload) => pi.events.emit(channel, payload),
+				// Read at publish time, not captured: session_start re-applies the
+				// profile, and a publisher pinned to the load-time one would report
+				// the wrong account's quota for the rest of the session.
+				claudeConfigDir: () => effectiveClaudeConfigDir,
+			})
+			: undefined;
 	};
 
 	// Claimed before anything is applied, because this factory body is itself a
@@ -2278,6 +2304,10 @@ export default function (pi: ExtensionAPI) {
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
+		// Fire and forget. A consumer that has not loaded yet is a no-op emit, and
+		// the snapshot is cached cross-process anyway, so the one that loads next
+		// session renders numbers rather than waiting for a first query.
+		if (isProviderOwner) void usagePublisher?.publish();
 	});
 	// `--system-prompt` replaces pi's default rather than adding to it, but Claude
 	// Code's preset carries its own tool and permission guidance that the bridge
@@ -2296,6 +2326,9 @@ export default function (pi: ExtensionAPI) {
 		// also runs on session_start (new/resume/fork) and would kill live queries on /new.
 		reapLiveQueriesIfOwner(isProviderOwner, activeQueryContexts, "session_shutdown");
 		clearSession("session_shutdown");
+		// A debounced refresh outliving the session would publish into a torn-down
+		// bus and keep a timer alive past teardown.
+		if (isProviderOwner) usagePublisher?.dispose();
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
