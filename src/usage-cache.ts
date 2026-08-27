@@ -372,6 +372,11 @@ export function backoffAfter429(consecutive429s: number, retryAfterMs?: number):
 	return Math.min(Math.max(retryAfterMs, exponential), MAX_BACKOFF_MS);
 }
 
+function formatWait(waitMs: number): string {
+	const minutes = Math.round(waitMs / 60_000);
+	return minutes >= 1 ? `${minutes}m` : `${Math.max(1, Math.round(waitMs / 1_000))}s`;
+}
+
 export async function loadUsageThroughCache(options: UsageLoadOptions): Promise<UsageLoadResult> {
 	const now = options.nowMs ?? (() => Date.now());
 	const ttlMs = options.ttlMs ?? USAGE_TTL_MS;
@@ -422,11 +427,17 @@ export async function loadUsageThroughCache(options: UsageLoadOptions): Promise<
 			return { snapshot: outcome.snapshot, source: "fetch" };
 		}
 
-		const reason = outcome.reason ?? "usage unavailable";
 		const consecutive429s = outcome.rateLimited ? (state.consecutive429s ?? 0) + 1 : 0;
 		const waitMs = outcome.rateLimited
 			? backoffAfter429(consecutive429s, outcome.retryAfterMs)
 			: FAILURE_RETRY_MS;
+		// A rate limit gets its retry hint here rather than at the fetch, because
+		// this is where the wait is actually decided. It is computed, never quoted
+		// from upstream text, and it is fixed once: recomputing it on every read
+		// would change the reason string each poll and make a publisher that emits
+		// on transition emit continuously instead.
+		const reason = (outcome.reason ?? "usage unavailable") +
+			(outcome.rateLimited ? ` (retry in ${formatWait(waitMs)})` : "");
 		writeUsageCacheState(options.cacheFile, {
 			...state,
 			nextAttemptAtMs: completedAt + waitMs,
