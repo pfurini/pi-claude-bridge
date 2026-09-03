@@ -2428,11 +2428,12 @@ export default function (pi: ExtensionAPI) {
 	// Branch summarization — rewind or fork-at-point with "summarize" — is the other
 	// place pi asks the model for a summary, and unlike compaction it runs through
 	// the *agent's* stream function (agent-session passes `streamFn:
-	// this.agent.streamFunction`). On a bridge model that reaches this provider
-	// carrying pi's internal summarization prompt, which no `before_agent_start`
-	// ever recorded, so the prompt-capture resolver has nothing to resolve it to.
+	// this.agent.streamFunction`). On a bridge model it therefore reaches this
+	// provider carrying pi's internal summarization prompt, which holds neither the
+	// `<project_context>` block nor the skills listing the provider path extracts,
+	// so there is nothing in it to forward.
 	// Take it over the way compaction is taken over: the summary runs as its own
-	// Claude Code subprocess, never touching the live session or the resolver.
+	// Claude Code subprocess, never touching the live session.
 	pi.on("session_before_tree", async (event, ctx) => {
 		if (ctx.model?.baseUrl !== "claude-bridge") return undefined;
 		const { entriesToSummarize, userWantsSummary, customInstructions, replaceInstructions } = event.preparation;

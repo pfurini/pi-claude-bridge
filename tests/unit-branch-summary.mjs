@@ -7,10 +7,10 @@
  * Unlike compaction, pi runs it through the *agent's* stream function
  * (agent-session passes `streamFn: this.agent.streamFunction`), so on a bridge
  * model it arrives at streamClaudeAgentSdk carrying pi's internal summarization
- * prompt — which no `before_agent_start` ever recorded, and which the
- * prompt-capture resolver therefore refuses. Taking the event over is what keeps
- * that from happening; these pin the guard, not the summary itself, which would
- * need a Claude Code subprocess.
+ * prompt — which holds neither the `<project_context>` block nor the skills
+ * listing the provider path extracts, so it has nothing to forward. Taking the
+ * event over is what keeps that from happening; these pin the guard, not the
+ * summary itself, which would need a Claude Code subprocess.
  */
 
 import { describe, it } from "node:test";
