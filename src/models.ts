@@ -3,12 +3,26 @@ import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 // Canonical selection + display order for the model picker.
 // `resolveModel` returns the first partial match, so `opus` resolves to the first-listed opus entry.
 // Extracted from index.ts so tests can import without activating the extension.
+//
+// ORDERING CONSTRAINT: `claude-fable-5` must stay ahead of `claude-fable-5-1`.
+// resolveModel matches with `includes`, and "claude-fable-5-1".includes("claude-fable-5")
+// is true, so listing 5.1 first makes the exact id `claude-fable-5` resolve to 5.1.
+// The same trap applies to any future id that extends an existing one. A consequence:
+// the bare `fable` shortcut resolves to Fable 5, so 5.1 is selected by its full id.
 
-export const MODEL_IDS_IN_ORDER = ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
+export const MODEL_IDS_IN_ORDER = ["claude-fable-5", "claude-fable-5-1", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
 
-// pi-ai release that first shipped every id in MODEL_IDS_IN_ORDER (matches the
-// peerDependency floor). Named in the missing-row diagnostic below.
-export const REQUIRED_PI_AI_VERSION = "0.82.1";
+// pi-ai release that first shipped every id in MODEL_IDS_IN_ORDER. Named in the
+// missing-row diagnostic below.
+//
+// This is the version of the pi FORK this bridge is developed against, and it is
+// ahead of the peerDependency floor. No published pi-ai supplies `claude-fable-5-1`:
+// registry 0.84.4 carries only `claude-fable-5`, while the fork's catalog is
+// regenerated from models.dev and does carry it, and the two report the same version
+// number. A version comparison therefore cannot prove the row is present —
+// reportMissingModelIds checks for the ids themselves, which is the check that
+// actually holds, and this constant only tells the operator where to get them.
+export const REQUIRED_PI_AI_VERSION = "0.84.4";
 
 // Fallback maps for pi-ai releases older than the peer floor, where Sonnet 5 and
 // Sonnet 4.6 ship no thinkingLevelMap and getSupportedThinkingLevels therefore
@@ -118,7 +132,15 @@ export type ClaudeCodeRuntimeModel = {
 const TWO_HUNDRED_K_CONTEXT = 200_000;
 const ONE_M_CONTEXT = 1_000_000;
 
-const FABLE_MODEL_IDS = new Set(["fable", "claude-fable-5"]);
+// Fable is the one family gated by subscription tier rather than by context size.
+//
+// claude-fable-5-1 is gated on the same terms as Fable 5. That is the fail-closed
+// choice, not a measurement: the eligibility probe was run on a Max account, where
+// every Fable id is available, so Pro-without-Extra-Usage was never exercised. If
+// 5.1 turns out to be unrestricted on Pro, this hides it from Pro users and the fix
+// is to drop the id here; the opposite error would send them a raw Anthropic refusal
+// instead of the actionable message below.
+const FABLE_MODEL_IDS = new Set(["fable", "claude-fable-5", "claude-fable-5-1"]);
 
 export function isClaudeCodeModelAvailable(modelId: string, settings: LongContextSettings): boolean {
 	const bareModelId = modelId.toLowerCase().replace(/\[1m\]$/, "");
@@ -128,7 +150,7 @@ export function isClaudeCodeModelAvailable(modelId: string, settings: LongContex
 export function assertClaudeCodeModelAvailable(modelId: string, settings: LongContextSettings): void {
 	if (isClaudeCodeModelAvailable(modelId, settings)) return;
 	throw new Error(
-		"Claude Fable 5 requires either a Max plan or Extra Usage on Pro. " +
+		"Claude Fable requires either a Max plan or Extra Usage on Pro. " +
 		"Set provider.plan to \"max\" when applicable, or enable Extra Usage and set " +
 		"provider.longContextExtraUsage to true.",
 	);
@@ -161,6 +183,14 @@ export function resolveClaudeCodeRuntimeModel(modelId: string, settings: LongCon
 		}
 		case "claude-fable-5":
 			return { cliModelId: "claude-fable-5[1m]", contextWindow: ONE_M_CONTEXT };
+		// Fable 5.1 is native 1M on the bare id, unlike Fable 5 directly above, which
+		// still needs the suffix. Measured on Claude Code 2.1.259 (Max account): both
+		// `claude-fable-5-1` and `claude-fable-5-1[1m]` report modelUsage contextWindow
+		// 1000000, so the bare form is preferred for the same reason as Opus 5 — it is
+		// what Claude Code echoes back as canonical. Requires CC >=2.1.251; older builds
+		// reject the id with a 400 that names the required version.
+		case "claude-fable-5-1":
+			return { cliModelId: "claude-fable-5-1", contextWindow: ONE_M_CONTEXT };
 		case "claude-sonnet-5":
 			return { cliModelId: "claude-sonnet-5[1m]", contextWindow: ONE_M_CONTEXT };
 		case "claude-sonnet-4-6":

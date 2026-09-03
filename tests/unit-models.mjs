@@ -192,12 +192,15 @@ describe("claudeCodeModelId", () => {
 		assert.equal(claudeCodeModelId(find(models, "claude-opus-4-6"), MAX), "claude-opus-4-6[1m]");
 		assert.equal(claudeCodeModelId(find(models, "claude-fable-5"), MAX), "claude-fable-5[1m]");
 		assert.equal(claudeCodeModelId(find(models, "claude-fable-5"), EXTRA), "claude-fable-5[1m]");
+		// 5.1 is native 1M on the bare id where 5 needs the suffix — measured on CC 2.1.259.
+		assert.equal(claudeCodeModelId(find(models, "claude-fable-5-1"), MAX), "claude-fable-5-1");
+		assert.equal(claudeCodeModelId(find(models, "claude-fable-5-1"), EXTRA), "claude-fable-5-1");
 		assert.equal(claudeCodeModelId(find(models, "claude-sonnet-4-6"), EXTRA), "claude-sonnet-4-6[1m]");
 		assert.equal(claudeCodeModelId(find(models, "claude-haiku-4-5"), EXTRA), "claude-haiku-4-5");
 	});
 
-	it("rejects Fable 5 on Pro without Extra Usage", () => {
-		const unavailable = /Claude Fable 5 requires either a Max plan or Extra Usage on Pro/;
+	it("rejects the Fable family on Pro without Extra Usage", () => {
+		const unavailable = /Claude Fable requires either a Max plan or Extra Usage on Pro/;
 		assert.throws(
 			() => claudeCodeModelId(find(models, "claude-fable-5"), PRO),
 			unavailable,
@@ -206,11 +209,26 @@ describe("claudeCodeModelId", () => {
 			() => assertClaudeCodeModelAvailable("claude-fable-5[1m]", PRO),
 			unavailable,
 		);
-		for (const id of ["fable", "claude-fable-5", "claude-fable-5[1m]"]) {
+		// 5.1 is gated on the same terms as 5. Fail-closed rather than measured: the
+		// eligibility probe ran on Max, so Pro-without-Extra-Usage was never exercised.
+		assert.throws(
+			() => claudeCodeModelId(find(models, "claude-fable-5-1"), PRO),
+			unavailable,
+		);
+		for (const id of ["fable", "claude-fable-5", "claude-fable-5[1m]", "claude-fable-5-1"]) {
 			assert.equal(isClaudeCodeModelAvailable(id, PRO), false);
 		}
-		assert.equal(isClaudeCodeModelAvailable("claude-fable-5", MAX), true);
-		assert.equal(isClaudeCodeModelAvailable("claude-fable-5", EXTRA), true);
+		for (const id of ["claude-fable-5", "claude-fable-5-1"]) {
+			assert.equal(isClaudeCodeModelAvailable(id, MAX), true);
+			assert.equal(isClaudeCodeModelAvailable(id, EXTRA), true);
+		}
+	});
+
+	it("keeps the exact Fable 5 id from resolving to 5.1", () => {
+		// resolveModel matches with `includes`, so list order is load-bearing here.
+		assert.equal(resolveModel(models, "claude-fable-5").id, "claude-fable-5");
+		assert.equal(resolveModel(models, "claude-fable-5-1").id, "claude-fable-5-1");
+		assert.equal(resolveModel(models, "fable").id, "claude-fable-5");
 	});
 });
 

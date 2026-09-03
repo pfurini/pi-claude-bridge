@@ -65,7 +65,7 @@ describe("installed pi-ai catalog", () => {
 /**
  * Intentional canary, not a logic test.
  *
- * Snapshot taken from @earendil-works/pi-ai 0.82.1. It is EXPECTED to need
+ * Snapshot taken from the pi fork's @earendil-works/pi-ai 0.84.4. It is EXPECTED to need
  * updating whenever pi-ai changes a thinkingLevelMap — that is the point. When it
  * fails, confirm the new mapping against the catalog, then update the table here
  * and changelog any user-visible effort change. Do not weaken it into a
@@ -74,9 +74,10 @@ describe("installed pi-ai catalog", () => {
  * Precedent: pi-ai 0.80.3 → 0.82.1 silently moved Sonnet 5 from the bridge's
  * xhigh→max fallback to a real xhigh→xhigh tier. Nothing caught it.
  */
-const EFFORT_SNAPSHOT_PI_AI_VERSION = "0.82.1";
+const EFFORT_SNAPSHOT_PI_AI_VERSION = "0.84.4";
 const EFFORT_SNAPSHOT = {
 	"claude-fable-5": { xhigh: "xhigh", max: "max" },
+	"claude-fable-5-1": { xhigh: "xhigh", max: "max" },
 	"claude-opus-5": { xhigh: "xhigh", max: "max" },
 	"claude-opus-4-8": { xhigh: "xhigh", max: "max" },
 	"claude-opus-4-7": { xhigh: "xhigh", max: "max" },
