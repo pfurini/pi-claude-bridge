@@ -22,10 +22,16 @@ const ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS = [
 	"RemoteTrigger",
 ];
 
-// None mode must block both the current Task/Workflow family and transitional
-// delegation names. Read and full modes intentionally retain delegation access.
+// None mode must block the current Task/Workflow family, transitional delegation
+// names, and the agent roster itself. Read and full modes intentionally retain
+// delegation access.
+//
+// ListAgents enumerates configured agents. It is new in Claude Code 2.1.259 and
+// was measured leaking into none mode's inventory on the bump from 2.1.220, which
+// is why it is named here rather than assumed to be covered by the family above.
 const ASKCLAUDE_DELEGATION_TOOLS = [
 	"Agent",
+	"ListAgents",
 	"Task",
 	"TaskCreate",
 	"TaskGet",
@@ -77,6 +83,9 @@ export function getAskClaudeToolPolicy(mode: unknown): AskClaudeToolPolicy {
 				"ExitWorktree",
 				"CronCreate",
 				"CronDelete",
+				// Read-only, but none mode's contract is no tools at all. Measured leaking
+				// into none's inventory on 2.1.220 as well, so this is not a 2.1.259 regression.
+				"CronList",
 				"TeamCreate",
 				"TeamDelete",
 				"WebFetch",

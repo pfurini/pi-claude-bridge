@@ -522,11 +522,11 @@ async function captureExecutableSelection(pathToClaudeCodeExecutable) {
   return { messages, spawn: spawns[0] };
 }
 
-// Pinned target of the 2.1.220 / Opus 5 update. A dependency bump that moves
-// either number must be a deliberate edit here, with the plan's verification
-// re-run — not a silent drift.
-const TARGET_AGENT_SDK_VERSION = "0.3.220";
-const TARGET_CLAUDE_CODE_VERSION = "2.1.220";
+// Pinned target of the 2.1.259 bump (Fable 5.1 needs CC >=2.1.251). A dependency
+// bump that moves either number must be a deliberate edit here, with the plan's
+// verification re-run — not a silent drift.
+const TARGET_AGENT_SDK_VERSION = "0.3.259";
+const TARGET_CLAUDE_CODE_VERSION = "2.1.259";
 
 function agentSdkMetadata() {
   const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
@@ -573,20 +573,11 @@ describe("Claude Code executable resolution", () => {
 
     assert.equal(init.claude_code_version, agentSdkMetadata().claudeCodeVersion);
     assert.equal(init.claude_code_version, TARGET_CLAUDE_CODE_VERSION);
-    for (const tool of [
-      "Task",
-      "TaskCreate",
-      "TaskGet",
-      "TaskList",
-      "TaskOutput",
-      "TaskStop",
-      "TaskUpdate",
-      "Workflow",
-      "ReportFindings",
-      "SendMessage",
-    ]) {
-      assert.ok(init.tools.includes(tool), `target inventory should expose ${tool}`);
-    }
+    // The delegation family is asserted against the `full` inventory below, not
+    // here: Claude Code 2.1.259 gates the default inventory behind ToolSearch, so a
+    // bare query no longer lists Grep, Glob, TaskCreate, TaskGet, TaskList or
+    // TaskUpdate eagerly. Every AskClaude mode disables ToolSearch, so the bridge
+    // always sees the eager inventory — pinning `full` pins what it actually gets.
     for (const transitionalName of ["Agent", "RemoteTrigger"]) {
       assert.ok(
         !init.tools.includes(transitionalName),
@@ -606,9 +597,30 @@ describe("Claude Code executable resolution", () => {
     for (const tool of ["Write", "Edit", "Bash"]) {
       assert.ok(!inventories.read.has(tool), `target read mode should block ${tool}`);
     }
-    for (const tool of ["Read", "Grep", "Glob", "Write", "Bash", "Task", "Workflow"]) {
+    // Full mode is the eager inventory the bridge actually receives, so this is
+    // where the delegation family is pinned by its current names.
+    for (const tool of [
+      "Read",
+      "Grep",
+      "Glob",
+      "Write",
+      "Bash",
+      "Task",
+      "TaskCreate",
+      "TaskGet",
+      "TaskList",
+      "TaskOutput",
+      "TaskStop",
+      "TaskUpdate",
+      "Workflow",
+      "ReportFindings",
+      "SendMessage",
+    ]) {
       assert.ok(inventories.full.has(tool), `target full mode should expose ${tool}`);
     }
+    // Agent is not blocked in full mode, so its absence is evidence about Claude
+    // Code rather than about our own policy.
+    assert.ok(!inventories.full.has("Agent"), "target full mode should not expose legacy Agent");
     for (const tool of ["ToolSearch", "ScheduleWakeup"]) {
       assert.ok(!inventories.full.has(tool), `target full mode should block ${tool}`);
     }
@@ -631,9 +643,17 @@ describe("Claude Code executable resolution", () => {
       "Workflow",
       "ReportFindings",
       "SendMessage",
+      // Enumeration tools, read-only but still tools: ListAgents arrived with
+      // 2.1.259, CronList was already leaking on 2.1.220.
+      "ListAgents",
+      "CronList",
     ]) {
       assert.ok(!inventories.none.has(tool), `target none mode should block ${tool}`);
     }
+    // none mode's contract is no tools at all, so pin the whole set empty rather
+    // than only the names we thought to list.
+    assert.deepEqual([...inventories.none].sort(), [],
+      `none mode exposed tools: ${[...inventories.none].sort().join(", ")}`);
   });
 
   it("honors pathToClaudeCodeExecutable for an external script", {

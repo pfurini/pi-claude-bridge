@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Authenticated Claude Opus 5 coverage on Agent SDK 0.3.220 / Claude Code 2.1.220.
+// Authenticated Claude Opus 5 coverage on Agent SDK 0.3.259 / Claude Code 2.1.259.
 //
 // Two harnesses: one with the bridge as the provider (Opus 5 selected directly),
 // one with an alternate provider driving the AskClaude tool.
@@ -24,7 +24,7 @@ const OTHER_MODEL = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_MODEL");
 const TIMEOUT = 240_000;
 const OPUS_5 = "claude-opus-5";
 const BRIDGE_OPUS_5 = `claude-bridge/${OPUS_5}`;
-const TARGET_CLAUDE_CODE_VERSION = "2.1.220";
+const TARGET_CLAUDE_CODE_VERSION = "2.1.259";
 const ONE_M = 1_000_000;
 const CONFIGURED_PROFILE = defaultClaudeConfigDir();
 const NORMAL_PROFILE = join(homedir(), ".claude");
