@@ -21,6 +21,11 @@ import { readFileSync } from "node:fs";
 import { createSession, repairToolPairing } from "cc-session-io";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { convertPiMessages } from "../src/convert.js";
+// Side-effect import: loads .env.test (CLAUDE_CONFIG_DIR in particular, which
+// selects the Claude Code profile these queries authenticate against) and probes
+// that dir for writability, so running this file directly behaves like `npm test`,
+// which sources .env.test for the whole chain.
+import "./lib/rpc-harness.mjs";
 
 const CWD = process.cwd();
 const MODEL = "claude-haiku-4-5";

@@ -36,6 +36,11 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createSession, openSession, repairToolPairing } from "cc-session-io";
+// Side-effect import: loads .env.test (CLAUDE_CONFIG_DIR in particular, which
+// selects the Claude Code profile these queries authenticate against) and probes
+// that dir for writability, so running this file directly behaves like `npm test`,
+// which sources .env.test for the whole chain.
+import "./lib/rpc-harness.mjs";
 
 const CWD = process.cwd();
 const MODEL = "claude-haiku-4-5";
