@@ -22,7 +22,7 @@ describe("steeringAppendFor", () => {
 		assert.equal(steeringAppendFor("claude-fable-5"), `${STEERING_RULES}\n\n${FABLE_IRREVERSIBLE_RULE}`);
 		assert.equal(steeringAppendFor("claude-opus-5"), STEERING_RULES);
 		assert.equal(steeringAppendFor("claude-opus-4-8"), STEERING_RULES);
-		assert.deepEqual(Object.keys(MODEL_EXTRA_RULES), ["claude-fable-5"]);
+		assert.deepEqual(Object.keys(MODEL_EXTRA_RULES), ["claude-fable-5", "claude-fable-5-1"]);
 	});
 
 	it("does not inject for unvalidated models, including other Claude tiers", () => {
@@ -31,15 +31,18 @@ describe("steeringAppendFor", () => {
 		}
 	});
 
-	it("pins the three models an A/B actually measured - and only those", () => {
+	it("pins the models an A/B actually measured - and only those", () => {
 		// One entry here equals one blind-graded campaign. Fable 5 earned its place
 		// on 2026-08-04 (40 cells, 3 Sonnet graders unanimous, H01 0/5 -> 5/5
 		// pass^k, H07 0/5 -> 4/5, canaries H02/H03 5/5 pass^k, zero refusals) and
 		// NOT by resembling Opus - its failure signature is the opposite one.
+		// Fable 5.1 earned its own on 2026-09-03 (50 cells, unanimous 50/50:
+		// H01/H07 0/5 -> 5/5 pass^k, canaries 5/5 in both arms, zero refusals;
+		// rule 4 three-arm H09 fail/fail/refine with a 30/30 canary re-gate).
 		// Adding an id without a campaign behind it should break this test.
 		assert.deepEqual(
 			[...DEFAULT_STEERING_MODELS].sort(),
-			["claude-fable-5", "claude-opus-4-8", "claude-opus-5"],
+			["claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-5"],
 		);
 	});
 
