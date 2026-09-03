@@ -411,6 +411,24 @@ function resultErrorText(message: SDKMessage): string | undefined {
 	return `Claude Code failed: ${result.subtype ?? "unknown result"}`;
 }
 
+/** Name a failure as a rate limit when a rejection preceded it.
+ *
+ *  pi has no typed rate-limit error — `stopReason` is only ever `"error"` and the sole carrier
+ *  is `errorMessage` — so everything that reacts to a rate limit pattern-matches that string:
+ *  pi-subagents gates `fallbackModels` on a 35-pattern list, and key-rotating extensions use
+ *  their own. Claude Code words a subscription limit as "You're out of extra usage · resets
+ *  6:30pm", which matches none of them, so an exhausted quota reads as a fatal error and the
+ *  fallback chain never runs (issue #58).
+ *
+ *  Leading with "Claude rate limit" rather than appending keeps the phrase in any truncated
+ *  render, and avoids the `<tool> failed (exit N):` shape that pi-subagents treats as a tool
+ *  failure and refuses to retry. */
+function describeRateLimitFailure(rejection: { rateLimitType?: string; resetsAt?: number }, failure: string): string {
+	const kind = rejection.rateLimitType ? ` (${rejection.rateLimitType})` : "";
+	const resets = rejection.resetsAt ? ` — resets ${new Date(rejection.resetsAt * 1000).toLocaleTimeString()}` : "";
+	return `Claude rate limit${kind}${resets}: ${failure}`;
+}
+
 function isolatedStreamFn(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = newAssistantMessageEventStream();
 	void runIsolatedSummary(model, context, options, stream);
@@ -1435,16 +1453,36 @@ function systemInitSessionId(message: SDKMessage): string | undefined {
 	return parseSdkSystemInit(message)?.sessionId;
 }
 
-function processRateLimitMessage(message: SDKMessage): void {
+function processRateLimitMessage(message: SDKMessage, queryCtx: QueryContext): void {
 	const info = (message as SDKMessage & { rate_limit_info?: SDKRateLimitInfo })
 		.rate_limit_info;
 	debug("consumeQuery: rate_limit_event", JSON.stringify(info).slice(0, 300));
 	if (info?.status === "rejected") {
+		// Held so the failure Claude Code sends next can be named as a rate limit:
+		// the rejection is its own message and is the only thing tying the two
+		// together. Consumed by the result path, which also clears it.
+		queryCtx.rateLimitRejection = info;
+		// The "rate limited" notice below supersedes warnings; re-arm so the next
+		// window's warnings fire even if it opens straight into allowed_warning.
+		queryCtx.lastRateLimitWarnStep = null;
+		queryCtx.lastRateLimitWarnThreshold = undefined;
 		const resetsAt = rateLimitResetDate(info.resetsAt)?.toLocaleTimeString() ?? "unknown";
 		piUI?.notify(`Claude rate limited (${info.rateLimitType ?? "unknown"}) — resets at ${resetsAt}`, "warning");
+	} else if (info?.status === "allowed") {
+		// Back under the threshold (window reset) — re-arm the warning dedupe.
+		queryCtx.lastRateLimitWarnStep = null;
+		queryCtx.lastRateLimitWarnThreshold = undefined;
 	} else if (info?.status === "allowed_warning") {
 		const utilization = rateLimitUtilizationPercent(info.utilization);
-		piUI?.notify(`Claude rate limit warning: ${utilization}% used (${info.rateLimitType ?? ""})`, "warning");
+		// The SDK emits one event per request, so only re-notify when the level
+		// rises past a new 5% step or the threshold changes.
+		const step = Math.floor(utilization / 5);
+		const rose = queryCtx.lastRateLimitWarnStep === null || step > queryCtx.lastRateLimitWarnStep;
+		if (rose || info.surpassedThreshold !== queryCtx.lastRateLimitWarnThreshold) {
+			queryCtx.lastRateLimitWarnStep = step;
+			queryCtx.lastRateLimitWarnThreshold = info.surpassedThreshold;
+			piUI?.notify(`Claude rate limit warning: ${utilization}% used (${info.rateLimitType ?? ""})`, "warning");
+		}
 	}
 	// A trigger, never a source. This event omits utilization while an account is
 	// healthy, so rendering it would publish a partial picture that disagrees with
@@ -1488,6 +1526,12 @@ async function consumeQuery(
 			logServedContextWindow("result", message, model);
 			resultError = resultErrorText(message);
 			if (resultError !== undefined) {
+				// Consume the rejection alongside the failure it caused, so a later
+				// unrelated failure on this query doesn't inherit the label.
+				if (queryCtx.rateLimitRejection) {
+					resultError = describeRateLimitFailure(queryCtx.rateLimitRejection, resultError);
+					queryCtx.rateLimitRejection = null;
+				}
 				debug(`consumeQuery: error result, subtype=${message.subtype}, error=${resultError}`);
 				if (queryCtx.turnOutput) {
 					queryCtx.turnOutput.stopReason = "error";
@@ -1507,7 +1551,8 @@ async function consumeQuery(
 		if (message.type === "rate_limit_event") {
 			// processRateLimitMessage rather than inline: resetsAt is epoch seconds
 			// and utilization a 0..1 fraction, and the helper owns those conversions.
-			processRateLimitMessage(message);
+			// It also owns the queryCtx bookkeeping the result path reads back.
+			processRateLimitMessage(message, queryCtx);
 			continue;
 		}
 		if (!queryCtx.currentPiStream || !queryCtx.turnOutput) continue;
