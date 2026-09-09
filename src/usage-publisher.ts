@@ -185,6 +185,10 @@ export class UsagePublisher {
 			// consumer that has never heard from us would otherwise be told only
 			// that we are broken, and would have nothing to mark stale.
 			if (result.snapshot) this.emitSnapshot(result.snapshot);
+			// A credential with no usage scope is the same class of fact as a
+			// platform with no credential store: nothing an operator can act on,
+			// so it is not reported every poll.
+			if (result.scopeUnavailable === true) return;
 			if (result.unavailable) {
 				this.emitUnavailable(result.unavailable);
 				return;

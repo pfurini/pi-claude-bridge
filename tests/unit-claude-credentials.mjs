@@ -280,3 +280,45 @@ describe("reading Claude Code credentials", () => {
 		}).status, "missing");
 	});
 });
+
+describe("an environment-supplied token", () => {
+	it("is preferred over the profile file and the platform store", () => {
+		// A launcher outside a sandbox may own this credential and hand the
+		// process a stand-in its egress proxy swaps for the real token. It wins
+		// over both stores, because those are exactly what such a sandbox denies.
+		const dir = mkdtempSync(join(tmpdir(), "claude-credentials-env-"));
+		try {
+			writeFileSync(claudeCredentialsFilePath(dir), credentialJson("sk-ant-oat01-file-must-not-win"));
+			const lookup = readClaudeCredentials(dir, {
+				env: { CLAUDE_CODE_OAUTH_TOKEN: FIXTURE_TOKEN },
+				readKeychainSecret: () => {
+					throw new Error("the platform store must not be consulted");
+				},
+			});
+			assert.deepEqual(lookup, { status: "ok", token: FIXTURE_TOKEN });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("is ignored when empty, so the stores still decide", () => {
+		const dir = mkdtempSync(join(tmpdir(), "claude-credentials-env-empty-"));
+		try {
+			writeFileSync(claudeCredentialsFilePath(dir), credentialJson());
+			const lookup = readClaudeCredentials(dir, { env: { CLAUDE_CODE_OAUTH_TOKEN: "" } });
+			assert.deepEqual(lookup, { status: "ok", token: FIXTURE_TOKEN });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("never reaches the debug or diag sinks", () => {
+		const dir = mkdtempSync(join(tmpdir(), "claude-credentials-env-leak-"));
+		try {
+			readClaudeCredentials(dir, { env: { CLAUDE_CODE_OAUTH_TOKEN: FIXTURE_TOKEN } });
+			assert.ok(!readSinks().includes(FIXTURE_TOKEN));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});

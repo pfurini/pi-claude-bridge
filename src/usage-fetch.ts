@@ -22,6 +22,10 @@ const MAX_SCOPED_QUOTAS = 4;
 // an operator something they can act on.
 export const REASON_CREDENTIALS_MISSING = "Claude Code credentials not found";
 export const REASON_CREDENTIALS_REJECTED = "Claude Code credentials expired or rejected";
+// 403 is not a refusal of the credential: it authenticates everything else and
+// simply carries no usage scope, which is what a setup token looks like. Saying
+// "expired or rejected" there would report a broken login when nothing is broken.
+export const REASON_USAGE_SCOPE_MISSING = "the credential carries no usage scope";
 export const REASON_UNREACHABLE = "usage endpoint unreachable";
 export const REASON_UNREADABLE = "unreadable usage response";
 export const REASON_RATE_LIMITED = "usage endpoint rate limited";
@@ -128,7 +132,12 @@ export async function fetchClaudeUsage(token: string, deps: UsageFetchDeps = {})
 		clearTimeout(timeout);
 	}
 
-	if (response.status === 401 || response.status === 403) {
+	if (response.status === 403) {
+		// Nothing an operator can act on, so the publisher stays silent rather
+		// than reporting a fault: the session works, the bar just cannot be drawn.
+		return { ok: false, reason: REASON_USAGE_SCOPE_MISSING, scopeUnavailable: true };
+	}
+	if (response.status === 401) {
 		// The one failure an operator can actually act on, and the reason a token
 		// is never pre-validated against an expiry field (D11): this is where
 		// unusability is discovered.

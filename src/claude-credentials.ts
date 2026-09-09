@@ -43,11 +43,21 @@ export interface CredentialLookup {
 
 export interface CredentialReaderDeps {
 	platform?: NodeJS.Platform;
+	/** The environment consulted for a launcher-supplied token; defaults to this process's. */
+	env?: NodeJS.ProcessEnv;
 	/** Reads a file as text, throwing when it is absent or unreadable. */
 	readFileText?: (path: string) => string;
 	/** Returns the raw secret stored under a Keychain service, throwing when absent. */
 	readKeychainSecret?: (service: string) => string;
 }
+
+// The environment variable Claude Code itself authenticates with. A launcher
+// running us inside a sandbox owns this credential outside it and supplies a
+// stand-in that its egress proxy swaps for the real token, because the two
+// stores below are exactly what such a sandbox denies. It is therefore tried
+// first: when it is set, the stores are not merely absent, they are unreadable
+// by design, and consulting them would only produce a misleading "not found".
+export const OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
 // The profile file is tried on every platform, not just Linux: it is what Claude
 // Code writes when no OS keyring is available, and unlike the macOS Keychain
@@ -101,6 +111,11 @@ export function readClaudeCredentials(
 	const platform = deps.platform ?? process.platform;
 	const readFileText = deps.readFileText ?? ((path: string) => readFileSync(path, "utf-8"));
 	const readKeychainSecret = deps.readKeychainSecret ?? defaultReadKeychainSecret;
+
+	// An empty value is not a credential, so it falls through to the stores
+	// rather than reporting a token nothing can use.
+	const supplied = (deps.env ?? process.env)[OAUTH_TOKEN_ENV];
+	if (typeof supplied === "string" && supplied.length > 0) return { status: "ok", token: supplied };
 
 	try {
 		const token = tokenFromCredentialJson(readFileText(claudeCredentialsFilePath(claudeConfigDir)));

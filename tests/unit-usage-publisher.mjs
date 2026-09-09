@@ -440,3 +440,21 @@ describe("the provider.usageEvents gate", () => {
 		assert.ok(source.includes("usagePublisher?.noteRateLimitEvent()"));
 	});
 });
+
+describe("a credential without the usage scope", () => {
+	it("publishes nothing at all rather than reporting a fault every poll", async () => {
+		// The session works; only the bar cannot be drawn. Reporting it would put
+		// a permanent, unactionable error in somebody else's terminal, on every
+		// poll, about something nobody can act on.
+		await withHarness(
+			{ outcome: { ok: false, reason: "the credential carries no usage scope", scopeUnavailable: true } },
+			async (test) => {
+				test.publisher.publishOnStartup();
+				await test.runPending();
+				await test.publisher.settled();
+				assert.equal(test.fetches.count, 1, "the fetch still happens; only the reporting is suppressed");
+				assert.deepEqual(test.emitted, []);
+			}
+		);
+	});
+});

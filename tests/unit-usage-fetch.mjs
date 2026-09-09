@@ -17,6 +17,7 @@ import {
 	parseRetryAfterMs,
 	REASON_CREDENTIALS_REJECTED,
 	REASON_RATE_LIMITED,
+	REASON_USAGE_SCOPE_MISSING,
 	REASON_UNREACHABLE,
 	REASON_UNREADABLE,
 	reasonForStatus,
@@ -158,14 +159,13 @@ describe("usage endpoint failures", () => {
 	});
 
 	it("distinguishes a rejected credential from a transport failure (B3.8)", async () => {
-		for (const status of [401, 403]) {
-			const outcome = await fetchClaudeUsage(FIXTURE_TOKEN, {
-				fetchFn: recordingFetch(response(null, { status })).fetchFn,
-			});
-			// The one failure an operator can act on, and the only place token
-			// unusability is ever decided (D11).
-			assert.deepEqual(outcome, { ok: false, reason: REASON_CREDENTIALS_REJECTED });
-		}
+		const outcome = await fetchClaudeUsage(FIXTURE_TOKEN, {
+			fetchFn: recordingFetch(response(null, { status: 401 })).fetchFn,
+		});
+		// The one failure an operator can act on, and the only place token
+		// unusability is ever decided (D11). 403 is not this: it has its own
+		// case, because a credential without the usage scope is not refused.
+		assert.deepEqual(outcome, { ok: false, reason: REASON_CREDENTIALS_REJECTED });
 	});
 
 	it("flags a 429 as rate limited and carries its Retry-After (B3.5)", async () => {
@@ -214,5 +214,27 @@ describe("usage endpoint failures", () => {
 			// The status code is the only dynamic part the contract allows.
 			assert.ok(/^[a-zA-Z0-9 ]+$/.test(outcome.reason), outcome.reason);
 		}
+	});
+});
+
+describe("a token without the usage scope", () => {
+	it("reports 403 apart from 401, because the credential still works for everything else", async () => {
+		// A setup token authenticates inference but carries no usage scope, so the
+		// endpoint answers 403. Calling that "expired or rejected" would tell an
+		// operator their login is broken when nothing is.
+		const forbidden = await fetchClaudeUsage("fixture-token", {
+			fetchFn: async () => new Response("{}", { status: 403 }),
+		});
+		assert.equal(forbidden.ok, false);
+		assert.equal(forbidden.scopeUnavailable, true);
+		assert.equal(forbidden.reason, REASON_USAGE_SCOPE_MISSING);
+
+		// 401 is unchanged: the credential really was refused.
+		const rejected = await fetchClaudeUsage("fixture-token", {
+			fetchFn: async () => new Response("{}", { status: 401 }),
+		});
+		assert.equal(rejected.ok, false);
+		assert.equal(rejected.scopeUnavailable, undefined);
+		assert.equal(rejected.reason, REASON_CREDENTIALS_REJECTED);
 	});
 });

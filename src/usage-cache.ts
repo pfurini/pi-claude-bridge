@@ -326,6 +326,8 @@ export interface UsageFetchOutcome {
 	reason?: string;
 	rateLimited?: boolean;
 	retryAfterMs?: number;
+	/** The credential works but carries no usage scope: report nothing at all. */
+	scopeUnavailable?: boolean;
 }
 
 export interface UsageLoadResult {
@@ -333,6 +335,8 @@ export interface UsageLoadResult {
 	snapshot?: UsageSnapshot;
 	/** Set when the most recent attempt failed; the reason a publisher should report. */
 	unavailable?: string;
+	/** The credential works but carries no usage scope, so nothing is worth reporting. */
+	scopeUnavailable?: boolean;
 	source: "cache" | "fetch" | "cooldown" | "contended" | "failed";
 }
 
@@ -426,7 +430,12 @@ export async function loadUsageThroughCache(options: UsageLoadOptions): Promise<
 			lastFailureReason: reason,
 			consecutive429s,
 		});
-		return { snapshot: state.lastSuccess, unavailable: reason, source: "failed" };
+		return {
+			snapshot: state.lastSuccess,
+			unavailable: reason,
+			...(outcome.scopeUnavailable === true ? { scopeUnavailable: true } : {}),
+			source: "failed",
+		};
 	} finally {
 		lock.release();
 	}
