@@ -1,17 +1,22 @@
 # Context windows served by the Claude Agent SDK
 
-Current target-binary measurements from Claude Agent SDK `query()`, grouped by
-requested model ID and Pro Extra Usage state.
+The current fork pins Agent SDK 0.3.280. The measurements below retain their original SDK versions and account qualifications.
+
+## Current fork policy (2026-09-23)
+
+- Opus 5.5 uses bare `claude-opus-5-5` with 1M context, as explicitly confirmed by the maintainer.
+- Opus 5, 4.8, 4.7, and Fable 5.1 retain their previously measured bare-ID 1M policy.
+- Fable 5 and Sonnet 5 retain their `[1m]` request suffixes.
+- Opus 4.6 and Sonnet 4.6 retain their existing plan and Extra Usage gates.
+- Newly discovered models receive 200K metadata until an explicit policy covers them.
+- This merge performs no new authenticated context-window measurements.
+
+The current policy is implemented in `src/models.ts`. Historical upstream measurements below do not override the approved fork policy.
 
 ## Scope and evidence labels
 
-The current target is Claude Agent SDK `0.3.220` with bundled Claude Code
-`2.1.220`. Opus 5 was measured on that target on 2026-07-26 (see
-"Claude Opus 5 on Claude Code 2.1.220"). The full model/variant matrix below was
-measured on 2026-07-23 against Agent SDK `0.3.218` and Claude Code `2.1.218` and
-has **not** been re-run on `2.1.220`; treat it as the prior record for every
-model other than Opus 5. All measurements cover one Pro subscription account
-only.
+The historical fork record covers SDK 0.3.218 and 0.3.220, plus the separately recorded Fable 5.1 measurement on 0.3.259.
+Account-tier labels in the older record contain a correction below; treat those labels as qualified rather than independently verified.
 
 Evidence is labeled as follows:
 
@@ -52,6 +57,31 @@ env -u ANTHROPIC_API_KEY node diag/model-aliases.mjs pro on
 Both diagnostics save JSON and Markdown reports under the gitignored
 `.test-output/context-size/` directory. Extra Usage can consume metered credits.
 Warn the user and obtain explicit confirmation before running an eligible probe.
+
+## Historical upstream matrix
+
+Upstream commit `0750748` carries the following matrix. Several rows disagree with the fork's later observations below.
+The Opus 5.5 suffixed row remains unmeasured in that upstream record.
+
+| requested id              | Pro, credits off | Pro, credits on | Max, credits off | Max, credits on |
+|---------------------------|------------------|-----------------|------------------|-----------------|
+| `claude-opus-5-5[1m]`    | —                | —               | —                | —               |
+| `claude-opus-5`           | —                | —               | 200K             | —               |
+| `claude-opus-5[1m]`      | —                | —               | 1M               | —               |
+| `claude-opus-4-8`         | 200K             | 200K            | 200K             | 200K            |
+| `claude-opus-4-8[1m]`    | 1M               | 1M              | 1M               | 1M              |
+| `claude-opus-4-7`         | 1M               | 1M              | 1M               | 1M              |
+| `claude-opus-4-7[1m]`    | 1M               | 1M              | 1M               | 1M              |
+| `claude-opus-4-6`         | 200K             | 200K            | 200K             | 200K            |
+| `claude-opus-4-6[1m]`    | 429              | 1M              | 1M               | 1M              |
+| `claude-fable-5`          | 200K             | —               | —                | —               |
+| `claude-fable-5[1m]`     | 1M               | —               | —                | —               |
+| `claude-sonnet-5`         | 200K             | —               | —                | —               |
+| `claude-sonnet-5[1m]`    | 1M               | —               | —                | —               |
+| `claude-sonnet-4-6`       | 200K             | 200K            | 200K             | 200K            |
+| `claude-sonnet-4-6[1m]`  | 429              | 1M              | 429              | 1M              |
+| `claude-haiku-4-5`        | 200K             | 200K            | 200K             | 200K            |
+| `claude-haiku-4-5[1m]`   | 429†             | 400             | 400              | 400             |
 
 ## Claude Opus 5 on Claude Code 2.1.220
 

@@ -147,6 +147,11 @@ describe("sanitizeHarnessPrompt", () => {
 		assert.equal(sanitizeHarnessPrompt(bareSkeleton), undefined);
 	});
 
+	it("leaves authored section tags untouched without a complete harness match", () => {
+		const text = "Document these tags: </docs>\n\n<cwd>\n/example\n</cwd>";
+		assert.equal(sanitizeHarnessPrompt(text), text);
+	});
+
 	it("is idempotent", () => {
 		const parentPrompt = buildSystemPrompt({
 			cwd: CWD,

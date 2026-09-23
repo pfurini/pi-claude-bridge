@@ -43,13 +43,13 @@ const PI_DIST = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding
 const onFork = existsSync(join(PI_DIST, "fork-capabilities.js"));
 
 const HANDLED = {
-	"agent-session.js": { mentions: 1, why: "the one hand-off: `streamFn: this.agent.streamFunction` into generateBranchSummary" },
-	// sdk.js gained a composed-default routing reference in the fork (2 -> 3); still only constructs the agent.
-	"sdk.js": { mentions: onFork ? 3 : 2, why: "constructs the agent (session stream fn); on the fork also documents composed-default routing. Does not summarize or route independently." },
+	"agent-session.js": { mentions: onFork ? 3 : 2, why: "branch-summary and /bug stream hand-offs; the fork also checks ownership of the default stream target" },
+	"sdk.js": { mentions: onFork ? 3 : 2, why: "constructs the agent; the fork also installs its composed default routing target" },
+	"bug-report.js": { mentions: 1, why: "cacheRetention:none routes /bug summarization to the isolated stream" },
 	"compaction/compaction.js": { mentions: 13, why: "taken over via session_before_compact -> isolatedStreamFn" },
 	"compaction/branch-summarization.js": { mentions: 2, why: "taken over via session_before_tree -> isolatedStreamFn" },
 	...(onFork ? {
-		"default-stream-fn.js": { mentions: 9, why: "fork's composed default-stream dispatch for bare Agent/loop callers without an explicit streamFn (piForkCapabilities: composed-default-stream-fn). A bare Agent inside a session scope routes to this provider, but pi's context and skills still forward through context.systemPrompt; only a bare Agent's own --system-prompt/--append-system-prompt is missed (bare Agents do not set one, and userSystemPrompt degrades to {}). Re-decide if the count drifts after a pi upgrade." },
+		"default-stream-fn.js": { mentions: 9, why: "fork dispatch for bare Agent callers; transcript conversion reconstructs their prompt and tool state before forwarding" },
 		"fork-capabilities.js": { mentions: 1, why: "marker module (the piForkCapabilities Set); the single streamFn reference is a doc comment, not a code path, so it cannot route a call" },
 	} : {}),
 };

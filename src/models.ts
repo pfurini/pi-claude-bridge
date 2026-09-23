@@ -1,115 +1,49 @@
 import type { EffortLevel } from "@anthropic-ai/claude-agent-sdk";
 
-// Canonical selection + display order for the model picker.
-// `resolveModel` returns the first partial match, so `opus` resolves to the first-listed opus entry.
-// Extracted from index.ts so tests can import without activating the extension.
-//
-// ORDERING CONSTRAINT: `claude-fable-5` must stay ahead of `claude-fable-5-1`.
-// resolveModel matches with `includes`, and "claude-fable-5-1".includes("claude-fable-5")
-// is true, so listing 5.1 first makes the exact id `claude-fable-5` resolve to 5.1.
-// The same trap applies to any future id that extends an existing one. A consequence:
-// the bare `fable` shortcut resolves to Fable 5, so 5.1 is selected by its full id.
+const TWO_HUNDRED_K_CONTEXT = 200_000;
+const ONE_M_CONTEXT = 1_000_000;
+const FAMILY_ORDER = ["fable", "opus", "sonnet", "haiku"];
+const VALID_EFFORTS = new Set<string>(["low", "medium", "high", "xhigh", "max"]);
 
-export const MODEL_IDS_IN_ORDER = ["claude-fable-5", "claude-fable-5-1", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
-
-// pi-ai release that first shipped every id in MODEL_IDS_IN_ORDER. Named in the
-// missing-row diagnostic below.
-//
-// This is the version of the pi FORK this bridge is developed against, and it is
-// ahead of the peerDependency floor. No published pi-ai supplies `claude-fable-5-1`:
-// registry 0.84.4 carries only `claude-fable-5`, while the fork's catalog is
-// regenerated from models.dev and does carry it, and the two report the same version
-// number. A version comparison therefore cannot prove the row is present —
-// reportMissingModelIds checks for the ids themselves, which is the check that
-// actually holds, and this constant only tells the operator where to get them.
-export const REQUIRED_PI_AI_VERSION = "0.84.4";
-
-// Fallback maps for pi-ai releases older than the peer floor, where Sonnet 5 and
-// Sonnet 4.6 ship no thinkingLevelMap and getSupportedThinkingLevels therefore
-// hides the opt-in xhigh/max levels (earendil-works/pi#6371). Values mirror what
-// pi-ai >=0.82.1 supplies directly, so on a supported install both entries are
-// unreachable: buildModels only consults them when the catalog omits the map.
-const DEFAULT_THINKING_LEVEL_MAPS: Record<string, Record<string, string>> = {
-	"claude-sonnet-5": { xhigh: "xhigh", max: "max" },
-	"claude-sonnet-4-6": { max: "max" },
-};
-
-// Pi reasoning levels → CC SDK effort levels. Generic fallback for models whose
-// catalog map omits the requested level, and for unregistered raw model ids.
-// Keep xhigh→max here: models with no catalog xhigh entry (Opus 4.6, Sonnet 4.6,
-// Haiku) have no distinct xhigh tier, so xhigh must escalate to max for them.
 export const REASONING_TO_EFFORT: Record<string, EffortLevel> = {
 	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max", max: "max",
 };
 
-// Levels the AskClaude tool schema offers. Mirrors pi's own ModelThinkingLevel so
-// callers can request the top tier explicitly instead of reaching it as a side
-// effect of xhigh, which no longer escalates on models with a real xhigh tier.
-// Exported so the schema stays testable without importing index.ts.
 export const ASK_CLAUDE_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-// Single effort lookup for both the provider and AskClaude paths. Prefers the
-// model's own thinkingLevelMap (pi-ai 0.72+ ships per-model overrides; Opus 5
-// maps xhigh→xhigh and max→max as distinct served tiers) and falls back to
-// REASONING_TO_EFFORT for unmapped levels or an unresolved model.
+/** Missing mappings use the fallback; null or invalid mappings leave Claude Code's default in effect. */
 export function resolveEffort(
 	model: { thinkingLevelMap?: Partial<Record<string, string | null>> } | undefined,
 	level: string | undefined,
 ): EffortLevel | undefined {
 	if (!level || level === "off") return undefined;
-	return (model?.thinkingLevelMap?.[level] as EffortLevel | undefined) ?? REASONING_TO_EFFORT[level];
+	const mapped = model?.thinkingLevelMap?.[level];
+	if (mapped === undefined) return REASONING_TO_EFFORT[level];
+	return mapped !== null && VALID_EFFORTS.has(mapped) ? mapped as EffortLevel : undefined;
 }
 
-// buildModels drops ids the installed pi-ai does not supply, which is silent in
-// the returned array but must not be silent to the operator: the bridge loads
-// into whatever pi-ai the user's pi shipped, not the version it pins, and a
-// missing claude-opus-5 silently redirects the `opus` shortcut and AskClaude's
-// default to an older model. Kept out of buildModels so mock-driven tests stay
-// quiet; called once at registration in index.ts. Returns the missing ids.
-export function reportMissingModelIds<T extends { id: string }>(
-	piAiModels: T[],
-	log: (message: string) => void = console.error,
-): string[] {
-	const missing = MODEL_IDS_IN_ORDER.filter((id) => !piAiModels.some((m) => m.id === id));
-	if (missing.length > 0) {
-		log(
-			`claude-bridge: installed @earendil-works/pi-ai has no catalog entry for ${missing.join(", ")}, ` +
-			`so they are omitted from the model picker. Requires @earendil-works/pi-ai >=${REQUIRED_PI_AI_VERSION}.`,
-		);
-	}
-	return missing;
+function versionRank(id: string): { family: string; tuple: [number, number] } {
+	const [, family, major, minor] = id.split("-");
+	return { family, tuple: [Number(major) || 0, Number(minor) || 0] };
 }
 
-// Project pi-ai's model entries down to the fields pi's registerProvider expects,
-// and keep MODEL_IDS_IN_ORDER ordering. IDs missing from pi-ai are silently dropped.
-// Context-dependent display labels are applied after plan/long-context config is known.
+/** Discover models from the installed catalog, excluding dated snapshot aliases. */
 export function buildModels<T extends { id: string; [key: string]: any }>(piAiModels: T[]) {
-	return MODEL_IDS_IN_ORDER
-		.map((id) => piAiModels.find((m) => m.id === id))
-		.filter((m) => m != null)
-		// Forward thinkingLevelMap so pi-ai's per-model overrides (e.g. opus-4-8
-		// mapping xhigh→xhigh and max→max) are visible to the effort lookup.
-		//
-		// Cost is forwarded from the catalog rather than zeroed. It was zeroed in
-		// e1e5675 (#9) because Claude Code bills through a subscription, so a
-		// per-token total in the footer reads as a bill that nobody is paying.
-		// The cost of hiding it is that every consumer loses the numbers as well:
-		// a model registered here reports usage but values it at zero, so anything
-		// comparing this provider against another - a benchmark, a budget, a
-		// question as ordinary as which of two approaches burned more - has no
-		// figure to work with, and pi's own providers all supply one.
-		//
-		// The number means "what these tokens would cost at API rates", which is
-		// the right basis for comparing efficiency and the wrong one for reading
-		// as an invoice.
+	return piAiModels
+		.filter((model) => typeof model.id === "string" && !/-20\d{6}$/.test(model.id))
+		.sort((a, b) => {
+			const ra = versionRank(a.id);
+			const rb = versionRank(b.id);
+			const fa = FAMILY_ORDER.indexOf(ra.family);
+			const fb = FAMILY_ORDER.indexOf(rb.family);
+			const ta = fa === -1 ? FAMILY_ORDER.length : fa;
+			const tb = fb === -1 ? FAMILY_ORDER.length : fb;
+			return ta - tb || rb.tuple[0] - ra.tuple[0] || rb.tuple[1] - ra.tuple[1] || a.id.localeCompare(b.id);
+		})
 		.map(({ id, name, reasoning, input, contextWindow, maxTokens, thinkingLevelMap, cost }) => ({
-			id,
-			name,
-			reasoning, input, contextWindow, maxTokens,
-			thinkingLevelMap: thinkingLevelMap ?? DEFAULT_THINKING_LEVEL_MAPS[id],
-			// A catalog entry without pricing still has to produce a complete cost
-			// table: pi multiplies these fields directly, and an undefined member
-			// yields NaN totals rather than a missing one.
+			id, name, reasoning, input, contextWindow, maxTokens, thinkingLevelMap,
+			// Catalog prices value token consumption for comparisons, not subscription invoices.
+			// Complete partial tables because Pi multiplies every field directly.
 			cost: {
 				input: cost?.input ?? 0,
 				output: cost?.output ?? 0,
@@ -129,17 +63,7 @@ export type ClaudeCodeRuntimeModel = {
 	contextWindow: number;
 };
 
-const TWO_HUNDRED_K_CONTEXT = 200_000;
-const ONE_M_CONTEXT = 1_000_000;
-
-// Fable is the one family gated by subscription tier rather than by context size.
-//
-// claude-fable-5-1 is gated on the same terms as Fable 5. That is the fail-closed
-// choice, not a measurement: the eligibility probe was run on a Max account, where
-// every Fable id is available, so Pro-without-Extra-Usage was never exercised. If
-// 5.1 turns out to be unrestricted on Pro, this hides it from Pro users and the fix
-// is to drop the id here; the opposite error would send them a raw Anthropic refusal
-// instead of the actionable message below.
+// Fable 5.1 inherits the conservative gate; its Pro eligibility was not measured.
 const FABLE_MODEL_IDS = new Set(["fable", "claude-fable-5", "claude-fable-5-1"]);
 
 export function isClaudeCodeModelAvailable(modelId: string, settings: LongContextSettings): boolean {
@@ -156,50 +80,35 @@ export function assertClaudeCodeModelAvailable(modelId: string, settings: LongCo
 	);
 }
 
-// Measured Claude Agent SDK subscription/OAuth behavior. Do not infer this from
-// pi-ai's advertised contextWindow: bare Opus 5, Opus 4.8, Opus 4.7, and Sonnet 5
-// all serve 1M, while Fable 5 is unavailable on Pro without Extra Usage and [1m]
-// eligibility still differs by model. See the Phase 8 upgrade record.
+/** Runtime windows are explicit policy, never inferred from a newly discovered catalog model. */
 export function resolveClaudeCodeRuntimeModel(modelId: string, settings: LongContextSettings): ClaudeCodeRuntimeModel {
 	switch (modelId) {
-		// Opus 5 and Opus 4.8 are native 1M on the bare id — no [1m] suffix, no
-		// plan or Extra Usage gate. Measured on Claude Code 2.1.220 (Max account):
-		// `--model claude-opus-4-8` reports canonical=claude-opus-4-8 ctx=1000000,
-		// identical to the suffixed form. The bare id is preferred because it is
-		// what Claude Code reports back as canonical, so exact identity checks
-		// (benchmark harnesses, logging) match without suffix-stripping.
+		// Existing bare-ID measurements are recorded in diag/CONTEXT-SIZE.md and the Fable 5.1 changelog.
 		case "claude-opus-5":
-			return { cliModelId: "claude-opus-5", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-8":
-			return { cliModelId: "claude-opus-4-8", contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-7":
-			return { cliModelId: "claude-opus-4-7", contextWindow: ONE_M_CONTEXT };
+		case "claude-fable-5-1":
+			return { cliModelId: modelId, contextWindow: ONE_M_CONTEXT };
+		// Maintainer-confirmed policy: bare Opus 5.5 serves 1M; no probe runs during this merge.
+		case "claude-opus-5-5":
+			return { cliModelId: modelId, contextWindow: ONE_M_CONTEXT };
+		case "claude-fable-5":
+		case "claude-sonnet-5":
+			return { cliModelId: `${modelId}[1m]`, contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-6": {
 			const useOneM = settings.plan === "max" || settings.longContextExtraUsage;
 			return {
-				cliModelId: useOneM ? "claude-opus-4-6[1m]" : "claude-opus-4-6",
+				cliModelId: useOneM ? `${modelId}[1m]` : modelId,
 				contextWindow: useOneM ? ONE_M_CONTEXT : TWO_HUNDRED_K_CONTEXT,
 			};
 		}
-		case "claude-fable-5":
-			return { cliModelId: "claude-fable-5[1m]", contextWindow: ONE_M_CONTEXT };
-		// Fable 5.1 is native 1M on the bare id, unlike Fable 5 directly above, which
-		// still needs the suffix. Measured on Claude Code 2.1.259 (Max account): both
-		// `claude-fable-5-1` and `claude-fable-5-1[1m]` report modelUsage contextWindow
-		// 1000000, so the bare form is preferred for the same reason as Opus 5 — it is
-		// what Claude Code echoes back as canonical. Requires CC >=2.1.251; older builds
-		// reject the id with a 400 that names the required version.
-		case "claude-fable-5-1":
-			return { cliModelId: "claude-fable-5-1", contextWindow: ONE_M_CONTEXT };
-		case "claude-sonnet-5":
-			return { cliModelId: "claude-sonnet-5[1m]", contextWindow: ONE_M_CONTEXT };
 		case "claude-sonnet-4-6":
 			return {
-				cliModelId: settings.longContextExtraUsage ? "claude-sonnet-4-6[1m]" : "claude-sonnet-4-6",
+				cliModelId: settings.longContextExtraUsage ? `${modelId}[1m]` : modelId,
 				contextWindow: settings.longContextExtraUsage ? ONE_M_CONTEXT : TWO_HUNDRED_K_CONTEXT,
 			};
 		case "claude-haiku-4-5":
-			return { cliModelId: "claude-haiku-4-5", contextWindow: TWO_HUNDRED_K_CONTEXT };
+			return { cliModelId: modelId, contextWindow: TWO_HUNDRED_K_CONTEXT };
 		default:
 			console.error(`claude-bridge: encountered model ${modelId} with no known context size, defaulting to 200K`);
 			return { cliModelId: modelId, contextWindow: TWO_HUNDRED_K_CONTEXT };
@@ -211,23 +120,31 @@ export function claudeCodeModelId(model: { id: string }, settings: LongContextSe
 	return resolveClaudeCodeRuntimeModel(model.id, settings).cliModelId;
 }
 
+/** Exact IDs win; family shortcuts select the newest version independently of picker order. */
 export function resolveModel<T extends { id: string }>(models: T[], input: string): T | undefined {
 	const lower = input.toLowerCase();
-	return models.find((m) => m.id === lower || m.id.includes(lower));
+	return models.find((model) => model.id === lower)
+		?? newestPartialMatch(models.filter((model) => model.id.includes(lower)));
 }
 
-// Produce the model metadata registered with pi. The registered contextWindow must
-// match the window the bridge actually requests from Claude Code, or pi's status
-// bar and auto-compaction threshold will misreport. The runtime policy is based
-// on measured SDK behavior - see diag/CONTEXT-SIZE.md
+function newestPartialMatch<T extends { id: string }>(candidates: T[]): T | undefined {
+	if (candidates.length === 0) return undefined;
+	return candidates.reduce((best, model) => {
+		const a = versionRank(model.id).tuple;
+		const b = versionRank(best.id).tuple;
+		return (a[0] !== b[0] ? a[0] > b[0] : a[1] > b[1]) ? model : best;
+	});
+}
+
+/** Register the requested window and retain the fork's subscription eligibility filtering. */
 export function applyLongContext<T extends { id: string; name: string; contextWindow?: number | null }>(
 	models: T[],
 	settings: LongContextSettings,
 ): T[] {
-	return models.flatMap((m) => {
-		if (!isClaudeCodeModelAvailable(m.id, settings)) return [];
-		const { contextWindow } = resolveClaudeCodeRuntimeModel(m.id, settings);
-		const name = contextWindow > TWO_HUNDRED_K_CONTEXT && !/\b1M\b/i.test(m.name) ? `${m.name} 1M` : m.name;
-		return [contextWindow === m.contextWindow && name === m.name ? m : { ...m, contextWindow, name }];
+	return models.flatMap((model) => {
+		if (!isClaudeCodeModelAvailable(model.id, settings)) return [];
+		const { contextWindow } = resolveClaudeCodeRuntimeModel(model.id, settings);
+		const name = contextWindow > TWO_HUNDRED_K_CONTEXT && !/\b1M\b/i.test(model.name) ? `${model.name} 1M` : model.name;
+		return [contextWindow === model.contextWindow && name === model.name ? model : { ...model, contextWindow, name }];
 	});
 }

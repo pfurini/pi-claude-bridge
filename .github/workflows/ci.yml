@@ -91,7 +91,7 @@ jobs:
           types=node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts
           grep -q 'readonly agentDir: string' "$types" || {
             echo "::error::Linked pi lacks ExtensionAPI.agentDir. The fork is unbuilt or the link resolved to the registry."
-            echo "The fork and the latest published package both report 0.84.1, so a version check cannot catch this."
+            echo "Fork and registry packages can share a version; check the required API instead."
             exit 1
           }
 
@@ -104,7 +104,7 @@ jobs:
         run: npm run test:unit
 
   # The published support contract. pi-claude-bridge is on npm and declares
-  # peerDependencies >=0.82.1, so it has to keep building against stock pi, where
+  # peerDependencies >=0.86.1, so it has to keep building against stock pi, where
   # loadDirs() and sessionAgentDir() fall back to the process dirs. Nothing here
   # is committed — the rewrite is local to the runner.
   stock:
@@ -124,9 +124,9 @@ jobs:
       - name: Pin the registry release
         run: |
           npm pkg set \
-            'devDependencies.@earendil-works/pi-ai=0.82.1' \
-            'devDependencies.@earendil-works/pi-coding-agent=0.82.1' \
-            'devDependencies.@earendil-works/pi-tui=0.82.1'
+            'devDependencies.@earendil-works/pi-ai=0.86.1' \
+            'devDependencies.@earendil-works/pi-coding-agent=0.86.1' \
+            'devDependencies.@earendil-works/pi-tui=0.86.1'
           rm -f package-lock.json
           npm install --no-audit --no-fund
 

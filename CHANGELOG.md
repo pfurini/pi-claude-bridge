@@ -4,6 +4,17 @@
 
 ### This fork
 
+- **Fix: preserve the Pi transcript contract (issue #6)** — Reconstruct prompt/tool state before forwarding instructions, skills, history, and isolated summaries. Validate imported history before reuse and rebuild changed projections without overwriting child or parent sessions. Automatically restart live queries when consumed history or MCP declarations change, importing completed results rather than executing their tools again. Limit recovery to three restarts per turn and fence retired callbacks. Preserve the existing sanitizer without adding upstream's rejection guard or capture registry.
+- **Add: discover models from Pi's catalog** — Exact IDs remain selectable; family shortcuts follow the newest version. Keep explicit context windows and validated steering scopes. Request bare `claude-opus-5-5` at 1M under maintainer-confirmed policy, retain Fable eligibility checks, and omit `forceTwoHundredK`.
+- **Fix: recover stalled streams without losing fork accounting** — Combine upstream's fallback delivery and abandoned-block cleanup with accumulated usage, reconciliation, and Claude Code cost adoption.
+- **Fix: align AskClaude defaults and effort mapping** — Derive schema, descriptions, and execution from configured defaults while preserving fork restrictions. Keep explicit `max`; null or invalid catalog mappings omit effort rather than invoking the generic fallback.
+- **Bump: pin Agent SDK 0.3.280 and require Pi 0.86.1** — Pin Anthropic SDK types to 0.124.0 and retain MCP SDK 1.29.0. Keep local Pi fork links and update stock CI to the peer floor.
+- **Tests: verify the compiled Pi fork without provider quota** — Cover registered-provider forwarding, summaries, queued skill restrictions, carry-forward, and independent child registries with mocked SDK responses. Refresh offline Claude Code 2.1.280 inventory contracts from initialization probes.
+
+### Earlier fork development
+
+The notes below record earlier development stages. The integration entries above supersede their older model-selection and dependency policies.
+
 - **Tests: pin pi-fence's environment passthrough on every Claude Code spawn path** — `tests/unit-fence-env.mjs` records that the bridge already satisfies the fence contract, with no production change: `claudeChildEnv` spreads its `baseEnv` untouched, and every `query()` call site feeds it `process.env`, so the variables pi-fence injects into the fenced process (`CLAUDE_CODE_OAUTH_TOKEN`, `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`, `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`) reach Claude Code's child verbatim. The tests hold `claudeChildEnv` and the three `sdk-options.ts` builders to that, plus two invariants a future edit could silently break: a supplied `baseEnv` wins over `process.env` (a name the parent carries but the caller did not pass must not leak into the child), and `extra` can neither drop the fence variables nor override `CLAUDE_CONFIG_DIR`, which is applied last on purpose. The failure mode being guarded is silent — a stripped proxy or CA variable surfaces only as Claude Code failing to reach api.anthropic.com from inside the sandbox, never as a thrown error. One limit stays: Claude Code's own settings `env` (user and project, which AskClaude loads) may override these names after startup; the fence then fails closed, because the kernel denies direct egress and the proxy injects the real token only at api.anthropic.com.
 
 - **Add: claude-fable-5-1 model** — Claude Fable 5.1 is selectable as `claude-bridge/claude-fable-5-1`. It is **native 1M on the bare id**, unlike Fable 5, which still needs the `[1m]` suffix: measured on Claude Code 2.1.259 against a Max account, where `claude-fable-5-1` and `claude-fable-5-1[1m]` both report a `modelUsage` context window of 1000000, so the bare form is requested for the same reason as Opus 5 — it is what Claude Code echoes back as canonical. The dotted spelling `claude-fable-5.1` is not a valid Claude Code id and is rejected outright; only the dashed form works. Requires the Claude Agent SDK `0.3.259` bump above (CC >=2.1.251). **Ordering is load-bearing:** `resolveModel` matches with `includes`, and `"claude-fable-5-1".includes("claude-fable-5")` is true, so `claude-fable-5` is listed ahead of 5.1 in `MODEL_IDS_IN_ORDER` — otherwise the exact id `claude-fable-5` would silently resolve to 5.1. A consequence is that the bare `fable` shortcut still resolves to Fable 5, and 5.1 is selected by its full id; a regression test pins all three lookups. Eligibility is gated on the same Max-or-Extra-Usage terms as Fable 5, which is a **fail-closed choice rather than a measurement** — the probe ran on a Max account, so Pro-without-Extra-Usage was never exercised; if 5.1 turns out to be unrestricted on Pro, the fix is to drop the id from `FABLE_MODEL_IDS`. Steering is deliberately **not** extended to it: `DEFAULT_STEERING_MODELS` and `MODEL_EXTRA_RULES` mean "a blind-graded A/B measured this text on this model", and no such run exists for 5.1.
@@ -86,6 +97,23 @@
 - **Tests: query teardown** — the queue rewrite dropped the old synthetic drain scenarios without recording the gap, so nothing covered what happens to a parked MCP handler when its query goes away. The three copies of that teardown are now one `QueryContext.releasePendingToolCalls`, the abort composition is `drainForAbort`, and `tests/unit-queue.mjs` drives both against the real handler — including the abort race where delivery is parked on a steer's stdin ack. `tests/int-shutdown-kills-cc.mjs` additionally pins that a pi shutdown and a user abort each reap the Claude Code subprocess with a tool call in flight, which no test asserted before.
 - **Tests: harness hygiene** — the unit suite redirects the debug log via a preloaded `tests/lib/setup.mjs` so no test can write to the real bridge log, and the integration harness now fails fast when `~/.claude` is unwritable instead of surfacing a confusing resume error much later. Bash integration scripts autoload `.env.test` like the RPC harness already did, and two assertions that depended on model whim were dropped or tightened.
 - **Internal: trim redundant dependencies** — pi bundles typebox and its extension loader always aliases the import to that copy, so shipping our own only made consumers install a redundant one pi ignores. Now `peerDependencies: "*"` plus a devDependency for typechecking, as pi's packaging docs require. `@anthropic-ai/sdk` moves to devDependencies for the same reason — it is only ever imported for types.
+
+## Upstream 0.8.0 — 2026-09-20
+
+These entries describe upstream's release, not every policy selected by this fork.
+The original record is available in `0750748:CHANGELOG.md`; fork differences appear under `UNRELEASED`.
+
+- **Fix: Pi 0.86 support (issues #106, #109)** — Replay transcript system messages into prompt/tool state and exclude them from imported history. Route one-off summaries through isolated queries.
+- **Add: catalog-driven models** — Discover models from Pi-AI and hide dated aliases. Prefer exact IDs, then the newest matching version.
+- **Fix: explicit 1M policy** — Upstream restricts suffixed requests to its supported set, retains plan gates, and introduces `forceTwoHundredK`. This fork retains its own request-ID policy.
+- **Fix: prompt capture lifecycle (issues #64, #91)** — Upstream shares captures across module instances and refreshes keys at agent and turn boundaries. This fork retains direct extraction instead.
+- **Fix: independent child registries (issue #91)** — Register the provider when a child registry lacks it, without replacing the parent's registered stream.
+- **Fix: stable git prompt cache (issue #73)** — Disable git instructions on the provider path.
+- **Fix: quota failures trigger fallback (issue #58)** — Normalize rejected subscription failures and rate-limit notices.
+- **Fix: AskClaude isolation (issue #59)** — Upstream suppresses native skill listings and always sends the Claude Code preset. This fork retains its existing mode-specific policy.
+- **Fix: session verification** — Count attachment records when validating rebuilt sessions.
+- **Bump: Pi and SDK dependencies** — Upstream requires Pi 0.85.0 and upgrades Agent SDK to 0.3.267.
+- **Tests: session resume and branch summaries** — Reorder AskClaude turns and complete the extension-factory mock.
 
 ## 0.6.3 — 2026-07-26
 

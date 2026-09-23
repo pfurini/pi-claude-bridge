@@ -25,6 +25,7 @@ const SKELETON_END_LINE_PREFIX =
 	"- Always read pi .md files completely and follow links to related docs";
 const SUB_AGENT_MARKER = "<sub_agent_context>";
 const CWD_LINE = /^Current working directory: .*$/m;
+const CWD_SECTION = /^<cwd>\n[^\n]*\n<\/cwd>$/m;
 
 const PROJECT_CONTEXT_START = "<project_context>";
 const PROJECT_CONTEXT_END = "</project_context>";
@@ -126,7 +127,10 @@ export function sanitizeHarnessPrompt(
 		if (endLineIdx !== -1) {
 			const newlineIdx = result.indexOf("\n", endLineIdx);
 			const lineEnd = newlineIdx === -1 ? result.length : newlineIdx + 1;
-			const spliced = spliceCollapsingSeam(result, startIdx, lineEnd);
+			const docsClose = result.slice(lineEnd).match(/^<\/docs>(?:\r?\n|$)/);
+			const cutEnd = docsClose && result.slice(startIdx, lineEnd).includes("<docs>")
+				? lineEnd + docsClose[0].length : lineEnd;
+			const spliced = spliceCollapsingSeam(result, startIdx, cutEnd);
 			result = spliced.text;
 			cutBoundary = spliced.boundary;
 			changed = true;
@@ -140,7 +144,7 @@ export function sanitizeHarnessPrompt(
 	const subAgentIdx = result.indexOf(SUB_AGENT_MARKER);
 	if (subAgentIdx !== -1) {
 		const head = result.slice(0, subAgentIdx);
-		const match = head.match(CWD_LINE);
+		const match = head.match(CWD_LINE) ?? (cutBoundary !== -1 ? head.match(CWD_SECTION) : null);
 		if (match && typeof match.index === "number") {
 			const from = match.index;
 			const to =
@@ -154,7 +158,8 @@ export function sanitizeHarnessPrompt(
 		let i = cutBoundary;
 		while (result[i] === "\n") i++;
 		const rest = result.slice(i);
-		const adjacent = rest.match(/^Current working directory: .*(\n|$)/);
+		const adjacent = rest.match(/^Current working directory: .*(\n|$)/)
+			?? rest.match(/^<cwd>\n[^\n]*\n<\/cwd>(?:\n|$)/);
 		if (adjacent) {
 			result = spliceCollapsingSeam(result, i, i + adjacent[0].length).text;
 			changed = true;

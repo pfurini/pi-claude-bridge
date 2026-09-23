@@ -3,9 +3,8 @@
 //
 // When the first provider turn triggers tool calls (Case 1 clean start),
 // sharedSession is null throughout, so tool-result cursor tracking never
-// fires. Without the latestCursor fix, the .then handler falls back to the
-// stale closure's context.messages.length (=1), causing a spurious rebuild
-// on the next turn.
+// fires on the shared session. Query-local history tracking must retain those
+// messages through completion, rather than reverting to the initial request's length.
 //
 // See: https://github.com/elidickinson/pi-claude-bridge/issues/4
 

@@ -21,15 +21,34 @@ Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/
 pi install npm:pi-claude-bridge
 ```
 
+Requires Pi 0.86.1 or newer (`pi-ai`, `pi-coding-agent`, and `pi-tui`) for the transcript provider contract.
+
 ## Provider
 
-Use `/model` to select `claude-bridge/claude-fable-5`, `claude-bridge/claude-fable-5-1`, `claude-bridge/claude-opus-5`, `claude-bridge/claude-opus-4-8`, `claude-bridge/claude-opus-4-7`, `claude-bridge/claude-opus-4-6`, `claude-bridge/claude-sonnet-5`, `claude-bridge/claude-sonnet-4-6`, or `claude-bridge/claude-haiku-4-5`.
+Use `/model` to select Claude models from Pi's installed Anthropic catalog, subject to the eligibility policy below.
 
-Behind the scenes, pi's tools are bridged to Claude Code but it should all work like normal in pi. Bash commands get a 120-second default timeout (matching Claude Code's default) since pi's bash has no timeout by default. Skills in pi are copied over to Claude Code's system prompt so should work as they would with any other pi provider. Steering works mid-turn: a message sent while Claude is running a tool reaches it at that tool boundary, not after the whole turn finishes.
+- The picker discovers new catalog entries automatically and hides dated snapshot aliases.
+- Full IDs select exact versions. Family shortcuts select the newest matching version.
+- Use full IDs when reproducibility matters; catalog updates can change shortcut targets.
+- Model discovery does not automatically extend context-window policy or validated steering.
 
-**1M Context:** Opus 5, Opus 4.7, and Opus 4.8 get 1M context by default. Opus 5 is native 1M: it is requested by its bare model ID and depends on neither `provider.plan` nor `provider.longContextExtraUsage`. Opus 4.6 only gets 1M if you're on a Max plan or pay for Extra Usage. Sonnet 4.6 only gets 1M if you pay for Extra Usage. You will need to set `provider.plan` and/or `provider.longContextExtraUsage` for 1M context in Opus 4.6/Sonnet 4.6 as described in [Configuration](#configuration).
+Pi's tools run through the bridge's MCP server. Bash calls receive a 120-second default timeout.
+The bridge forwards Pi's project instructions and skill listing. Mid-turn steering reaches Claude Code at a tool boundary.
 
-**Model shortcuts:** `opus` selects Opus 5. Opus 4.8, 4.7, and 4.6 remain selectable by their full IDs for pinning and rollback.
+**Context and eligibility:**
+
+| Models | Request ID | Registered window | Eligibility |
+| --- | --- | --- | --- |
+| Opus 5.5, 5, 4.8, 4.7 | Bare ID | 1M | No local plan gate |
+| Fable 5.1 | Bare ID | 1M | Max or Extra Usage |
+| Fable 5 | `[1m]` suffix | 1M | Max or Extra Usage |
+| Sonnet 5 | `[1m]` suffix | 1M | No local plan gate |
+| Opus 4.6 | `[1m]` when eligible | 1M or 200K | Max or Extra Usage for 1M |
+| Sonnet 4.6 | `[1m]` when eligible | 1M or 200K | Extra Usage for 1M |
+| Other catalog models | Bare ID | 200K | No additional local gate |
+
+Opus 5.5's bare-ID 1M policy is maintainer-confirmed. Existing measurements predate SDK 0.3.280; see [diag/CONTEXT-SIZE.md](diag/CONTEXT-SIZE.md).
+Fable 5.1's Pro restriction remains conservative rather than measured on Pro.
 
 ## AskClaude Tool
 
@@ -41,14 +60,19 @@ Opt-in: set `askClaude.enabled` to `true` (see [Configuration](#configuration)).
 - "Ask claude to poke holes in this theory"
 - "Find all the places in the codebase that handle auth"
 
+Delegated calls use the configured Claude profile and exclude native `CLAUDE.md` files.
+Full mode always receives Claude Code's preset. Read and none modes receive the preset only when the bridge has instructions to append.
+None mode blocks all tools; read and full modes retain their existing native-skill policy.
+
 You could also create skills or add something to AGENTS.md to e.g. "Always call Ask Claude to review complicated feature implementations before considering the task complete."
 
 ### Parameters
 
 - **`prompt`** — the question or task for Claude Code
 - **`mode`** — `read` (default, read files and search/fetch on web), `none` (no file access), or `full` (read+write+bash). Set `allowFullMode: false` to disable full mode.
-- **`model`** — `opus` (default, resolves to Opus 5), `sonnet`, `haiku`, or a full model ID
+- **`model`** — `opus` by default, another family shortcut, or an exact full model ID. Shortcuts follow the newest installed catalog version.
 - **`thinking`** — effort level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Levels resolve per model, the same way they do for the provider: on models with a distinct top-but-one tier (Opus 5, Opus 4.8, Opus 4.7, Sonnet 5, Fable 5, Fable 5.1) `xhigh` means the literal `xhigh` tier, and `max` is the maximum. On models with no separate `xhigh` tier (Opus 4.6, Sonnet 4.6, Haiku 4.5) `xhigh` and `max` both request the maximum.
+  Explicit null or invalid catalog mappings omit the effort argument. Only missing mappings use the generic fallback.
 - **`isolated`** — when `true`, Claude gets a clean session with no conversation history (default: `false`)
 
 ## Configuration
@@ -105,7 +129,7 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 
 **Startup notice:** the first interactive session to reach Claude Code lists whichever of `provider.plan` and `askClaude.enabled` you have left unset, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
 
-**Extension providers and models.json:** pi's `modelOverrides` in `~/.pi/agent/models.json` do not currently apply to extension-registered providers (like claude-bridge). Overriding `contextWindow` or other fields requires editing `src/models.ts` directly.
+The bridge's explicit context-window policy lives in `src/models.ts`. This fork does not expose `provider.forceTwoHundredK`.
 
 ## Usage events
 
@@ -163,6 +187,20 @@ Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 
 When filing a bug about a session-resume failure (e.g. "No conversation found"), the most useful attachments are the `syncResult:` lines from the bridge log plus the matching `cc-cli-logs/` file for the failing query.
 
+## Compatibility with other extensions
+
+The bridge reconstructs prompt and tool state from Pi's transcript before extracting project instructions and skills.
+The existing sanitizer removes recognized inherited Pi boilerplate and exact duplicate forwarded blocks.
+This fork does not use an exact-key prompt-capture registry or reject authored text merely for mentioning documentation paths.
+
+The bridge checks projected history before reusing persisted Claude sessions. Changed prefixes trigger rebuilding from Pi's projection rather than raw session entries.
+Independent child sessions retain separate imported histories.
+
+During tool continuation, changed history or effective MCP declarations trigger an automatic restart into a rotated Claude session.
+The bridge imports completed results rather than re-executing their tools. Recovery requires no attached client.
+Recovery allows three restarts per turn. Startup failures, cancellation, or budget exhaustion produce terminal errors rather than indefinite retries.
+Retired queries retain their observed usage and estimated costs, matching the existing abort policy when no terminal cost report arrives.
+
 ## Known issues
 
 After a Claude Code release, review `getAskClaudeToolPolicy()` in `src/sdk-options.ts`. It gates which Claude Code tools the AskClaude subagent may invoke in `read`, `full`, and `none` modes. Add new agentic tools (PlanMode, Task spawning, and similar tools) to the appropriate policy if subagents should not use them.
@@ -170,3 +208,7 @@ After a Claude Code release, review `getAskClaudeToolPolicy()` in `src/sdk-optio
 **Sessions get rebuilt more often than they need to be, and a rebuild is expensive.** The bridge rewrites Claude Code's session from pi's history whenever pi's messages move underneath it — after an abort, `/compact`, tree navigation, or an API error. Measured over this repo's own bridge log, a rebuild boundary loses the prompt cache roughly 58% of the time against 26% for a plain resume, so an abort-heavy session costs noticeably more than a clean one. Aborts alone are 46% of rebuilds.
 
 **Files Claude Code edits are not carried across a rebuild.** CC records the post-edit contents as an `edited_text_file` attachment; those aren't carried, because they hang off a tool-result record rather than a prompt and so have no stable position to restore them to. The edit itself survives — it's in the history as a tool call and its result — so this costs Claude the file snapshot, not the knowledge that it made the change. `@file` expansions *are* carried.
+
+**On pi 0.86 with bridge 0.7.0 or older, every new session fails.** The symptoms are `WARNING session verify: file missing after save` and then `No conversation found with session ID` on the next turn: pi 0.86 moved the system prompt and tool set into `role:"system"` transcript messages, which the older bridge read as a one-message history. Upgrade the bridge rather than downgrading pi — on 0.86 the old bridge also serves no tools, so a turn that does go through looks normal while the model writes tool calls out as prose instead of calling anything.
+
+**Exported Anthropic environment variables override the Claude Code child (issue #107).** The bridge passes the ambient environment through, so an `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` exported for another gateway (a corporate proxy, LiteLLM) redirects Claude Code as well, and every turn fails with that gateway's auth error. Unset them for the pi process.
