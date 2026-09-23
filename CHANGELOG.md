@@ -9,7 +9,7 @@
 - **Fix: recover stalled streams without losing fork accounting** — Combine upstream's fallback delivery and abandoned-block cleanup with accumulated usage, reconciliation, and Claude Code cost adoption.
 - **Fix: align AskClaude defaults and effort mapping** — Derive schema, descriptions, and execution from configured defaults while preserving fork restrictions. Keep explicit `max`; null or invalid catalog mappings omit effort rather than invoking the generic fallback.
 - **Bump: pin Agent SDK 0.3.280 and require Pi 0.86.1** — Pin Anthropic SDK types to 0.124.0 and retain MCP SDK 1.29.0. Keep local Pi fork links and update stock CI to the peer floor.
-- **Tests: verify the compiled Pi fork without provider quota** — Cover registered-provider forwarding, summaries, queued skill restrictions, carry-forward, and independent child registries with mocked SDK responses. Refresh offline Claude Code 2.1.280 inventory contracts from initialization probes.
+- **Tests: verify the compiled Pi fork without provider quota** — Cover registered-provider forwarding, summaries, queued skill restrictions, carry-forward, and independent child registries with mocked SDK responses. Refresh offline Claude Code 2.1.280 inventory contracts from initialization probes. Isolate unit-test Claude profiles before integration-harness imports so checked-in local paths cannot break CI or touch developer profiles.
 
 ### Earlier fork development
 

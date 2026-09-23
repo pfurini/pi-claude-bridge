@@ -2,6 +2,11 @@ import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { terminateChild } from "./lib/rpc-harness.mjs";
+import { dirname, join } from "node:path";
+
+it("uses the unit preload's temporary Claude profile", () => {
+	assert.equal(process.env.CLAUDE_CONFIG_DIR, join(dirname(process.env.CLAUDE_BRIDGE_DEBUG_PATH), "claude"));
+});
 
 function spawnFixture(source) {
 	const child = spawn(process.execPath, ["-e", source], {
