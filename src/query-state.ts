@@ -9,6 +9,7 @@
 import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 import type { PromptStream } from "./prompt-stream.js";
+import type { AccountingSnapshot } from "./session-accounting.js";
 
 export interface PendingToolCall {
 	toolName: string;
@@ -34,8 +35,9 @@ export class QueryContext {
 	currentPiStream: AssistantMessageEventStream | null = null;
 	latestHistory: string[] = [];
 	toolInventory: string | undefined;
+	systemPromptAppend: string | undefined;
 	restartCount = 0;
-	retire: (() => void) | undefined;
+	retire: ((reason?: string) => void) | undefined;
 	preserveSharedSession = false;
 	pendingToolCalls = new Map<string, PendingToolCall>();
 	pendingResults = new Map<string, McpResult>();
@@ -88,6 +90,8 @@ export class QueryContext {
 	/** Sum of closed segments' estimated `cost.total`. The final segment's cost is
 	 *  trued-up to CC's figure at result time, so it is deliberately NOT banked here. */
 	queryBankedCost = 0;
+	accountingBaseline: AccountingSnapshot = { totalCostUsd: 0, modelUsage: {} };
+	accountingResult: AccountingSnapshot | undefined;
 	/** Per-closed-segment token snapshots, for the reconciler's diag breakdown on a
 	 *  mismatch. The still-open final segment is not here — the reconciler appends it. */
 	querySegments: UsageTokens[] = [];
@@ -108,6 +112,8 @@ export class QueryContext {
 		this.queryTotals = zeroUsageTokens();
 		this.queryBankedCost = 0;
 		this.querySegments = [];
+		this.accountingBaseline = { totalCostUsd: 0, modelUsage: {} };
+		this.accountingResult = undefined;
 	}
 
 	/** Bank the current segment (this pi message) into the query totals before
@@ -221,17 +227,19 @@ interface ReapableQuery {
  *  prevent. */
 export function reapLiveQueries(contexts: Set<QueryContext>, reason: string): void {
 	for (const queryCtx of [...contexts]) {
-		try {
-			if (queryCtx.promptStream) drainForAbort(queryCtx, queryCtx.promptStream, reason);
-		} catch {
-			// Best-effort settling only; the kill below still runs.
-		}
 		const q = queryCtx.activeQuery as ReapableQuery | null;
-		if (q) {
-			// interrupt() asks the CLI to stop gracefully; close() kills it. Both
-			// are needed (interrupt alone lets the current API call finish), and
-			// interrupt must NOT be awaited before close — a sync try/catch would
-			// not catch its rejection, so swallow it on the promise instead.
+		let retired = false;
+		try {
+			if (queryCtx.retire) {
+				queryCtx.retire(reason);
+				retired = true;
+			} else if (queryCtx.promptStream) {
+				drainForAbort(queryCtx, queryCtx.promptStream, reason);
+			}
+		} catch {
+			// A failed drain or retirement must not prevent killing the captured process.
+		}
+		if (q && !retired) {
 			try { void q.interrupt().catch(() => {}); } catch {}
 			try { q.close(); } catch {}
 		}

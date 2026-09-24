@@ -14,6 +14,8 @@
 // skeleton via the fork's own `buildSystemPrompt` so template drift fails
 // loudly instead of silently re-exposing the signature.
 
+import { extractSkillsBlock } from "./skills.js";
+
 const SKELETON_START = "You are an expert coding assistant operating inside pi";
 // A prefix of the skeleton's last guideline bullet, matched as a substring
 // and extended to the end of its line so the rest of the sentence doesn't
@@ -27,6 +29,46 @@ const SUB_AGENT_MARKER = "<sub_agent_context>";
 const CWD_LINE = /^Current working directory: .*$/m;
 const CWD_SECTION = /^<cwd>\n[^\n]*\n<\/cwd>$/m;
 
+const STOCK_PREAMBLE = "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";
+const STOCK_TOOL_FOOTER = "\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.";
+const STOCK_RULES = new Set([
+	"- Use bash for file operations like ls, rg, find",
+	"- Use PowerShell for file operations like listing, searching, and finding files",
+	"- Use bash or PowerShell for file operations like listing, searching, and finding files",
+	"- Be concise in your responses",
+	"- Show file paths clearly when working with files",
+]);
+const DOCS_HEADER = "Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):";
+const STOCK_DOC_LINES = new Set([
+	DOCS_HEADER,
+	"- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory",
+	"- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)",
+	"- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing",
+	"- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)",
+]);
+
+/** Remove recognized template text, never an entire section merely because its name is built in. */
+export function sanitizeSystemSection(name: string, text: string): string | undefined {
+	const open = `<${name}>\n`;
+	const close = `\n</${name}>`;
+	const wrapped = text.startsWith(open) && text.endsWith(close);
+	const body = wrapped ? text.slice(open.length, -close.length) : text;
+	if (name === "preamble" && body === STOCK_PREAMBLE) return undefined;
+	if (name === "cwd" && /^(?:\/|[A-Za-z]:[\\/])[^\n]*$/.test(body)) return undefined;
+	if (name === "tools" && body.endsWith(STOCK_TOOL_FOOTER)) {
+		const inventory = body.slice(0, -STOCK_TOOL_FOOTER.length);
+		if (inventory === "(none)" || inventory.split("\n").every(line => /^- [^:]+: .+$/.test(line))) return undefined;
+	}
+	let retained = body;
+	if (name === "rules") retained = body.split("\n").filter(line => !STOCK_RULES.has(line)).join("\n");
+	if (name === "docs" && body.startsWith(`${DOCS_HEADER}\n`)) {
+		retained = body.split("\n").filter(line => !STOCK_DOC_LINES.has(line) && !/^- (?:Main documentation: .+[\\/]README\.md|Additional docs: .+[\\/]docs|Examples: .+[\\/]examples \(extensions, custom tools, SDK\))$/.test(line)).join("\n");
+	}
+	if (retained === body) return text;
+	if (!retained.trim()) return undefined;
+	return wrapped ? `${open}${retained}${close}` : retained;
+}
+
 const PROJECT_CONTEXT_START = "<project_context>";
 const PROJECT_CONTEXT_END = "</project_context>";
 // Deliberately NOT the versioned listing delimiters src/skills.ts extracts by:
@@ -36,7 +78,6 @@ const PROJECT_CONTEXT_END = "</project_context>";
 // "Unifying" the two would leave three orphan lines of pi prose behind.
 const SKILLS_START =
 	"The following skills provide specialized instructions for specific tasks.";
-const SKILLS_END = "</available_skills>";
 
 function extractRawBlock(
 	source: string,
@@ -93,6 +134,24 @@ function removeAllExact(text: string, block: string | undefined): string {
 	return result;
 }
 
+function removeForwardedSkills(text: string, source: string): string {
+	const block = extractSkillsBlock(source, { framing: "read-mcp" })?.block;
+	if (!block) return text;
+	const preambleLines = new Set([
+		SKILLS_START,
+		"Use the read tool to load a skill's file when the task matches its description.",
+		"Use the skill tool to invoke a skill and receive its rendered instructions when the task matches its description.",
+		"When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
+	]);
+	let result = text;
+	for (let at = result.indexOf(block); at !== -1; at = result.indexOf(block)) {
+		const preamble = result.lastIndexOf(SKILLS_START, at);
+		const stockPreamble = preamble !== -1 && result.slice(preamble, at).split("\n").every(line => line === "" || preambleLines.has(line));
+		result = spliceCollapsingSeam(result, stockPreamble ? preamble : at, at + block.length).text;
+	}
+	return result;
+}
+
 /**
  * Strip pi's `buildSystemPrompt` skeleton — and, when `opts.sourcePrompt` is
  * given, duplicate `<project_context>`/skills blocks — from a prompt about to
@@ -119,22 +178,46 @@ export function sanitizeHarnessPrompt(
 	let result = text;
 	let changed = false;
 
-	// 1. Skeleton range: identity paragraph through the end of the docs-bullet line.
+	// Preserve authored rules and section overrides inside a recognized harness template.
 	const startIdx = result.indexOf(SKELETON_START);
 	let cutBoundary = -1;
-	if (startIdx !== -1) {
+	let cutEnd = -1;
+	let retained = "";
+	if (startIdx !== -1 && result.startsWith(STOCK_PREAMBLE, startIdx)) {
+		const after = result.slice(startIdx + STOCK_PREAMBLE.length);
+		const docsEnd = after.indexOf("</docs>");
+		if (docsEnd !== -1) {
+			const region = after.slice(0, docsEnd + "</docs>".length);
+			const sections = [...region.matchAll(/<(tools|rules|docs)>\n[\s\S]*?\n<\/\1>/g)];
+			if (new Set(sections.map(match => match[1])).size === 3) {
+				retained = region;
+				for (const match of sections) retained = retained.replace(match[0], sanitizeSystemSection(match[1], match[0]) ?? "");
+				retained = retained.trim();
+				cutEnd = startIdx + STOCK_PREAMBLE.length + region.length;
+			}
+		}
+	}
+	if (cutEnd === -1 && startIdx !== -1) {
 		const endLineIdx = result.indexOf(SKELETON_END_LINE_PREFIX, startIdx);
 		if (endLineIdx !== -1) {
 			const newlineIdx = result.indexOf("\n", endLineIdx);
 			const lineEnd = newlineIdx === -1 ? result.length : newlineIdx + 1;
 			const docsClose = result.slice(lineEnd).match(/^<\/docs>(?:\r?\n|$)/);
-			const cutEnd = docsClose && result.slice(startIdx, lineEnd).includes("<docs>")
-				? lineEnd + docsClose[0].length : lineEnd;
+			cutEnd = docsClose && result.slice(startIdx, lineEnd).includes("<docs>") ? lineEnd + docsClose[0].length : lineEnd;
+			const legacyRules = result.slice(startIdx, cutEnd).match(/\nGuidelines:\n([\s\S]*?)(?=\nPi documentation\b)/)?.[1];
+			retained = legacyRules ? sanitizeSystemSection("rules", legacyRules)?.trim() ?? "" : "";
+		}
+	}
+	if (cutEnd !== -1) {
+		if (retained) {
+			result = result.slice(0, startIdx) + retained + result.slice(cutEnd);
+			cutBoundary = startIdx + retained.length;
+		} else {
 			const spliced = spliceCollapsingSeam(result, startIdx, cutEnd);
 			result = spliced.text;
 			cutBoundary = spliced.boundary;
-			changed = true;
 		}
+		changed = true;
 	}
 
 	// 2. Skeleton footer: pi appends "Current working directory: …" verbatim at
@@ -174,12 +257,9 @@ export function sanitizeHarnessPrompt(
 			PROJECT_CONTEXT_START,
 			PROJECT_CONTEXT_END,
 		);
-		const skillsBlock = opts.skillsForwarded === false
-			? undefined
-			: extractRawBlock(opts.sourcePrompt, SKILLS_START, SKILLS_END);
 		const beforeLength = result.length;
 		result = removeAllExact(result, projectBlock);
-		result = removeAllExact(result, skillsBlock);
+		if (opts.skillsForwarded !== false) result = removeForwardedSkills(result, opts.sourcePrompt);
 		if (result.length !== beforeLength) changed = true;
 	}
 

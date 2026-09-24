@@ -83,10 +83,11 @@ it("the real bridge factory honors the compiled Pi transcript and summary contra
 		assert.equal(typeof state.queries.at(-1).options.systemPrompt, "string");
 		const tree = await handlers.get("session_before_tree")[0]({ type: "session_before_tree", preparation: { entriesToSummarize: branchEntries, userWantsSummary: true, targetId: branchEntries[0].id }, signal: new AbortController().signal }, ctx);
 		assert.ok(tree.summary?.summary.includes("MOCK_BRIDGE_REPLY"), JSON.stringify({ tree, notices }));
-		const oneOff = await runtime.completeSimple(model, { systemPrompt: "SUMMARY_SYSTEM", messages: [user("summarize")] }, { cacheRetention: "none" });
+		const oneOff = await runtime.completeSimple(model, { systemPrompt: "SUMMARY_SYSTEM", messages: [user("summarize")] }, { cacheRetention: "none", reasoning: "max" });
 		assert.equal(oneOff.stopReason, "stop");
 		assert.equal(state.queries.at(-1).options.systemPrompt, "SUMMARY_SYSTEM");
 		assert.equal(state.queries.at(-1).options.persistSession, false);
+		assert.equal(state.queries.at(-1).options.effort, "max");
 
 		const childCwd = join(root, "child"); mkdirSync(childCwd);
 		const skillPath = join(root, "SKILL.md");
@@ -118,6 +119,7 @@ it("the real bridge factory honors the compiled Pi transcript and summary contra
 		assert.match(childSession.getLastAssistantText(), /MOCK_BRIDGE_REPLY/);
 		assert.ok(childRuntime.getModel("claude-bridge", model.id));
 		assert.ok(state.queries.at(-1).options.systemPrompt.append.includes("CHILD_PROJECT_CONTRACT"));
+		assert.ok(state.queries.at(-1).options.systemPrompt.append.includes("EXTENSION_SECTION_RULE"), "the SDK must receive the final effective custom section");
 		assert.ok(state.queries.at(-1).options.systemPrompt.append.includes('version="2"'));
 		assert.ok(servedTools(state.queries.at(-1)).includes("bash"));
 		state.pauseNext = true;

@@ -29,6 +29,15 @@ const fixture = loadFixture;
 const run = (messages, opts = {}) => driveConsumeQuery(__test.consumeQuery, QueryContext, messages, { model: zeroModel, ...opts });
 
 describe("cost adoption", () => {
+	it("subtracts the resumed session baseline before adopting this query's cost", async () => {
+		const messages = fixture("single-tool");
+		const cost = fixtureCost(messages);
+		messages.find(message => message.type === 'result').total_cost_usd += 1;
+		const { ctx, doneMessages } = await run(messages, { model: { ...pricedModel, id: 'resumed-priced-model' }, rearm: true, accountingBaseline: { totalCostUsd: 1 } });
+		const sum = [...doneMessages, ctx.turnOutput].reduce((total, message) => total + message.usage.cost.total, 0);
+		assert.ok(Math.abs(sum - cost) < 1e-12, `query charged ${sum}, expected ${cost}`);
+	});
+
 	it("a single-response turn reports CC's total_cost_usd exactly", async () => {
 		const messages = fixture("text");
 		const { ctx } = await run(messages);

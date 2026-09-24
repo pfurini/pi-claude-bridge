@@ -34,7 +34,7 @@ const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PARENT_MODEL = "claude-bridge/claude-haiku-4-5";
 const SUBAGENT_MODEL = "claude-bridge/claude-fable-5";
 const TEST_TIMEOUT = 240_000;
-const SUBAGENTS_SOURCE = "npm:@tintinweb/pi-subagents@0.14.3";
+const SUBAGENTS_SOURCE = process.env.CLAUDE_BRIDGE_TESTING_SUBAGENTS_SOURCE ?? "npm:@tintinweb/pi-subagents@0.14.3";
 const SANITIZE_MARKER =
 	/provider: sanitizeHarnessPrompt stripped harness boilerplate/;
 
@@ -69,13 +69,14 @@ Call it with:
 - description: fable plan subagent
 - model: ${SUBAGENT_MODEL}
 - max_turns: 2
+- run_in_background: false
 - prompt: Reply with exactly the word ok and nothing else.
 
 After the Agent tool returns, reply with exactly: DONE <the agent's reply or error>`,
 		TEST_TIMEOUT,
 	);
 
-	if (!/^DONE\b/.test(text.trim())) {
+	if (!/^DONE\s+ok[.!]?$/i.test(text.trim())) {
 		throw new Error(
 			`parent did not report Agent completion. Text: ${text.slice(0, 500)}`,
 		);
@@ -87,6 +88,9 @@ After the Agent tool returns, reply with exactly: DONE <the agent's reply or err
 	}
 
 	const log = readFileSync(DEBUG_LOG, "utf8");
+	if (!/provider: fresh query model=claude-fable-5(?:\[1m\])? /.test(log) || !/servedModel=claude-fable-5\b/.test(log)) {
+		throw new Error("the child must complete a real Fable 5 provider request");
+	}
 	if (!SANITIZE_MARKER.test(log)) {
 		throw new Error(
 			`debug log never showed the sanitizer's strip marker (${SANITIZE_MARKER}).\n\nExcerpt:\n${log.slice(-3000)}`,

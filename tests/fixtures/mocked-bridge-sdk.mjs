@@ -8,15 +8,16 @@ export function query(input) {
 	state.onQuery?.(input);
 	if (plan.failStart) throw new Error("MOCK_START_FAILURE");
 	const session_id = input.options.resume ?? randomUUID();
-	const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+	const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, ...plan.usage };
 	const event = event => ({ type: "stream_event", session_id, event });
 	let finish;
-	const control = { closed: false, sessionId: session_id, prompts: [], done: new Promise(resolve => { finish = resolve; }) };
+	const control = { closed: false, started: false, sessionId: session_id, prompts: [], done: new Promise(resolve => { finish = resolve; }) };
 	(state.controls ??= []).push(control);
 	return {
-		close() { control.closed = true; },
+		close() { control.closed = true; if (!control.started) finish(); },
 		async interrupt() {},
 		async *[Symbol.asyncIterator]() {
+			control.started = true;
 			try {
 				if (state.pauseNext) {
 					state.pauseNext = false;
@@ -61,7 +62,8 @@ export function query(input) {
 				yield event({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage });
 				yield event({ type: "message_stop" });
 				yield { type: "assistant", session_id, message: { id, content: [{ type: "text", text }], usage } };
-				yield { type: "result", subtype: "success", session_id, is_error: false, result: text, usage, total_cost_usd: 0 };
+				yield { type: "result", subtype: "success", session_id, is_error: false, result: text, usage, total_cost_usd: 0, ...plan.result };
+				if (plan.failAfterResult) throw new Error("MOCK_AFTER_RESULT");
 			} finally { finish(); }
 		},
 	};

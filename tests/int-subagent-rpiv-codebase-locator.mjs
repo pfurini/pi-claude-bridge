@@ -19,7 +19,7 @@ const TEST_TIMEOUT = 240_000;
 // Load pi-subagents straight from npm via pi's `-e npm:` source, pinned to a
 // version that passes modelRuntime to createAgentSession (pi 0.80.8 dropped the
 // modelRegistry option); older versions fail "No API key found for claude-bridge".
-const SUBAGENTS_SOURCE = "npm:@tintinweb/pi-subagents@0.14.3";
+const SUBAGENTS_SOURCE = process.env.CLAUDE_BRIDGE_TESTING_SUBAGENTS_SOURCE ?? "npm:@tintinweb/pi-subagents@0.14.3";
 const RPIV_LOCATOR_FIXTURE = resolve(DIR, "tests/fixtures/rpiv-pi-v0.6.0-agents/codebase-locator.md");
 const REENTRANT_MARKER = /provider: active query user-only call treated as reentrant fresh query/g;
 const STUCK_MARKER = /MCP handlers still waiting after delivering 0 results|tool handler\(s\) still waiting|currentPiStream overwritten/;

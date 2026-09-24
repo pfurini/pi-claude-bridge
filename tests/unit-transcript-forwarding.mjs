@@ -14,6 +14,24 @@ const system = fields => ({ role: "system", content: "", timestamp: 0, ...fields
 const initial = () => system({ sections: { preamble: "PI_HARNESS", project_context: project, skills: skillSection }, toolsAdded: [tool("read"), tool("bash"), tool("skill")] });
 
 describe("transcript forwarding without prompt captures", () => {
+	it('forwards effective custom sections, addendum, and authored rule contributions exactly once', () => {
+		const context = toBridgeContext({ messages: [system({ sections: { project_context: project, addendum: '<addendum>USER_ADDENDUM</addendum>', rules: '<rules>\n- Be concise in your responses\n- DATA_BOUNDARY\n</rules>', custom: '<custom>CUSTOM_POLICY</custom>' } }), user('go')] });
+		const append = __test.buildProviderSystemPromptAppend({ id: 'claude-haiku-4-5' }, context);
+		for (const marker of ['PROJECT_RULE', 'USER_ADDENDUM', 'DATA_BOUNDARY', 'CUSTOM_POLICY']) assert.equal(append.split(marker).length - 1, 1, marker);
+	});
+
+	it('treats forced replacements, including empty replacements, as authoritative over stale lifecycle customization', () => {
+		const previous = __test.setUserSystemPrompt({ custom: 'STALE_CUSTOM', append: 'STALE_APPEND' });
+		try {
+			for (const content of ['FORCED_RULE', '']) {
+				const context = toBridgeContext({ messages: [system({ content }), user('go')] });
+				const append = __test.buildProviderSystemPromptAppend({ id: 'claude-haiku-4-5' }, context);
+				assert.doesNotMatch(append, /STALE_CUSTOM|STALE_APPEND|PROJECT_RULE/);
+				if (content) assert.match(append, /FORCED_RULE/);
+			}
+		} finally { __test.setUserSystemPrompt(previous); }
+	});
+
 	it("extracts project instructions and versioned skills after prompt widening", () => {
 		const context = toBridgeContext({ messages: [initial(), system({ sections: { tools: "Expanded MCP descriptions" } }), user("go")] });
 		assert.ok(context.systemPrompt.includes("Expanded MCP descriptions"));

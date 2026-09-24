@@ -214,7 +214,7 @@ describe("tool-message integration", () => {
 		const steerText = "STOP. Do not call SlowTool again. Reply with only the word BANANA.";
 		await send({
 			type: "prompt",
-			message: "Call SlowTool with seconds=1 exactly 12 times, strictly one at a time — wait for each result before starting the next. Do not call it twice in the same message.",
+			message: "Call SlowTool with seconds=1 exactly 3 times, strictly one at a time. Wait for each result before starting the next. Do not call it twice in the same message.",
 		});
 		await waitForEvent("tool_execution_start");
 		await send({ type: "prompt", message: steerText, streamingBehavior: "steer" });

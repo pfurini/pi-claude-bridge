@@ -29,7 +29,7 @@ LOGFILE="$LOGDIR/cache-git-test.ndjson"
 
 # Throwaway repo, also the pi/CC process cwd: gitStatus is computed from the cwd,
 # so the transition has to happen there. Never this repo.
-CWD_PREFIX="$LOGDIR/cache-git-cwd."
+CWD_PREFIX="${TMPDIR:-/tmp}/claude-bridge-cache-git-cwd."
 REPO=$(mktemp -d "$CWD_PREFIX"XXXXXX)
 PREFLIGHT="$LOGDIR/cache-git-test-preflight.ndjson"
 
@@ -47,11 +47,12 @@ trap cleanup EXIT
 COMMIT_CMD="git add -A && git -c user.email=test@test -c user.name=test commit -m 'wip checkpoint'"
 
 setup_repo() {
-  git -C "$REPO" init -q
-  git -C "$REPO" symbolic-ref HEAD refs/heads/main
-  printf 'alpha\n' > "$REPO/seed.txt"
-  git -C "$REPO" add -A
-  git -C "$REPO" -c user.email=test@test -c user.name=test commit -q -m "seed commit"
+  git -C "$REPO" init -q || return 1
+  [ "$(git -C "$REPO" rev-parse --show-toplevel)" = "$(cd "$REPO" && pwd -P)" ] || return 1
+  git -C "$REPO" symbolic-ref HEAD refs/heads/main || return 1
+  printf 'alpha\n' > "$REPO/seed.txt" || return 1
+  git -C "$REPO" add -A || return 1
+  git -C "$REPO" -c user.email=test@test -c user.name=test commit -q -m "seed commit" || return 1
   # Untracked file so the transition commit is non-empty. Turn 2 overwrites its
   # contents with the secret number.
   printf 'beta\n' > "$REPO/scratch.txt"
@@ -119,7 +120,7 @@ trap cleanup EXIT
 # Cheap 1-turn dry run so a full 8-turn run is never spent on a prompt the model
 # won't follow.
 preflight() {
-  setup_repo
+  setup_repo || return 1
   verify_repo 1 || return 1
   timeout 180 pi --no-session -ne -e "$DIR" \
     --model "claude-bridge/claude-haiku-4-5" \
@@ -161,7 +162,7 @@ echo "  preflight OK with prompt: $GIT_PROMPT"
 # Reset the repo so the measured conversation starts from 1 commit and its own
 # transition, with the preflight turn absent from its history.
 rm -rf "$REPO/.git" "$REPO/seed.txt" "$REPO/scratch.txt"
-setup_repo
+setup_repo || { echo "FAIL: could not create the isolated Git fixture"; exit 1; }
 verify_repo 1 || { echo "FAIL: could not reset test repo"; exit 1; }
 
 rm -f "$LOGFILE" "$LOGFILE.err" "$CLAUDE_BRIDGE_DEBUG_PATH"

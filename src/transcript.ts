@@ -6,6 +6,9 @@ import {
 	type Context,
 	type SystemMessage,
 } from "@earendil-works/pi-ai";
+import { sanitizeSystemSection } from "./sanitize-prompt.js";
+
+type BridgeContext = Context & { bridgeSystemMessage?: SystemMessage };
 
 /** Built-in sections retain canonical order after replay. Custom sections retain their replay-relative position. */
 const SECTION_RANK = new Map<string, number>([
@@ -45,15 +48,33 @@ function canonicalSystemPrompt(message: SystemMessage | undefined): string | und
  * messages from conversation history. Contexts without system messages are returned
  * unchanged because systemless one-off calls already use the bridge-compatible shape.
  */
-export function toBridgeContext(context: Context): Context {
+export function toBridgeContext(context: Context): BridgeContext {
 	if (!context.messages.some((message) => message.role === "system")) return context;
 	const tools = getCurrentTools(context.messages);
+	const system = getCurrentSystemMessage(context.messages);
 	return {
 		...context,
-		systemPrompt: canonicalSystemPrompt(getCurrentSystemMessage(context.messages)),
+		bridgeSystemMessage: system,
+		systemPrompt: canonicalSystemPrompt(system),
 		tools: tools.length > 0 ? tools : undefined,
 		messages: nonSystemMessages(context.messages),
 	};
+}
+
+/** An empty effective replacement is authoritative; only absent prompt state permits a legacy fallback. */
+export function effectiveInstructions(context: Context, options: { forwardPiContent: boolean; skillsForwarded: boolean }): { text: string } | undefined {
+	const system = (context as BridgeContext).bridgeSystemMessage;
+	// Legacy flat prompts do not identify authored sections; retain capture-only behavior when Pi forwarding is disabled.
+	if (!system) return !options.forwardPiContent || context.systemPrompt === undefined ? undefined : { text: context.systemPrompt };
+	const sections = new Map(Object.entries(system.sections ?? {}).filter((entry): entry is [string, string] => entry[1] !== null));
+	const parts = [contentText(system.content)];
+	for (const [name, value] of stableRanked(sections, SECTION_RANK)) {
+		if (name === "project_context" && !options.forwardPiContent) continue;
+		if (name === "skills" && !options.skillsForwarded) continue;
+		const authored = sanitizeSystemSection(name, value);
+		if (authored) parts.push(authored);
+	}
+	return { text: parts.filter(Boolean).join("\n\n") };
 }
 
 /** `messages` with every prompt-state system message removed from conversation history. */

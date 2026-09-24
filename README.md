@@ -118,7 +118,15 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 `provider`:
 - `plan` (default `"pro"`) — set to `"max"` for Max (or Team Premium/Enterprise) to enable Opus 4.6 with 1M context. If it's unset, the first interactive session points this out once, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
 - `longContextExtraUsage` — set to `true` to enable 1M models that cost money through Extra Usage. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro. Not needed for Opus 4.7 or 4.8.
-- `appendSystemPrompt` — append pi's project context files (global and ancestor `AGENTS.md` / `CLAUDE.md`) and skills (default `true`). This covers pi's own content only. The skills listing is forwarded as pi's `<available_skills version="2">` block alone, with framing the bridge writes in place of pi's preamble: the framing depends on whether pi exposes its `skill` tool in the session (the model is told to invoke `mcp__custom-tools__skill`) or not (it is told to read the skill file's `<location>` via `mcp__custom-tools__read`); AskClaude's sub-agent runs on Claude Code's native tools, so it is pointed at the native `Read` tool instead. On the provider path a short `# Harness corrections` block is appended regardless of this setting, because Claude Code's preset prompt otherwise names tools and a model ID that do not exist here. AskClaude receives corrections only when it is already forwarding a skills block. Regardless of this setting, prompts forwarded from a pi-subagents `prompt_mode: "append"` session have pi's own harness boilerplate stripped before reaching Claude Code, since Anthropic routes requests carrying that signature to metered usage. Duplicate `<project_context>`/`<available_skills>` blocks are additionally removed only when this setting is on: with it off the extractors never ran, so an embedded block is the prompt's only copy and must survive. See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md).
+- `appendSystemPrompt` controls generated project-context and skill forwarding (default `true`).
+  - Project instructions come from Pi's global and ancestor `AGENTS.md` / `CLAUDE.md` files.
+  - Skill framing names the available MCP `skill` or `read` tool. AskClaude uses native `Read` framing.
+  - Effective authored sections, guidelines, addenda, and forced prompts remain authoritative independently of this gate.
+  - The sanitizer removes recognized Pi boilerplate while preserving authored contributions and section overrides.
+  - Exact project/skill duplicates disappear only when the dedicated forwarding path already supplies the same block.
+  - Provider harness corrections always apply. AskClaude receives corrections in full mode or when forwarding skills.
+  - Disabled forwarding retains capture-only customization for legacy flat contexts that lack structured prompt state.
+  - See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md) for the prompt-channel background.
 - `settingSources` — which Claude Code settings tiers the spawned binary loads (`user`/`project`/`local`). Default `[]`: no `settings.json` of any tier and no `CLAUDE.md` of Claude Code's own, so pi's forwarded context block is the only channel for project rules. Independent of `appendSystemPrompt`. (The bridge also excludes `**/CLAUDE.md` on every spawn path, so opting a tier back in for its `settings.json` — e.g. Bedrock/Vertex `apiKeyHelper` — does not re-admit a native CLAUDE.md.)
 - `strictMcpConfig` — block MCP servers from the isolated profile's `.claude.json` and project `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`). The default off both sets the SDK settings layer and passes `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` to the subprocess; opting in drops both.
@@ -130,6 +138,21 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 **Startup notice:** the first interactive session to reach Claude Code lists whichever of `provider.plan` and `askClaude.enabled` you have left unset, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
 
 The bridge's explicit context-window policy lives in `src/models.ts`. This fork does not expose `provider.forceTwoHundredK`.
+
+## Conversation recovery and accounting
+
+The bridge compares projected history, tool declarations, and effective forwarded instructions before continuing an active query.
+A mismatch imports current history into a replacement query, including completed tool results.
+Recovery allows three replacements per turn and returns a terminal error when that budget is exhausted.
+Recorded tool results prevent structural replay; the bridge does not promise exactly-once external effects after a host crash.
+
+Standalone, tool-free SDK consumers can select `cacheRetention: "none"` for an independent request with the complete system prompt and no persisted conversation reuse.
+
+Claude's estimated cost and model-usage totals can include earlier resumed turns.
+The bridge subtracts the saved session baseline before attributing new usage, while retaining Claude's cost estimate rather than substituting catalog estimates.
+A rebuild starts a new accounting baseline even when the session UUID stays unchanged.
+Ambiguous termination invalidates reuse; concurrent shared calls use separate transcript imports.
+These estimates are not billing statements or subscription-quota measurements.
 
 ## Usage events
 
@@ -184,6 +207,14 @@ Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 
 - **Bridge log** at `~/.pi/agent/claude-bridge.log` — every provider call, session sync decision, tool result delivery, and CC's stderr. Override location with `CLAUDE_BRIDGE_DEBUG_PATH`.
 - **Per-query Claude Code CLI logs** at `~/.pi/agent/cc-cli-logs/<timestamp>-<tag>-<seq>.log` — the CC subprocess's own debug stream, one file per `query()` call. Tags are `provider` (main turn) or `askclaude` (sub-delegation). Useful when a resume fails or CC misbehaves internally — shows the CLI's own view of session loading, API requests, and tool calls.
+
+Diagnostics use `claude-bridge-diag.log` beside the bridge log; `CLAUDE_BRIDGE_DIAG_PATH` selects an explicit destination.
+Denied log writes preserve their entries on stderr rather than replacing the provider result.
+Inaccessible Claude CLI debug files are omitted without failing the query.
+Inside a fence, prefer a workspace-local log destination rather than broader global write permissions.
+
+Fenced Claude subprocesses inherit `CLAUDE_CODE_TMPDIR` from the assigned `TMPDIR` when no explicit Claude temporary directory exists.
+The bridge preserves explicit overrides and does not change filesystem grants.
 
 When filing a bug about a session-resume failure (e.g. "No conversation found"), the most useful attachments are the `syncResult:` lines from the bridge log plus the matching `cc-cli-logs/` file for the failing query.
 

@@ -35,6 +35,13 @@ function assertFenceEnvSurvives(env, label) {
 }
 
 describe("pi-fence environment passthrough", () => {
+	it("uses the inherited fenced temporary directory for native Claude tools", () => {
+		assert.equal(claudeChildEnv("/cfg", { PI_FENCE: "1", TMPDIR: "/worker/tmp" }).CLAUDE_CODE_TMPDIR, "/worker/tmp");
+		assert.equal(claudeChildEnv("/cfg", { PI_FENCE: "1", TMPDIR: "/worker/tmp", CLAUDE_CODE_TMPDIR: "/explicit/tmp" }).CLAUDE_CODE_TMPDIR, "/explicit/tmp");
+		assert.ok(!("CLAUDE_CODE_TMPDIR" in claudeChildEnv("/cfg", { TMPDIR: "/ordinary/tmp" })));
+		assert.ok(!("CLAUDE_CODE_TMPDIR" in claudeChildEnv("/cfg", { PI_FENCE: "1" })));
+	});
+
 	it("claudeChildEnv carries the fence variables through verbatim", () => {
 		const env = claudeChildEnv("/cfg", { PATH: "/test/bin", ...fenceEnv });
 		assertFenceEnvSurvives(env, "claudeChildEnv");
