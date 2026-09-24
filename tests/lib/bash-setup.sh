@@ -15,9 +15,25 @@ if [[ -f "$__ENV_FILE" ]]; then
 	set +a
 fi
 
-# Strip node_modules/.bin from PATH so we use the system pi, not the vendored one.
+# Strip node_modules/.bin from PATH so nothing resolves to a vendored pi.
 __clean_path() {
 	echo "$PATH" | tr ':' '\n' | grep -v node_modules | tr '\n' ':'
+}
+
+# pi on PATH may be the pi-fence launcher, which drops CLAUDE_BRIDGE_* from its
+# child's environment, so the bridge writes no debug log. Put a `pi` link to the
+# fork's CLI first on PATH instead. A link, not a function, because the suites
+# also run pi through `timeout` and `bash -c`. Same order as tests/lib/pi-bin.mjs:
+# PI_BIN, else the sibling fork build, else pi from PATH unchanged.
+__prepend_pi_bin() {
+	local pi_bin="${PI_BIN:-}"
+	local fork_cli="$DIR/../pi/packages/coding-agent/dist/cli.js"
+	if [[ -z "$pi_bin" && -f "$fork_cli" ]]; then pi_bin="$fork_cli"; fi
+	[[ -n "$pi_bin" ]] || return 0
+	local shim
+	shim="$(mktemp -d)"
+	ln -s "$pi_bin" "$shim/pi"
+	PATH="$shim:$PATH"
 }
 
 # Setup standard test environment.
@@ -43,6 +59,7 @@ setup_test_env() {
 
 	# Clean PATH and run pi from the project root so project-local config is visible.
 	PATH=$(__clean_path)
+	__prepend_pi_bin
 	cd "$DIR"
 
 	# Export for use in tests

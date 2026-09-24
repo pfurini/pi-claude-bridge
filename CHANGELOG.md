@@ -15,6 +15,7 @@
 - **Fix: keep native Claude tools inside the assigned temporary directory** — Derive `CLAUDE_CODE_TMPDIR` from fenced workers' `TMPDIR` when no explicit override exists. Preserve ordinary unfenced behavior and inherited filesystem restrictions.
 - **Fix: retire callbacks during session shutdown** — Reap queries through their ownership guard before late SDK callbacks can affect a new session. Settle open Pi streams as aborted and retain fallback process cleanup.
 - **Tests: exercise authenticated context recovery** — Cover sixteen live history, tool, skill, instruction, and recovery-failure scenarios with disposable effects. Verify resumed accounting and native Bash containment against the real SDK. Observe abort/shutdown descendants outside the inherited inference fence. Harden Git fixture setup, pin the cross-provider fixture, and support explicit local subagent sources without global installation changes.
+- **Tests: run integration suites against the fork's CLI, not a fenced `pi`** — A pi-fence launcher on `PATH` dropped `CLAUDE_BRIDGE_DEBUG` and `CLAUDE_BRIDGE_DEBUG_PATH`, so the bridge wrote no debug log and log-reading tests failed with "the query never completed". The RPC harness, `int-skill-listing.mjs`, and the shell suites now resolve `PI_BIN`, then `../pi/packages/coding-agent/dist/cli.js`, then `pi`. The RPC harness fails at startup when the bridge writes no debug log.
 
 ### Earlier fork development
 

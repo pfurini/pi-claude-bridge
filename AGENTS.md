@@ -78,8 +78,9 @@ Check `ExtensionAPI.agentDir` or `piForkCapabilities`, not version equality, to 
 - `npm ci` fails anywhere `../pi` is absent. That is the intended trade: this
   extension targets the fork. The peer floor is `>=0.86.1` because the bridge uses Pi's transcript helpers.
   Optional-property reads in `loadDirs()` and `sessionAgentDir()` preserve the stock-Pi fallback.
-- Integration tests spawn `pi` from `PATH`, which already resolves to the fork's
-  `dist/cli.js`. Only `typecheck` and the unit tests read `node_modules`.
+- Integration tests spawn the fork's `packages/coding-agent/dist/cli.js` directly, not `pi` from `PATH`.
+  `PATH` may resolve to the pi-fence launcher, which drops `CLAUDE_BRIDGE_*` from the child environment.
+  See `tests/lib/pi-bin.mjs` and `tests/lib/bash-setup.sh`. Only `typecheck` and the unit tests read `node_modules`.
 
 CI (`.github/workflows/ci.yml`) runs both sides: a `fork` job that checks out
 `pfurini/pi` as a sibling and builds it, and a `stock` job that rewrites the
@@ -99,3 +100,15 @@ published types compiles and behaves identically on it.
 ## Tests
 
 Smoke tests typically need to run outside a sandbox because they access local pi/Claude settings and auth state.
+
+Integration suites resolve `pi` in this order:
+
+1. `PI_BIN` (an absolute path), when set in the environment or in `.env.test`.
+2. The sibling fork build at `../pi/packages/coding-agent/dist/cli.js`.
+3. `pi` from `PATH`.
+
+Do not run the suites through the pi-fence launcher.
+The fence passes only allowlisted environment names, so the bridge never sees `CLAUDE_BRIDGE_DEBUG` and writes no debug log.
+Every assertion that reads the debug log then fails with a misleading message such as "the query never completed".
+`tests/lib/rpc-harness.mjs` fails at startup instead, when the bridge has written nothing to its debug log.
+`tests/int-shutdown-kills-cc.mjs` is the deliberate exception: it launches `pi run --profile` to test the fence.

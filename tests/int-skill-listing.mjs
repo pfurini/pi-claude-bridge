@@ -20,6 +20,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertClaudeAuthenticated } from "./lib/claude-auth.mjs";
+import { piBin } from "./lib/pi-bin.mjs";
 // Side-effect import: loads .env.test and probes Claude Code's config dir for
 // writability up front, so a sandboxed run fails with a clear message.
 import "./lib/rpc-harness.mjs";
@@ -34,8 +35,8 @@ const TIMEOUT = 180_000;
 
 assertClaudeAuthenticated();
 
-// Strip any local node_modules from PATH so `pi` resolves to the globally
-// installed fork, same as the RPC harness.
+// Strip any local node_modules from PATH, same as the RPC harness. The pi
+// executable itself comes from piBin() (tests/lib/pi-bin.mjs).
 const CLEAN_PATH = process.env.PATH.split(":")
 	.filter((p) => !p.includes("node_modules"))
 	.join(":");
@@ -71,7 +72,7 @@ function runTurn({
 	args.push("-p", prompt);
 
 	return new Promise((resolvePromise, reject) => {
-		const child = spawn("pi", args, {
+		const child = spawn(piBin(), args, {
 			cwd: DIR,
 			env: {
 				...process.env,

@@ -3,12 +3,13 @@
  * Provides spawn, send, event waiting, and text collection utilities.
  */
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getClaudeDir } from "cc-session-io";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { assertClaudeAuthenticated } from "./claude-auth.mjs";
+import { piBin } from "./pi-bin.mjs";
 
 const DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -124,7 +125,7 @@ export function createRpcHarness(opts) {
 	const RPC_LOG = `${LOGDIR}/${name}.log`;
 	const DEBUG_LOG = `${LOGDIR}/${name}-debug.log`;
 
-	// Strip any local node_modules from PATH so we use the globally-installed `pi`.
+	// Strip any local node_modules from PATH so nothing resolves to a vendored `pi`.
 	const cleanPath = process.env.PATH.split(":").filter((p) => !p.includes("node_modules")).join(":");
 
 	let pi, piClosePromise, rpcLog;
@@ -144,7 +145,7 @@ export function createRpcHarness(opts) {
 		rpcLog = createWriteStream(RPC_LOG, { flags: "a" });
 		const currentLog = rpcLog;
 		const spawnArgs = ["--no-session", "-ne", "-e", DIR, "--mode", "rpc", ...args];
-		pi = spawn("pi", spawnArgs, {
+		pi = spawn(piBin(), spawnArgs, {
 			cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 			env: { ...process.env, PATH: cleanPath, CLAUDE_BRIDGE_DEBUG: "1", CLAUDE_BRIDGE_DEBUG_PATH: DEBUG_LOG, ...env },
@@ -179,6 +180,24 @@ export function createRpcHarness(opts) {
 		if (pi) await stop();
 		start();
 		await new Promise((r) => setTimeout(r, ms));
+		await assertDebugLogWritten();
+	}
+
+	// The bridge logs its config as soon as it loads. An empty log means the bridge
+	// never saw CLAUDE_BRIDGE_DEBUG (for example a fenced `pi` dropped it), and every
+	// assertion that greps the log would otherwise fail as "the query never completed".
+	async function assertDebugLogWritten(timeoutMs = 15_000) {
+		const deadline = Date.now() + timeoutMs;
+		while (statSync(DEBUG_LOG).size === 0) {
+			if (pi.exitCode !== null || Date.now() >= deadline) {
+				throw new Error(
+					`Bridge wrote no debug log to ${DEBUG_LOG} (pi=${piBin()}, exitCode=${pi.exitCode}). ` +
+					"Either pi failed to start (see the RPC log) or the environment never reached the bridge. " +
+					"A pi-fence launcher drops CLAUDE_BRIDGE_*; set PI_BIN to the fork's dist/cli.js.",
+				);
+			}
+			await new Promise((r) => setTimeout(r, 100));
+		}
 	}
 
 	async function stop() {
