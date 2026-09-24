@@ -1,6 +1,6 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openSession } from "cc-session-io";
@@ -190,31 +190,42 @@ for (const failFinish of [false, true]) {
 	}));
 }
 
-it("caps automatic recovery at three restarts per turn", { timeout: 10_000 }, () => withBridge(Array.from({ length: 4 }, () => ({ tool: "read" })), async ({ state, request, completeTool }) => {
-	const history = [user("bounded")];
+it("recovers beyond three tool changes in one productive turn", { timeout: 20_000 }, () => withBridge(Array.from({ length: 9 }, () => ({ tool: "read" })), async ({ state, request, completeTool, imported }) => {
+	const history = [user("many context changes")];
 	let output = await request(history).result();
-	for (let i = 1; i <= 4; i++) {
+	for (let i = 1; i <= 8; i++) {
 		history.push(output, completeTool(output));
 		output = await request(history, [tool("read", `policy ${i}`)]).result();
+		assert.equal(output.stopReason, "toolUse");
 	}
-	assert.equal(output.stopReason, "error");
-	assert.match(output.errorMessage, /exceeded 3 automatic context restarts/);
-	assert.equal(state.queries.length, 4);
-	assert.ok(state.controls.every(control => control.closed));
+	history.push(output, completeTool(output));
+	const final = await request(history, [tool("read", "policy 8")]).result();
+	assert.equal(final.stopReason, "stop");
+	assert.equal(state.executions, 9);
+	assert.equal(state.queries.length, 9);
+	assert.ok(state.controls.slice(0, 8).every(control => control.closedWhenResult));
+	assert.match(JSON.stringify(imported(state.queries.at(-1))), /COMPLETED_tool_8/);
+	assert.match(JSON.stringify(state.controls.at(-1).toolResult), /COMPLETED_tool_9/);
+	const diagnostic = readFileSync(process.env.CLAUDE_BRIDGE_DIAG_PATH, "utf8").trim().split("\n").map(JSON.parse).findLast(entry => entry.label === "query_restart_threshold");
+	assert.equal(diagnostic.toolsChanged, true);
+	assert.equal(diagnostic.historyChanged, false);
 }));
 
-it('counts instruction-only changes against the same three-restart budget', { timeout: 10_000 }, () => withBridge(Array.from({ length: 4 }, () => ({ tool: 'read' })), async ({ state, request, completeTool }) => {
+it('recovers beyond three instruction-only changes in one productive turn', { timeout: 20_000 }, () => withBridge(Array.from({ length: 9 }, () => ({ tool: 'read' })), async ({ state, request, completeTool }) => {
 	const head = { role: 'system', content: '', sections: { project_context: '<project_context>RULE_0</project_context>' }, toolsAdded: tools, timestamp: 0 };
-	const history = [head, user('bounded instructions')];
+	const history = [head, user('changing instructions')];
 	let output = await request(history).result();
-	for (let i = 1; i <= 4; i++) {
+	for (let i = 1; i <= 8; i++) {
 		history.push(output, completeTool(output), { role: 'system', content: '', sections: { project_context: `<project_context>RULE_${i}</project_context>` }, timestamp: i });
 		output = await request(history).result();
+		assert.equal(output.stopReason, 'toolUse');
 	}
-	assert.equal(output.stopReason, 'error');
-	assert.match(output.errorMessage, /exceeded 3 automatic context restarts/);
-	assert.equal(state.queries.length, 4);
-	assert.ok(state.controls.every(control => control.closed));
+	history.push(output, completeTool(output));
+	const final = await request(history).result();
+	assert.equal(final.stopReason, 'stop');
+	assert.equal(state.executions, 9);
+	assert.equal(state.queries.length, 9);
+	assert.ok(state.controls.slice(0, 8).every(control => control.closedWhenResult));
 }));
 
 it("surfaces replacement startup failure without an unbounded retry", { timeout: 10_000 }, () => withBridge([{ tool: "read" }, { failStart: true }], async ({ state, request, completeTool }) => {

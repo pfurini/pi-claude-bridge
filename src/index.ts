@@ -1756,18 +1756,26 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	if (resultCtx) {
 		const nextHistory = snapshotHistory(context.messages);
 		const tools = resolveMcpTools(context, askClaudeToolName).mcpTools;
+		const nextTools = snapshotTools(tools);
+		const nextInstructions = buildProviderSystemPromptAppend(model, context);
 		const historyChanged = !matchesHistoryPrefix(resultCtx.latestHistory, nextHistory, resultCtx.latestHistory.length);
-		const toolsChanged = resultCtx.toolInventory !== snapshotTools(tools);
-		const instructionsChanged = resultCtx.systemPromptAppend !== buildProviderSystemPromptAppend(model, context);
+		const toolsChanged = resultCtx.toolInventory !== nextTools;
+		const instructionsChanged = resultCtx.systemPromptAppend !== nextInstructions;
 		if (historyChanged || toolsChanged || instructionsChanged) {
 			try {
 				if (!resultCtx.retire) throw new Error("Claude bridge cannot retire the stale query");
 				resultCtx.retire();
-				if (resultCtx.restartCount >= MAX_QUERY_RESTARTS) {
-					throw new Error(`Claude bridge exceeded ${MAX_QUERY_RESTARTS} automatic context restarts in one turn`);
+				const restart = resultCtx.recordRestartCheckpoint(nextHistory, nextTools, nextInstructions);
+				if (restart === 4) {
+					const firstDifference = historyChanged ? nextHistory.findIndex((hash, index) => hash !== resultCtx.latestHistory[index]) : -1;
+					diagDump("query_restart_threshold", {
+						model: model.id, historyChanged, toolsChanged, instructionsChanged,
+						previousHistoryLength: resultCtx.latestHistory.length, incomingHistoryLength: nextHistory.length,
+						firstHistoryDifference: historyChanged ? (firstDifference < 0 ? nextHistory.length : firstDifference) : null,
+						toolNames: tools.map((tool) => tool.name),
+					});
 				}
-				resultCtx.restartCount++;
-				debug(`provider: restarting query #${resultCtx.restartCount}, historyChanged=${historyChanged} toolsChanged=${toolsChanged} instructionsChanged=${instructionsChanged}`);
+				debug(`provider: restarting query #${restart}, historyChanged=${historyChanged} toolsChanged=${toolsChanged} instructionsChanged=${instructionsChanged}`);
 				return startProviderQuery(model, context, options, stream, resultCtx, true);
 			} catch (error) {
 				return failProviderStream(stream, model, error, options?.signal?.aborted);
@@ -1810,8 +1818,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	return startProviderQuery(model, context, options, stream, activeQuery ? new QueryContext() : ctx());
 }
-
-const MAX_QUERY_RESTARTS = 3;
 
 function failProviderStream(stream: AssistantMessageEventStream, model: Model<any>, error: unknown, aborted = false): AssistantMessageEventStream {
 	const reason = aborted ? "aborted" : "error";
@@ -1870,7 +1876,7 @@ function setupProviderQuery(
 ): AssistantMessageEventStream {
 	const isReentrant = queryCtx !== ctx();
 	const preserveSharedSession = isReentrant || (recovery && queryCtx.preserveSharedSession);
-	if (!recovery) queryCtx.restartCount = 0;
+	if (!recovery) queryCtx.resetRestartCheckpoints();
 	queryCtx.retire = undefined;
 	// 2. Fresh child context — constructor already gave us clean Maps and empty
 	//    arrays. For a reused top-level context, clear explicitly.

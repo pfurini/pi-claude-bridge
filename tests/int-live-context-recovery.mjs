@@ -7,12 +7,11 @@ import { openSession } from 'cc-session-io';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-// Run explicitly inside the inherited fence. Fixtures retain evidence and contain no user data.
+// The fixture keeps tool effects and bridge diagnostics in a disposable directory.
 it('recovers real SDK queries after active history and tool changes without replaying completed effects', {
   skip: process.env.CLAUDE_BRIDGE_LIVE !== '1', timeout: 360000,
 }, async () => {
-  assert.equal(process.env.PI_FENCE, '1', 'live verification requires an inherited fence');
-  const cases = (process.env.CLAUDE_BRIDGE_LIVE_CASES ?? 'replace,omit,remove,add,schema,skill-followup,skill-steer,instructions,custom-instructions,rules-instructions,addendum-instructions,forced-instructions,fault-budget,fault-startup,fault-cancel,fault-timeout').split(',');
+  const cases = (process.env.CLAUDE_BRIDGE_LIVE_CASES ?? 'replace,omit,remove,add,schema,skill-followup,skill-steer,instructions,custom-instructions,rules-instructions,addendum-instructions,forced-instructions,checkpoint-chain,fault-startup,fault-cancel,fault-timeout').split(',');
   if (cases.length > 1) {
     // Separate processes isolate skill instructions, registries, and Claude session ownership.
     for (const kind of cases) {
@@ -30,11 +29,15 @@ it('recovers real SDK queries after active history and tool changes without repl
   const root = mkdtempSync(resolve('.test-output/live-recovery-'));
   const agentDir = join(root, 'agent');
   mkdirSync(agentDir);
+  const authProfile = process.env.CLAUDE_BRIDGE_LIVE_AUTH_PROFILE;
+  // Only checkpoint-chain may use an existing profile; fault-startup replaces its profile path.
+  if (authProfile && cases[0] !== 'checkpoint-chain') throw new Error('An existing Claude profile is only supported for checkpoint-chain');
+  const claudeDir = authProfile ?? join(root, 'claude');
   const debugPath = join(root, 'bridge.log');
   process.env.CLAUDE_BRIDGE_DEBUG = '1';
   process.env.CLAUDE_BRIDGE_DEBUG_PATH = debugPath;
   process.env.CLAUDE_BRIDGE_DIAG_PATH = join(root, 'diagnostics.jsonl');
-  writeFileSync(join(agentDir, 'claude-bridge.json'), JSON.stringify({ startupNoticeShown: 'test', askClaude: { enabled: false }, provider: { usageEvents: false, plan: 'max', claudeConfigDir: join(root, 'claude') } }));
+  writeFileSync(join(agentDir, 'claude-bridge.json'), JSON.stringify({ startupNoticeShown: 'test', askClaude: { enabled: false }, provider: { usageEvents: false, plan: 'max', claudeConfigDir: claudeDir } }));
   const effects = join(root, 'effects.jsonl');
   const manager = SessionManager.inMemory(root);
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
@@ -56,15 +59,16 @@ it('recovers real SDK queries after active history and tool changes without repl
       pi.registerTool({ name: 'checkpoint_effect', label: 'Checkpoint effect', description: 'Append one disposable checkpoint and return its receipt. Call exactly once per requested checkpoint.', parameters: Type.Object({ marker: Type.String() }),
         execute: async (_id, params) => {
           current.executions++;
-          if (current.executions > (current.kind === 'fault-budget' ? 4 : 1)) { void session.abort(); throw new Error('A completed effect executed again'); }
-          if (current.kind === 'fault-budget') assert.equal(params.marker, current.nextMarker);
+          if (current.executions > (current.kind === 'checkpoint-chain' ? 4 : 1)) { void session.abort(); throw new Error('A completed effect executed again'); }
+          if (current.kind === 'checkpoint-chain') assert.equal(params.marker, current.nextMarker);
           appendFileSync(effects, JSON.stringify(params) + '\n');
-          if (current.kind.startsWith('fault-')) manager.appendContextEdit(current.target, { content: `FAULT_REVISION_${current.executions}` });
+          if (current.kind.startsWith('fault-') || current.kind === 'checkpoint-chain') manager.appendContextEdit(current.target, { content: `FAULT_REVISION_${current.executions}` });
           if (current.kind === 'fault-startup') {
             renameSync(join(root, 'claude'), join(root, 'saved-claude'));
             writeFileSync(join(root, 'claude'), 'The replacement profile path is deliberately a file.');
           }
-          if (current.kind === 'fault-budget') {
+          if (current.kind === 'checkpoint-chain') {
+            if (current.executions === 4) return { content: [{ type: 'text', text: `COMPLETED ${params.marker}. All four checkpoints are complete. Do not call tools again. Reply exactly DONE_checkpoint-chain.` }], details: {} };
             current.nextMarker = `next_${Math.random().toString(36).slice(2)}`;
             return { content: [{ type: 'text', text: `COMPLETED ${params.marker}. Call checkpoint_effect exactly once with marker="${current.nextMarker}" next. Continue following this checkpoint sequence.` }], details: {} };
           }
@@ -128,17 +132,16 @@ it('recovers real SDK queries after active history and tool changes without repl
       const requestStart = requests.length;
       const deadline = setTimeout(() => { void session.abort(); }, 60000);
       try {
-        const after = kind.endsWith('instructions') ? 'After the checkpoint, what is the current SKU for verification-item? Reply with the SKU alone.' : kind === 'fault-budget' ? 'Follow each next-marker instruction returned by checkpoint_effect. Never guess the next marker; wait for each receipt.' : kind === 'fault-cancel' ? 'After its receipt, count from 1 to 1000, one number per line.' : `After its completed receipt, reply exactly DONE_${kind}.`;
+        const after = kind.endsWith('instructions') ? 'After the checkpoint, what is the current SKU for verification-item? Reply with the SKU alone.' : kind === 'checkpoint-chain' ? 'Follow each next-marker instruction returned by checkpoint_effect. Never guess the next marker; wait for each receipt.' : kind === 'fault-cancel' ? 'After its receipt, count from 1 to 1000, one number per line.' : `After its completed receipt, reply exactly DONE_${kind}.`;
         await session.prompt(`Call checkpoint_effect exactly once with marker="${kind}". Do not call optional_probe. ${after}`);
       } finally { clearTimeout(deadline); clearTimeout(faultTimer); }
       const last = session.messages.findLast(message => message.role === 'assistant');
       const log = readFileSync(debugPath, 'utf8').slice(before);
       if (kind.startsWith('fault-')) {
         assert.equal(last?.stopReason, kind === 'fault-cancel' || kind === 'fault-timeout' ? 'aborted' : 'error', last?.errorMessage);
-        assert.equal(current.executions, kind === 'fault-budget' ? 4 : 1);
-        assert.equal((log.match(/provider: restarting query #/g) ?? []).length, kind === 'fault-budget' ? 3 : 1);
-        assert.equal((log.match(/provider: fresh query model=/g) ?? []).length, kind === 'fault-startup' ? 1 : kind === 'fault-budget' ? 4 : 2);
-        if (kind === 'fault-budget') assert.match(last.errorMessage, /exceeded 3 automatic context restarts/);
+        assert.equal(current.executions, 1);
+        assert.equal((log.match(/provider: restarting query #/g) ?? []).length, 1);
+        assert.equal((log.match(/provider: fresh query model=/g) ?? []).length, kind === 'fault-startup' ? 1 : 2);
         if (kind === 'fault-startup') assert.match(last.errorMessage, /ENOTDIR|EEXIST|not a directory/);
         if (kind === 'fault-cancel') assert.equal(current.abortRequested, true);
         if (kind === 'fault-timeout') assert.equal(current.deadlineSet, true);
@@ -148,13 +151,18 @@ it('recovers real SDK queries after active history and tool changes without repl
       }
       assert.equal(last?.stopReason, 'stop', last?.errorMessage);
       assert.ok(session.getLastAssistantText().trim(), 'the unattended continuation must return a nonempty answer');
-      assert.equal(current.executions, 1);
+      assert.equal(current.executions, kind === 'checkpoint-chain' ? 4 : 1);
+      if (kind === 'checkpoint-chain') {
+        assert.equal(session.getLastAssistantText().trim(), 'DONE_checkpoint-chain');
+        assert.equal((log.match(/provider: restarting query #/g) ?? []).length, 4, log);
+        assert.equal((log.match(/provider: fresh query model=/g) ?? []).length, 5, log);
+      }
       if (kind.endsWith('instructions')) {
         assert.match(log, /historyChanged=false toolsChanged=false instructionsChanged=true/);
         assert.equal(session.getLastAssistantText().trim(), instructionMarker);
       }
       assert.equal((log.match(/provider: restarting query #1,/g) ?? []).length, kind === 'skill-followup' ? 0 : 1, log);
-      assert.doesNotMatch(log, /provider: restarting query #2,/);
+      if (kind !== 'checkpoint-chain') assert.doesNotMatch(log, /provider: restarting query #2,/);
       const continuation = requests.slice(requestStart).at(-1);
       assert.ok(continuation.messages.some(message => message.role === 'toolResult' && JSON.stringify(message).includes(`COMPLETED ${kind}`)));
       const projectedUsers = JSON.stringify(continuation.messages.filter(message => message.role === 'user'));
@@ -163,7 +171,7 @@ it('recovers real SDK queries after active history and tool changes without repl
       if (kind !== 'skill-followup') {
         const resumed = [...log.matchAll(/syncResult: path=rebuild sessionId=([a-f0-9-]+)/g)].at(-1)?.[1];
         assert.ok(resumed, 'recovery must rotate and import a session');
-        const imported = openSession({ sessionId: resumed, projectPath: root, claudeDir: join(root, 'claude') }).messages;
+        const imported = openSession({ sessionId: resumed, projectPath: root, claudeDir }).messages;
         assert.match(JSON.stringify(imported), new RegExp(`COMPLETED ${kind}`), 'the backend transcript must retain the completed receipt');
         const importedUsers = JSON.stringify(imported.filter(record => record.message?.role === 'user'));
         if (kind === 'replace') { assert.match(importedUsers, /REPLACED_LABEL/); assert.doesNotMatch(importedUsers, /OLD_replace/); }

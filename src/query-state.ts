@@ -6,6 +6,7 @@
 //
 // Extracted from index.ts so tests can import without activating the extension.
 
+import { createHash } from "node:crypto";
 import type { AssistantMessage, AssistantMessageEventStream, Model } from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 import type { PromptStream } from "./prompt-stream.js";
@@ -37,6 +38,8 @@ export class QueryContext {
 	toolInventory: string | undefined;
 	systemPromptAppend: string | undefined;
 	restartCount = 0;
+	/** Reject an identical recovery checkpoint, not a long turn with new completed tools. */
+	private restartCheckpoints = new Set<string>();
 	retire: ((reason?: string) => void) | undefined;
 	preserveSharedSession = false;
 	pendingToolCalls = new Map<string, PendingToolCall>();
@@ -114,6 +117,21 @@ export class QueryContext {
 		this.querySegments = [];
 		this.accountingBaseline = { totalCostUsd: 0, modelUsage: {} };
 		this.accountingResult = undefined;
+	}
+
+	/** A changed checkpoint may require another query regardless of turn length. */
+	recordRestartCheckpoint(history: readonly string[], tools: string, instructions: string | undefined): number {
+		const checkpoint = createHash("sha256").update(JSON.stringify([history, tools, instructions])).digest("hex");
+		if (this.restartCheckpoints.has(checkpoint)) {
+			throw new Error("Claude bridge cannot restart repeatedly from the same context checkpoint");
+		}
+		this.restartCheckpoints.add(checkpoint);
+		return ++this.restartCount;
+	}
+
+	resetRestartCheckpoints(): void {
+		this.restartCheckpoints.clear();
+		this.restartCount = 0;
 	}
 
 	/** Bank the current segment (this pi message) into the query totals before

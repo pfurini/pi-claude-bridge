@@ -34,4 +34,17 @@ describe("QueryContext class", () => {
 
 		assert.deepStrictEqual(ctx().turnToolCallIds, ["id1", "id2"]);
 	});
+
+	it("rejects a repeated checkpoint but allows distinct recoveries across long turns", () => {
+		const query = ctx();
+		const first = ["first-message", "first-tool-result"];
+		assert.equal(query.recordRestartCheckpoint(first, "tools-a", "rules-a"), 1);
+		assert.equal(query.recordRestartCheckpoint([...first, "second-tool-result"], "tools-a", "rules-a"), 2);
+		assert.equal(query.recordRestartCheckpoint(first, "tools-b", "rules-a"), 3);
+		assert.equal(query.recordRestartCheckpoint(first, "tools-b", "rules-b"), 4);
+		assert.throws(() => query.recordRestartCheckpoint(first, "tools-a", "rules-a"), /same context checkpoint/);
+		assert.equal(query.restartCount, 4);
+		query.resetRestartCheckpoints();
+		assert.equal(query.recordRestartCheckpoint(first, "tools-a", "rules-a"), 1);
+	});
 });
