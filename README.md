@@ -98,6 +98,7 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
   "provider": {
     "plan": "max",
     "longContextExtraUsage": false,
+    "excludeModels": ["claude-opus-4-5", "claude-sonnet-4-5"],
     "strictMcpConfig": true,
     "claudeConfigDir": "/home/you/.pi/agent/claude",
     "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude"
@@ -118,6 +119,7 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 `provider`:
 - `plan` (default `"pro"`) — set to `"max"` for Max (or Team Premium/Enterprise) to enable Opus 4.6 with 1M context. If it's unset, the first interactive session points this out once, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
 - `longContextExtraUsage` — set to `true` to enable 1M models that cost money through Extra Usage. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro. Not needed for Opus 4.7 or 4.8.
+- `excludeModels` — model ids (case-insensitive) to drop from the `/model` picker entirely, e.g. `["claude-opus-4-5", "claude-sonnet-4-5"]`. Use this to silence the `claude-bridge: encountered model … with no known context size` warning for catalog entries you don't intend to use — the excluded id never reaches the context-window lookup that logs it. Load-time only, like `plan` and `longContextExtraUsage` above.
 - `appendSystemPrompt` controls generated project-context and skill forwarding (default `true`).
   - Project instructions come from Pi's global and ancestor `AGENTS.md` / `CLAUDE.md` files.
   - Skill framing names the available MCP `skill` or `read` tool. AskClaude uses native `Read` framing.

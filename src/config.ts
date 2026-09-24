@@ -43,6 +43,12 @@ export interface Config {
 		// (see steering.ts). Set to false or [] to disable, or list model ids to
 		// extend - extending to unvalidated models is at your own risk.
 		steeringModels?: string[] | false;
+
+		// Model ids to drop from the picker entirely (e.g. catalog entries you
+		// never intend to use). Load-time only, like plan/longContextExtraUsage
+		// below: it feeds applyLongContext(), whose result pi registers and
+		// flushes before the first event, so session_start cannot correct it.
+		excludeModels?: string[];
 		// Claude Code auto-memory. Default false: the spawned binary gets
 		// CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 plus the SDK settings layer off.
 		// Opting in drops both. Isolated compaction queries always disable it.

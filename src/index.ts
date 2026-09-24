@@ -2395,6 +2395,7 @@ export default function (pi: ExtensionAPI) {
 		longContextSettings = {
 			plan: provider.plan ?? "pro",
 			longContextExtraUsage: provider.longContextExtraUsage ?? false,
+			excludeModels: provider.excludeModels,
 		};
 	};
 	const applyProviderConfig = (config: Config) => {

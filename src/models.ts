@@ -56,6 +56,10 @@ export function buildModels<T extends { id: string; [key: string]: any }>(piAiMo
 export type LongContextSettings = {
 	plan: "pro" | "max";
 	longContextExtraUsage: boolean;
+	// Model ids to drop from registration entirely (case-insensitive). Checked
+	// before resolveClaudeCodeRuntimeModel, so an excluded id never reaches the
+	// unknown-model default branch or its console warning.
+	excludeModels?: string[];
 };
 
 export type ClaudeCodeRuntimeModel = {
@@ -141,7 +145,9 @@ export function applyLongContext<T extends { id: string; name: string; contextWi
 	models: T[],
 	settings: LongContextSettings,
 ): T[] {
+	const excluded = new Set((settings.excludeModels ?? []).map((id) => id.toLowerCase()));
 	return models.flatMap((model) => {
+		if (excluded.has(model.id.toLowerCase())) return [];
 		if (!isClaudeCodeModelAvailable(model.id, settings)) return [];
 		const { contextWindow } = resolveClaudeCodeRuntimeModel(model.id, settings);
 		const name = contextWindow > TWO_HUNDRED_K_CONTEXT && !/\b1M\b/i.test(model.name) ? `${model.name} 1M` : model.name;

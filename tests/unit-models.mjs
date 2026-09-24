@@ -144,6 +144,13 @@ describe("eligibility and registration", () => {
 		const model = mock("claude-opus-5", { name: "Claude Opus 5 1M" });
 		assert.equal(applyLongContext([model], PRO)[0], model);
 	});
+	it("drops excluded model ids before the context-size lookup, case-insensitively, without warning", () => {
+		const { result, lines } = captureWarning(() =>
+			applyLongContext(buildModels([mock("claude-opus-4-5"), mock("claude-haiku-4-5")]),
+				{ ...PRO, excludeModels: ["Claude-Opus-4-5"] }));
+		assert.deepEqual(result.map(model => model.id), ["claude-haiku-4-5"]);
+		assert.equal(lines.length, 0);
+	});
 });
 
 describe("shared effort resolution", () => {
