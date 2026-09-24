@@ -156,7 +156,7 @@ describe("AskClaude authenticated upgrade contracts", () => {
 		);
 	});
 
-	it("waits for a native subagent that starts in the background by default", {
+	it("waits for an explicitly background native subagent's fixture result", {
 		timeout: TIMEOUT,
 	}, async () => {
 		const phrase = `violet-orbit-${Math.random().toString(36).slice(2, 10)}`;
@@ -164,16 +164,17 @@ describe("AskClaude authenticated upgrade contracts", () => {
 		writeFileSync(readable, phrase);
 
 		const result = await invokeAskClaude({
-			prompt: `This is an authenticated regression test of native Task completion; the fixture contains no credentials. Use Task exactly once to launch a general-purpose subagent that reads ${readable} and returns only the benign phrase in that text fixture. Omit run_in_background so the target binary uses its background default. Do not read the file yourself and do not ask questions. Wait for the background task with TaskOutput, then reply with exactly SUBAGENT-RESULT:${phrase}.`,
+			prompt: `This is an authenticated regression test of native Task completion; the fixture contains no credentials. Use Task exactly once with run_in_background=true to launch a general-purpose subagent that reads ${readable} and returns only the benign phrase in that text fixture. Do not read the file yourself and do not ask questions. Wait for the background task's completion, then reply with SUBAGENT-RESULT: followed by the exact phrase the child read.`,
 			mode: "full",
 			model: "haiku",
 			isolated: true,
 		});
 
-		assert.match(result, new RegExp(`SUBAGENT-RESULT:${phrase}`));
+		assert.match(result, new RegExp(`SUBAGENT-RESULT:\\s*${phrase}`));
 		// The bridge presents Claude Code's Task wire name as Agent in Pi-facing actions.
 		assert.match(result, /\[Claude Code actions: [^\]]*Agent\(/);
-		assert.match(result, /\[Claude Code actions: [^\]]*TaskOutput/);
+		// Completion notifications can replace TaskOutput; the fixture phrase is absent from the prompt.
+		assert.match(result, /\[Claude Code actions: [^\]]*Read\(/);
 	});
 
 	it("propagates a deterministic terminal model error", {

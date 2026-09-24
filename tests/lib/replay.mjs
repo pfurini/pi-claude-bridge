@@ -57,12 +57,13 @@ export function diagEntries(path, label) {
  *  `doneMessages` are the closed segments' AssistantMessages (each tool boundary
  *  emits one); the final segment stays as ctx.turnOutput (it is finalized after
  *  consumeQuery, in the provider). */
-export async function driveConsumeQuery(consumeQuery, QueryContext, messages, { model = haikuModel, rearm = false, toolNames = ["read"], ctx } = {}) {
+export async function driveConsumeQuery(consumeQuery, QueryContext, messages, { model = haikuModel, rearm = false, toolNames = ["read"], ctx, accountingBaseline } = {}) {
 	const events = [];
 	const c = ctx ?? new QueryContext();
 	const arm = () => { c.currentPiStream = { push: (e) => events.push(e), end: () => events.push({ type: "end" }) }; };
 	arm();
 	c.beginQuery();
+	if (accountingBaseline) c.accountingBaseline = accountingBaseline;
 	c.resetTurnState(model);
 	const map = new Map(toolNames.map((n) => [`mcp__custom-tools__${n}`, n]));
 	async function* stream() {

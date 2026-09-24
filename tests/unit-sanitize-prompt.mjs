@@ -54,6 +54,22 @@ function wrapAsSubagentAppend(parentSystemPrompt) {
 }
 
 describe("sanitizeHarnessPrompt", () => {
+	it('keeps tool and extension guidelines inside the real structured skeleton', () => {
+		const prompt = buildSystemPrompt({ cwd: CWD, selectedTools: ['read'], toolGuidelines: { read: ['TOOL_DATA_BOUNDARY'] }, promptGuidelines: ['EXTENSION_DATA_BOUNDARY'] });
+		const result = sanitizeHarnessPrompt(prompt);
+		assert.match(result ?? '', /TOOL_DATA_BOUNDARY/);
+		assert.match(result ?? '', /EXTENSION_DATA_BOUNDARY/);
+		assert.doesNotMatch(result ?? '', /You are an expert coding assistant operating inside pi/);
+	});
+
+	it('preserves authored overrides of tools and docs inside a complete sectioned prompt', () => {
+		const prompt = buildSystemPrompt({ cwd: CWD, sections: { tools: 'AUTHORED_TOOL_POLICY', docs: 'AUTHORED_DOC_POLICY' } });
+		const result = sanitizeHarnessPrompt(prompt);
+		assert.match(result ?? '', /AUTHORED_TOOL_POLICY/);
+		assert.match(result ?? '', /AUTHORED_DOC_POLICY/);
+		assert.doesNotMatch(result ?? '', /You are an expert coding assistant operating inside pi/);
+	});
+
 	it("strips the real fork skeleton and duplicate context/skills blocks, keeping the sub-agent wrapper verbatim", () => {
 		const parentPrompt = buildSystemPrompt({
 			cwd: CWD,
@@ -147,6 +163,11 @@ describe("sanitizeHarnessPrompt", () => {
 		assert.equal(sanitizeHarnessPrompt(bareSkeleton), undefined);
 	});
 
+	it("leaves authored section tags untouched without a complete harness match", () => {
+		const text = "Document these tags: </docs>\n\n<cwd>\n/example\n</cwd>";
+		assert.equal(sanitizeHarnessPrompt(text), text);
+	});
+
 	it("is idempotent", () => {
 		const parentPrompt = buildSystemPrompt({
 			cwd: CWD,
@@ -193,6 +214,15 @@ describe("sanitizeHarnessPrompt", () => {
 			assert.ok(result.includes("Some custom prompt text."));
 			assert.ok(result.includes("Trailer text."));
 		}
+	});
+
+	it('deduplicates the actual last forwarded listing without deleting a distinct earlier listing', () => {
+		const span = name => `The following skills provide specialized instructions for specific tasks.\nUse the read tool to load a skill's file when the task matches its description.\n<available_skills version="2"><skill><name>${name}</name></skill></available_skills>`;
+		const earlier = span('authored-example');
+		const forwarded = span('actual-catalog');
+		const result = sanitizeHarnessPrompt(`${earlier}\n\n${forwarded}`, { sourcePrompt: `${earlier}\n\n${forwarded}` });
+		assert.ok(result.includes(earlier));
+		assert.ok(!result.includes('actual-catalog'));
 	});
 
 	it("keeps the embedded listing when the caller forwarded none", () => {

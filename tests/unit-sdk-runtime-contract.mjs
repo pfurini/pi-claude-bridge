@@ -522,11 +522,9 @@ async function captureExecutableSelection(pathToClaudeCodeExecutable) {
   return { messages, spawn: spawns[0] };
 }
 
-// Pinned target of the 2.1.259 bump (Fable 5.1 needs CC >=2.1.251). A dependency
-// bump that moves either number must be a deliberate edit here, with the plan's
-// verification re-run — not a silent drift.
-const TARGET_AGENT_SDK_VERSION = "0.3.259";
-const TARGET_CLAUDE_CODE_VERSION = "2.1.259";
+// Exact SDK pins keep executable and offline contract assertions synchronized.
+const TARGET_AGENT_SDK_VERSION = "0.3.280";
+const TARGET_CLAUDE_CODE_VERSION = "2.1.280";
 
 function agentSdkMetadata() {
   const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
@@ -573,11 +571,7 @@ describe("Claude Code executable resolution", () => {
 
     assert.equal(init.claude_code_version, agentSdkMetadata().claudeCodeVersion);
     assert.equal(init.claude_code_version, TARGET_CLAUDE_CODE_VERSION);
-    // The delegation family is asserted against the `full` inventory below, not
-    // here: Claude Code 2.1.259 gates the default inventory behind ToolSearch, so a
-    // bare query no longer lists Grep, Glob, TaskCreate, TaskGet, TaskList or
-    // TaskUpdate eagerly. Every AskClaude mode disables ToolSearch, so the bridge
-    // always sees the eager inventory — pinning `full` pins what it actually gets.
+    // Probe the mode-specific inventories instead of inferring tool availability from SDK type declarations.
     for (const transitionalName of ["Agent", "RemoteTrigger"]) {
       assert.ok(
         !init.tools.includes(transitionalName),
@@ -606,12 +600,7 @@ describe("Claude Code executable resolution", () => {
       "Write",
       "Bash",
       "Task",
-      "TaskCreate",
-      "TaskGet",
-      "TaskList",
-      "TaskOutput",
       "TaskStop",
-      "TaskUpdate",
       "Workflow",
       "ReportFindings",
       "SendMessage",
@@ -621,6 +610,10 @@ describe("Claude Code executable resolution", () => {
     // Agent is not blocked in full mode, so its absence is evidence about Claude
     // Code rather than about our own policy.
     assert.ok(!inventories.full.has("Agent"), "target full mode should not expose legacy Agent");
+    // The 2.1.280 initialization probe no longer exposes these task-management tools.
+    for (const removed of ["TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskUpdate"]) {
+      assert.ok(!inventories.full.has(removed), `target full mode unexpectedly exposes ${removed}`);
+    }
     for (const tool of ["ToolSearch", "ScheduleWakeup"]) {
       assert.ok(!inventories.full.has(tool), `target full mode should block ${tool}`);
     }

@@ -254,6 +254,11 @@ describe("AskClaude SDK options", () => {
 });
 
 describe("isolated compaction SDK options", () => {
+	it("preserves resolved effort for standalone requests and omits missing mappings", () => {
+		const input = { cwd: "/work/project", baseEnv, claudeConfigDir, systemPrompt: "Classify inventory", cliModel: "claude-test" };
+		assert.equal(buildIsolatedSummaryQueryOptions({ ...input, effort: "max" }).effort, "max");
+		assert.ok(!("effort" in buildIsolatedSummaryQueryOptions(input)));
+	});
 	it("disables tools, settings, skills, persistence, and auto-memory", () => {
 		const options = buildIsolatedSummaryQueryOptions({
 			cwd: "/work/project",

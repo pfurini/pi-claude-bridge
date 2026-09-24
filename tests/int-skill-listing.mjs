@@ -253,7 +253,7 @@ test("AC15: a skill naming a non-bridge provider routes off-bridge, and the next
 		)
 	) {
 		t.skip(
-			"no authenticated non-bridge provider for gpt-5.4-mini in this environment",
+			"no authenticated openai-codex/gpt-5.6-luna provider in this environment",
 		);
 		return;
 	}
@@ -265,7 +265,7 @@ test("AC15: a skill naming a non-bridge provider routes off-bridge, and the next
 	assert.equal(
 		freshQueryLines(turn1.debugLog).length,
 		0,
-		`turn 1 reached the bridge despite model: gpt-5.4-mini:\n${turn1.debugLog}`,
+		`turn 1 reached the bridge despite model: openai-codex/gpt-5.6-luna:\n${turn1.debugLog}`,
 	);
 
 	const turn2 = await runTurn({

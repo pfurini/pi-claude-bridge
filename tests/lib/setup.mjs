@@ -22,4 +22,6 @@ process.env.CLAUDE_BRIDGE_DEBUG_PATH = join(logDir, "claude-bridge.log");
 // explicit rather than relying on the dirname-derivation so a test can read it
 // back straight from the env var.
 process.env.CLAUDE_BRIDGE_DIAG_PATH = join(logDir, "claude-bridge-diag.log");
+// RPC harness imports load .env.test and probe the Claude profile. Unit tests must never probe a developer's profile.
+process.env.CLAUDE_CONFIG_DIR = join(logDir, "claude");
 process.on("exit", () => rmSync(logDir, { recursive: true, force: true }));

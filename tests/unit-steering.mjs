@@ -53,16 +53,14 @@ describe("steeringAppendFor", () => {
 		assert.equal(steeringAppendFor("claude-opus-5", ["claude-haiku-4-5"]), undefined);
 	});
 
-	it("the opus alias resolves to a steered id on every plan tier", () => {
-		// Users say "opus", not "claude-opus-5". resolveModel returns the
-		// registered model object, and steering keys on its id - this test breaks
-		// if the alias ever resolves to an unvalidated opus or a suffixed id.
-		const mock = (id) => ({ id, name: id, reasoning: true, input: ["text"], cost: { input: 1, output: 1 }, contextWindow: 1000000, maxTokens: 8000 });
-		const ids = ["claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
+	it("new catalog models do not inherit steering from their family", () => {
+		const mock = (id) => ({ id, name: id, reasoning: true, input: ["text"], contextWindow: 1000000, maxTokens: 8000 });
 		for (const settings of [{ plan: "max", longContextExtraUsage: false }, { plan: "pro", longContextExtraUsage: false }]) {
-			const registered = applyLongContext(buildModels(ids.map(mock)), settings);
-			assert.equal(steeringAppendFor(resolveModel(registered, "opus").id), STEERING_RULES, `plan=${settings.plan}`);
-			assert.ok(registered.every((m) => !/\[1m\]/.test(m.id)), "no suffixed ids registered");
+			const registered = applyLongContext(buildModels([mock("claude-opus-5"), mock("claude-opus-5-5")]), settings);
+			assert.equal(resolveModel(registered, "opus").id, "claude-opus-5-5");
+			assert.equal(steeringAppendFor(resolveModel(registered, "opus").id), undefined);
+			assert.equal(steeringAppendFor(resolveModel(registered, "claude-opus-5").id), STEERING_RULES);
+			assert.ok(registered.every((model) => !model.id.includes("[1m]")));
 		}
 	});
 

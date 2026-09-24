@@ -291,6 +291,7 @@ export interface IsolatedSummaryQueryOptionsInput {
 	claudeConfigDir: string;
 	systemPrompt: string;
 	cliModel: string;
+	effort?: EffortLevel;
 	claudeExecutable?: string;
 	debugOptions?: CliDebugOptions;
 }
@@ -310,6 +311,7 @@ export function buildIsolatedSummaryQueryOptions(
 		persistSession: false,
 		systemPrompt: input.systemPrompt,
 		model: input.cliModel,
+		...(input.effort ? { effort: input.effort } : {}),
 		maxTurns: 1,
 		...(input.claudeExecutable
 			? { pathToClaudeCodeExecutable: input.claudeExecutable }

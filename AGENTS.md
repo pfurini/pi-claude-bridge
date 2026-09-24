@@ -67,34 +67,26 @@ No build step — the package ships `src` TypeScript as-is (see `files` in `pack
 
 ## Pi dependency
 
-The three `@earendil-works/pi-*` devDependencies are `file:` links to the local
-fork at `../pi`, not registry installs. Check the fork, not `node_modules`, when
-you need to know what pi's API offers: the fork carries commits stock pi does
-not (verified against registry `0.84.1`, which lacks `ExtensionAPI.cwd`,
-`ExtensionAPI.agentDir`, `ExtensionContext.agentDir`, `ExecOutputTruncation`,
-the `piForkCapabilities` marker, and `default-stream-fn`). Fork and registry
-both report `0.84.1`, so a registry install — even at the newest version —
-silently gives you an older API surface under an identical version number.
+The three `@earendil-works/pi-*` devDependencies link to `../pi/packages/*`. Read the fork when checking Pi APIs.
+Fork and registry versions can match despite different API surfaces; the earlier 0.84.1 comparison demonstrated that mismatch.
+Check `ExtensionAPI.agentDir` or `piForkCapabilities`, not version equality, to identify the fork.
 
 - The fork must be built before its API changes reach `tsc`. Types come from
   `dist/*.d.ts`, and the build is order-dependent — run `npm run build:offline`
   at the fork root, not `npm run build` in one package.
+  If generated model data is absent, run `npm run hydrate:model-data` before `npm run build:offline`.
 - `npm ci` fails anywhere `../pi` is absent. That is the intended trade: this
-  extension targets the fork. `peerDependencies` stays at `>=0.82.1` so the
-  published package still installs against stock pi, and the optional-property
-  reads in `loadDirs()` and `sessionAgentDir()` are what let it degrade there.
+  extension targets the fork. The peer floor is `>=0.86.1` because the bridge uses Pi's transcript helpers.
+  Optional-property reads in `loadDirs()` and `sessionAgentDir()` preserve the stock-Pi fallback.
 - Integration tests spawn `pi` from `PATH`, which already resolves to the fork's
   `dist/cli.js`. Only `typecheck` and the unit tests read `node_modules`.
 
 CI (`.github/workflows/ci.yml`) runs both sides: a `fork` job that checks out
 `pfurini/pi` as a sibling and builds it, and a `stock` job that rewrites the
-three devDependencies to the registry `0.82.1` (the peer floor) and drops the
-lockfile. Each job asserts which pi it actually got by probing for
-`ExtensionAPI.agentDir` rather than by version, because the fork and the latest
-registry release share a version number, so no version check can tell them
-apart. Both jobs only compile and unit-test; nothing
-in the unit suite loads an extension through pi's loader, so neither observes
-`loadDirs()` actually falling back at runtime. That needs an integration run.
+three devDependencies to registry `0.86.1` (the peer floor) and drops the lockfile.
+Both jobs check `ExtensionAPI.agentDir` to verify which API surface they compile against.
+`tests/unit-built-pi-contract.mjs` loads the real bridge factory against compiled fork output with mocked SDK responses.
+The stock job skips that fork-specific probe; ordinary unit tests and typechecking still run against the peer floor.
 
 Other extensions on this machine do not need the same treatment. Pi loads
 extension source into its own process and never resolves `@earendil-works/*`

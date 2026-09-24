@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Authenticated Claude Opus 5 coverage on Agent SDK 0.3.259 / Claude Code 2.1.259.
+// Authenticated Claude Opus 5 coverage on Agent SDK 0.3.280 / Claude Code 2.1.280.
 //
 // Two harnesses: one with the bridge as the provider (Opus 5 selected directly),
 // one with an alternate provider driving the AskClaude tool.
@@ -24,7 +24,7 @@ const OTHER_MODEL = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_MODEL");
 const TIMEOUT = 240_000;
 const OPUS_5 = "claude-opus-5";
 const BRIDGE_OPUS_5 = `claude-bridge/${OPUS_5}`;
-const TARGET_CLAUDE_CODE_VERSION = "2.1.259";
+const TARGET_CLAUDE_CODE_VERSION = "2.1.280";
 const ONE_M = 1_000_000;
 const CONFIGURED_PROFILE = defaultClaudeConfigDir();
 const NORMAL_PROFILE = join(homedir(), ".claude");
@@ -298,7 +298,11 @@ describe("Opus 5 through AskClaude", () => {
 		assert.ok(!lines.some((line) => line.includes("effort=max")), `xhigh must not escalate to max:\n${lines.join("\n")}`);
 	});
 
-	it("defaults an omitted model to Opus 5", { timeout: TIMEOUT }, async () => {
+	it("defaults an omitted model to the newest installed Opus", { timeout: TIMEOUT }, async () => {
+		const { models } = await harness.send({ type: "get_available_models" });
+		const newestOpus = models.filter(model => model.provider === "claude-bridge" && model.id.startsWith("claude-opus-"))
+			.sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }))[0];
+		assert.ok(newestOpus);
 		const marker = `ASK-DEFAULT-${Math.random().toString(36).slice(2, 10)}`;
 		const result = await invokeAskClaude({
 			prompt: `Reply with exactly ${marker} and nothing else.`,
@@ -307,12 +311,11 @@ describe("Opus 5 through AskClaude", () => {
 		});
 		assert.match(result, new RegExp(marker));
 
-		// The default is the literal string "opus", which resolveModel now maps to
-		// Opus 5 because it is the first opus entry in MODEL_IDS_IN_ORDER.
+		// The default shortcut follows the live Pi catalog rather than a frozen bridge list.
 		const lines = askClaudeLines(readFileSync(harness.DEBUG_LOG, "utf8"));
 		assert.ok(
-			lines.some((line) => line.includes(`model=${OPUS_5} cliModel=${OPUS_5} `)),
-			`omitted model should resolve to bare ${OPUS_5}:\n${lines.join("\n")}`,
+			lines.some((line) => line.includes(`model=${newestOpus.id} cliModel=${newestOpus.id} `)),
+			`omitted model should resolve to bare ${newestOpus.id}:\n${lines.join("\n")}`,
 		);
 	});
 
