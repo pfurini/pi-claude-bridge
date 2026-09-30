@@ -27,7 +27,9 @@ const PROVIDER_ID = "claude-bridge";
 
 const { default: activate } = await import("../src/index.js");
 
+let nextSession = 0;
 function activateWithMockPi(activateFn, options = {}) {
+	const sessionId = `registry-fixture-${nextSession++}`;
 	// pi appends handlers (a later bridge instance registers two session_start
 	// handlers: clearSession + deferred registration), so the mock does too.
 	const handlers = new Map();
@@ -45,7 +47,7 @@ function activateWithMockPi(activateFn, options = {}) {
 	});
 	const emit = (event, ...args) => {
 		const [eventData, context = {}] = args;
-		for (const handler of handlers.get(event) ?? []) handler(eventData, { cwd: fixtureDir, agentDir: fixtureDir, ...context });
+		for (const handler of handlers.get(event) ?? []) handler(eventData, { cwd: fixtureDir, agentDir: fixtureDir, sessionManager: { getSessionId: () => sessionId }, ...context });
 	};
 	return { handlers, registered, emit };
 }

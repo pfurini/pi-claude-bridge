@@ -63,24 +63,25 @@ it("rebuilds an omission in the same Pi session instead of treating it as a chil
 
 it("imports child history separately without replacing an equally long parent", () => withFixture(({ messages, sync, stored }) => {
 	const parent = sync(messages);
-	const state = __test.getSharedSession();
+	const state = __test.getSharedSession("parent");
 	const before = stored(parent.sessionId);
 	const childMessages = [{ ...messages[0], content: "CHILD_ONLY" }, ...messages.slice(1)];
 	const child = sync(childMessages, { piSessionId: "child" });
-	assert.equal(child.preserveSharedSession, true);
+	assert.equal(child.preserveSharedSession, undefined);
 	assert.notEqual(child.sessionId, parent.sessionId);
-	assert.equal(__test.getSharedSession(), state);
+	assert.equal(__test.getSharedSession("parent"), state);
+	assert.equal(__test.getSharedSession("child").sessionId, child.sessionId);
 	assert.equal(stored(parent.sessionId), before);
 	assert.ok(stored(child.sessionId).includes("CHILD_ONLY"));
 }));
 
 it("isolates a reentrant query even when the caller supplies the parent's session ID", () => withFixture(({ messages, sync }) => {
 	const parent = sync(messages);
-	const state = __test.getSharedSession();
+	const state = __test.getSharedSession("parent");
 	const child = sync(messages, { piSessionId: "parent", preserveSharedSession: true });
 	assert.equal(child.preserveSharedSession, true);
 	assert.notEqual(child.sessionId, parent.sessionId);
-	assert.equal(__test.getSharedSession(), state);
+	assert.equal(__test.getSharedSession("parent"), state);
 }));
 
 it("keeps request-only skill carry-forward content when rebuilding", () => withFixture(({ messages, sync, stored }) => {
@@ -95,7 +96,7 @@ it("keeps request-only skill carry-forward content when rebuilding", () => withF
 
 it("does not trust a session that has no prefix snapshot", () => withFixture(({ messages, sync, stored }) => {
 	const first = sync(messages);
-	const state = __test.getSharedSession();
+	const state = __test.getSharedSession("parent");
 	delete state.history;
 	const edited = [{ ...messages[0], content: "REPLACED_WITHOUT_SNAPSHOT" }, ...messages.slice(1)];
 	const next = sync(edited);

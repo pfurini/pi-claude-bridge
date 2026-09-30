@@ -67,9 +67,11 @@ No build step — the package ships `src` TypeScript as-is (see `files` in `pack
 
 ## Pi dependency
 
-The three `@earendil-works/pi-*` devDependencies link to `../pi/packages/*`. Read the fork when checking Pi APIs.
-Fork and registry versions can match despite different API surfaces; the earlier 0.84.1 comparison demonstrated that mismatch.
-Check `ExtensionAPI.agentDir` or `piForkCapabilities`, not version equality, to identify the fork.
+This extension supports Paolo's Pi fork only, not stock Pi.
+The three `@earendil-works/pi-*` devDependencies link to `../pi/packages/*`. Read that fork when checking Pi APIs.
+Prefer direct fork APIs when they simplify or optimize the implementation.
+Do not add runtime fork detection or stock-Pi compatibility fallbacks.
+Fork and registry version numbers can match despite different API surfaces; version equality establishes no compatibility.
 
 - The fork must be built before its API changes reach `tsc`. Types come from
   `dist/*.d.ts`, and the build is order-dependent — run `npm run build:offline`
@@ -77,25 +79,18 @@ Check `ExtensionAPI.agentDir` or `piForkCapabilities`, not version equality, to 
   If generated model data is absent, run `npm run hydrate:model-data` before `npm run build:offline`.
 - `npm ci` fails anywhere `../pi` is absent. That is the intended trade: this
   extension targets the fork. The peer floor is `>=0.86.1` because the bridge uses Pi's transcript helpers.
-  Optional-property reads in `loadDirs()` and `sessionAgentDir()` preserve the stock-Pi fallback.
+  The peer floor does not establish the fork's API identity; current source and compiled contracts are authoritative.
 - Integration tests spawn the fork's `packages/coding-agent/dist/cli.js` directly, not `pi` from `PATH`.
   `PATH` may resolve to the pi-fence launcher, which drops `CLAUDE_BRIDGE_*` from the child environment.
   See `tests/lib/pi-bin.mjs` and `tests/lib/bash-setup.sh`. Only `typecheck` and the unit tests read `node_modules`.
 
-CI (`.github/workflows/ci.yml`) runs both sides: a `fork` job that checks out
-`pfurini/pi` as a sibling and builds it, and a `stock` job that rewrites the
-three devDependencies to registry `0.86.1` (the peer floor) and drops the lockfile.
-Both jobs check `ExtensionAPI.agentDir` to verify which API surface they compile against.
-`tests/unit-built-pi-contract.mjs` loads the real bridge factory against compiled fork output with mocked SDK responses.
-The stock job skips that fork-specific probe; ordinary unit tests and typechecking still run against the peer floor.
-
-Other extensions on this machine do not need the same treatment. Pi loads
-extension source into its own process and never resolves `@earendil-works/*`
-from an extension's `node_modules`, so they already run on the fork. Link the
-fork only in a repo that *uses* fork-only API — currently `ExtensionAPI.cwd`,
-`ExtensionAPI.agentDir`, `ExtensionContext.agentDir`, and the optional `pi.exec`
-truncation members. The fork's delta is additive, so code written against the
-published types compiles and behaves identically on it.
+CI (`.github/workflows/ci.yml`) checks out `pfurini/pi@personal` as a sibling, builds it, and runs bridge typechecking and unit tests.
+The stock-Pi job is removed.
+`loadDirs()` and `sessionAgentDir()` use the fork's directory fields directly.
+`tests/unit-built-pi-contract.mjs` validates transcript and summary contracts with mocked SDK responses.
+`tests/unit-native-child-shutdown.mjs` validates shared-runtime children and native teardown against the compiled fork.
+The bridge consumes the fork's local-only `StreamOptions.sessionContext` contract for requests without extension lifecycle bindings.
+Land the Pi companion on `personal` before expecting bridge CI to validate that contract.
 
 ## Tests
 
@@ -111,4 +106,4 @@ Do not run the suites through the pi-fence launcher.
 The fence passes only allowlisted environment names, so the bridge never sees `CLAUDE_BRIDGE_DEBUG` and writes no debug log.
 Every assertion that reads the debug log then fails with a misleading message such as "the query never completed".
 `tests/lib/rpc-harness.mjs` fails at startup instead, when the bridge has written nothing to its debug log.
-`tests/int-shutdown-kills-cc.mjs` is the deliberate exception: it launches `pi run --profile` to test the fence.
+`tests/int-shutdown-kills-cc.mjs` explicitly launches `pi-fence run --profile` to test the fence, avoiding npm's local `pi` executable.

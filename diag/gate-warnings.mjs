@@ -10,9 +10,9 @@
 //
 //   node diag/gate-warnings.mjs [logDir] [--allowlist diag/warning-allowlist.txt]
 //
-// logDir defaults to .test-output (where both the shell tests via setup_test_env
-// and the RPC harness write `<name>-debug.log`). Wipe it before the battery so the
-// gate sees only this run's logs — the npm `test` script does.
+// logDir defaults to .test-output for manual runs.
+// npm test passes both gates the same fresh CLAUDE_BRIDGE_TEST_LOG_DIR.
+// Shell tests and the RPC harness write there; harness restarts retain earlier debug lines.
 //
 // Allowlist format (see diag/warning-allowlist.txt): one entry per line,
 //   <log-name-substring> :: <message-substring>

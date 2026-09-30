@@ -80,7 +80,8 @@ const stillSameProcess = process => process.identity !== undefined && identity(p
 
 async function observe(scenario) {
   processRows(); // Fail before spending quota if this observer cannot inspect processes.
-  const child = spawn('pi', ['run', '--profile', 'general', '--with-credentials', '--', process.execPath, '--import', 'tsx', file, '--fenced-worker', scenario], { cwd: repo, stdio: ['pipe', 'pipe', 'pipe'] });
+  // npm prepends node_modules/.bin/pi, which is Pi itself rather than the fence launcher.
+  const child = spawn('pi-fence', ['run', '--profile', 'general', '--with-credentials', '--', process.execPath, '--import', 'tsx', file, '--fenced-worker', scenario], { cwd: repo, stdio: ['pipe', 'pipe', 'pipe'] });
   const closed = new Promise(resolve => { child.once('close', code => resolve(code)); child.once('error', () => resolve(-1)); });
   const stages = new Map();
   const waiters = new Map();

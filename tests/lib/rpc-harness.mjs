@@ -119,7 +119,7 @@ export function createRpcHarness(opts) {
 		shutdownKillMs = DEFAULT_SHUTDOWN_KILL_MS,
 	} = opts;
 
-	const LOGDIR = `${DIR}/.test-output`;
+	const LOGDIR = process.env.CLAUDE_BRIDGE_TEST_LOG_DIR ?? `${DIR}/.test-output`;
 	mkdirSync(LOGDIR, { recursive: true });
 
 	const RPC_LOG = `${LOGDIR}/${name}.log`;
@@ -130,6 +130,7 @@ export function createRpcHarness(opts) {
 
 	let pi, piClosePromise, rpcLog;
 	let stopped = false;
+	let startedOnce = false;
 	let buffer = "";
 	let listeners = [];
 	let reqId = 0;
@@ -137,10 +138,9 @@ export function createRpcHarness(opts) {
 	function start() {
 		assertClaudeAuthenticated(claudeConfigDir);
 		buffer = "";
-		// Truncate the debug log on each run so test assertions that grep the
-		// log see only this run's output, not accumulated history from prior
-		// failing runs. RPC log is still append so cross-run comparisons work.
-		writeFileSync(DEBUG_LOG, "");
+		// Clear earlier test runs, but retain this harness's logs across restarts.
+		if (!startedOnce) writeFileSync(DEBUG_LOG, "");
+		startedOnce = true;
 		stopped = false;
 		rpcLog = createWriteStream(RPC_LOG, { flags: "a" });
 		const currentLog = rpcLog;

@@ -1,17 +1,26 @@
 # Context windows served by the Claude Agent SDK
 
-The current fork pins Agent SDK 0.3.280. The measurements below retain their original SDK versions and account qualifications.
+The current fork pins Agent SDK 0.3.284. The measurements below retain their original SDK versions and account qualifications.
 
-## Current fork policy (2026-09-23)
+## Current fork policy (2026-09-30)
 
 - Opus 5.5 uses bare `claude-opus-5-5` with 1M context, as explicitly confirmed by the maintainer.
 - Opus 5, 4.8, 4.7, and Fable 5.1 retain their previously measured bare-ID 1M policy.
-- Fable 5 and Sonnet 5 retain their `[1m]` request suffixes.
+- Fable 5, Sonnet 5, and Sonnet 5.5 use `[1m]` request suffixes at 1M.
+- Sonnet 5.5 follows upstream `a78a2a5` measurements on Pro with both Extra Usage states, dated 2026-09-28.
 - Opus 4.6 and Sonnet 4.6 retain their existing plan and Extra Usage gates.
 - Newly discovered models receive 200K metadata until an explicit policy covers them.
-- This merge performs no new authenticated context-window measurements.
+- Paolo later authorizes live validation; the local 2026-09-30 probe below confirms the suffixed Sonnet 5.5 window.
 
 The current policy is implemented in `src/models.ts`. Historical upstream measurements below do not override the approved fork policy.
+
+## Local Sonnet 5.5 validation (2026-09-30)
+
+A single subscription-authenticated turn requests `claude-sonnet-5-5[1m]` through Agent SDK 0.3.284 and reports Claude Code 2.1.284.
+The result reports `contextWindow: 1000000`, `maxOutputTokens: 128000`, and canonical model `claude-sonnet-5-5`.
+The account tier and Extra Usage state are not classified; the probe does not establish Pro/Max parity or near-limit behavior.
+Evidence: `.test-output/live-merge-2026-09-30/sonnet-55.json`.
+The upstream matrix remains the source for the separate Pro-with-and-without-Extra-Usage claim.
 
 ## Scope and evidence labels
 
@@ -60,36 +69,61 @@ Warn the user and obtain explicit confirmation before running an eligible probe.
 
 ## Historical upstream matrix
 
-Upstream commit `0750748` carries the following matrix. Several rows disagree with the fork's later observations below.
-The Opus 5.5 suffixed row remains unmeasured in that upstream record.
+The matrix combines upstream `0750748` with later Opus 5.5 and Sonnet 5.5 evidence carried by upstream `a78a2a5`.
+Several older rows disagree with the fork's later observations below; the matrix is historical evidence, not the fork's request policy.
+
+Upstream records these later runs:
+
+- Opus 5.5: SDK 0.3.280 / Claude Code 2.1.280, Max 20x, Extra Usage disabled, 2026-09-23.
+- Pro columns: SDK 0.3.284 / Claude Code 2.1.284, Extra Usage enabled and disabled, 2026-09-28.
+- The enabled Pro report's filename says `max-*`; upstream identifies that label as mistaken and reports `organizationType: "claude_pro"`.
+- Enabled rate-limit events report `overageStatus: "allowed"`; disabled events report `overageStatus: "rejected"` and `overageDisabledReason: "org_level_disabled"`.
+
+These are upstream measurements, not new probes performed during this merge.
 
 | requested id              | Pro, credits off | Pro, credits on | Max, credits off | Max, credits on |
 |---------------------------|------------------|-----------------|------------------|-----------------|
-| `claude-opus-5-5[1m]`    | —                | —               | —                | —               |
-| `claude-opus-5`           | —                | —               | 200K             | —               |
-| `claude-opus-5[1m]`      | —                | —               | 1M               | —               |
-| `claude-opus-4-8`         | 200K             | 200K            | 200K             | 200K            |
+| `claude-sonnet-5-5`       | 1M               | 1M              | —                | —               |
+| `claude-sonnet-5-5[1m]`  | 1M               | 1M              | —                | —               |
+| `claude-opus-5-5`         | 1M               | 1M              | 1M               | —               |
+| `claude-opus-5-5[1m]`    | 1M               | 1M              | 1M               | —               |
+| `claude-opus-5`           | 1M               | 1M              | 200K             | —               |
+| `claude-opus-5[1m]`      | 1M               | 1M              | 1M               | —               |
+| `claude-opus-4-8`         | 1M§              | 200K            | 200K             | 200K            |
 | `claude-opus-4-8[1m]`    | 1M               | 1M              | 1M               | 1M              |
 | `claude-opus-4-7`         | 1M               | 1M              | 1M               | 1M              |
 | `claude-opus-4-7[1m]`    | 1M               | 1M              | 1M               | 1M              |
 | `claude-opus-4-6`         | 200K             | 200K            | 200K             | 200K            |
 | `claude-opus-4-6[1m]`    | 429              | 1M              | 1M               | 1M              |
-| `claude-fable-5`          | 200K             | —               | —                | —               |
-| `claude-fable-5[1m]`     | 1M               | —               | —                | —               |
-| `claude-sonnet-5`         | 200K             | —               | —                | —               |
-| `claude-sonnet-5[1m]`    | 1M               | —               | —                | —               |
+| `claude-fable-5`          | 429§             | 1M              | —                | —               |
+| `claude-fable-5[1m]`     | 429§             | 1M              | —                | —               |
+| `claude-sonnet-5`         | 1M§              | 1M              | —                | —               |
+| `claude-sonnet-5[1m]`    | 1M               | 1M              | —                | —               |
 | `claude-sonnet-4-6`       | 200K             | 200K            | 200K             | 200K            |
 | `claude-sonnet-4-6[1m]`  | 429              | 1M              | 429              | 1M              |
 | `claude-haiku-4-5`        | 200K             | 200K            | 200K             | 200K            |
 | `claude-haiku-4-5[1m]`   | 429†             | 400             | 400              | 400             |
 
+Upstream raw reports recorded by `a78a2a5`:
+
+- Earlier matrix: `.test-output/context-size/{pro,max}-2026-06-26T21-*.json`.
+- Opus 5.5: `.test-output/context-size/max-2026-09-23T13-50-08-107Z.json`.
+- Sonnet 5.5, Pro credits enabled: `.test-output/context-size/max-2026-09-28T18-33-28-340Z.json`.
+- Sonnet 5.5, Pro credits disabled: `.test-output/context-size/pro-2026-09-28T18-56-52-762Z.json`.
+
+`—` means upstream did not test that condition. The reports do not establish behavior on other accounts or near-limit payloads.
+Upstream reports Sonnet 5.5 serving 1M from both bare and `[1m]` IDs on Pro in both Extra Usage states.
+The fork requests `[1m]` on every configured plan; Max availability remains policy rather than a Sonnet 5.5 measurement in this matrix.
+Upstream also reports Opus 5.5 serving 1M with either ID on Max without credits, with 128K maximum output.
+The fork retains its maintainer-confirmed bare Opus 5.5 policy rather than upstream's suffix policy.
+
 ## Claude Opus 5 on Claude Code 2.1.220
 
 Measured on 2026-07-26 through the bridge provider (`tests/int-opus-5.mjs`) on
 Agent SDK `0.3.220` / Claude Code `2.1.220`, Darwin arm64, Pro subscription OAuth
-with `ANTHROPIC_API_KEY` unset and **Extra Usage disabled** — the turns reported
+with `ANTHROPIC_API_KEY` unset and **Extra Usage disabled** (the turns reported
 `overageStatus: "rejected"`, `overageDisabledReason: "org_level_disabled"`, and
-`isUsingOverage: false`, so no metered credit was involved.
+`isUsingOverage: false`, so no metered credit was involved).
 
 | Requested model ID | Served input / max output | Served usage key | Evidence |
 | --- | ---: | --- | --- |
@@ -127,9 +161,9 @@ with **`claude-opus-5` bare serving 200K on Max** and `claude-opus-5[1m]` servin
 request, and the Max re-measurement above shows why: the 200K figure does not
 reproduce on `2.1.220`.
 
-Keep this in mind if a future upstream merge reintroduces the `[1m]` form. The
-disagreement is not a style preference; it is two measurements of the same thing,
-and the one taken on the binary this repo pins is the one that governs.
+The July fork policy follows its target-binary measurements rather than the conflicting upstream row.
+The historical disagreement concerns observed behavior, not a preference between equivalent ID spellings.
+The current SDK pin is 0.3.284; this section records the older 0.3.220 evidence without claiming a new measurement.
 
 Directly measured facts about the bare ID:
 
@@ -240,6 +274,11 @@ with the model registered in Pi:
 These values come from `result.modelUsage[*].contextWindow`. The probes did not
 send payloads close to the limits, so they verify served-limit metadata rather
 than boundary-size behavior.
+
+§ **Upstream update, 2026-09-28 (Pro credits off, SDK 0.3.284).** Upstream `a78a2a5` reports both Fable 5 forms rejecting with 429.
+The upstream record reports bare Sonnet 5 and Opus 4.8 rising from June's 200K to 1M.
+Those observations do not establish a backend cause or supersede the fork's earlier measurements.
+Upstream did not re-probe Fable 5.1; the fork retains its conservative eligibility gate.
 
 ## Error shapes
 

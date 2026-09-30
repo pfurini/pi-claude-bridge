@@ -15,7 +15,7 @@ const mock = (id, extra = {}) => ({
 	maxTokens: 8000, baseUrl: "https://example.invalid", api: "anthropic-messages",
 	provider: "anthropic", headers: { secret: "test" }, ...extra,
 });
-const ids = ["claude-fable-5", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
+const ids = ["claude-fable-5", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"];
 const find = (models, id) => models.find(model => model.id === id);
 
 function captureWarning(fn) {
@@ -36,6 +36,11 @@ describe("catalog projection", () => {
 	it("sorts known families first and excludes dated aliases", () => {
 		const source = ["claude-proxy-x", "claude-haiku-4-5", "claude-opus-4-5-20251101", "claude-fable-5", "claude-opus-4-5", "claude-fable-5-1"];
 		assert.deepEqual(buildModels(source.map(id => mock(id))).map(model => model.id), ["claude-fable-5-1", "claude-fable-5", "claude-opus-4-5", "claude-haiku-4-5", "claude-proxy-x"]);
+	});
+	it("keeps dated aliases from stealing shortcuts from bare ids", () => {
+		const models = buildModels([mock("claude-opus-4-5-20251101"), mock("claude-opus-4-5")]);
+		assert.deepEqual(models.map(model => model.id), ["claude-opus-4-5"]);
+		assert.equal(resolveModel(models, "opus-4-5")?.id, "claude-opus-4-5");
 	});
 	it("strips provider transport fields without inventing thinking maps", () => {
 		for (const model of buildModels(ids.map(id => mock(id)))) {
@@ -69,6 +74,7 @@ describe("model selection", () => {
 		for (const ordered of [models, [...models].reverse()]) {
 			assert.equal(resolveModel(ordered, "OPUS").id, "claude-opus-5-5");
 			assert.equal(resolveModel(ordered, "fable").id, "claude-fable-5-1");
+			assert.equal(resolveModel(ordered, "sonnet").id, "claude-sonnet-5-5");
 			assert.equal(resolveModel(ordered, "haiku").id, "claude-haiku-4-5");
 		}
 	});
@@ -108,6 +114,19 @@ describe("explicit runtime windows", () => {
 			const { result, lines } = captureWarning(() => applyLongContext(buildModels([mock(id)]), MAX));
 			assert.equal(result[0].contextWindow, 200_000);
 			assert.ok(lines.some(line => line.includes("no known context size")));
+		}
+	});
+	it("requests and registers Sonnet 5.5 at 1M on every plan without warnings", () => {
+		for (const settings of ALL_PLANS) {
+			const { result, lines } = captureWarning(() => {
+				assert.equal(claudeCodeModelId({ id: "claude-sonnet-5-5" }, settings), "claude-sonnet-5-5[1m]");
+				assert.deepEqual(resolveClaudeCodeRuntimeModel("claude-sonnet-5-5", settings), { cliModelId: "claude-sonnet-5-5[1m]", contextWindow: 1_000_000 });
+				return applyLongContext(buildModels([mock("claude-sonnet-5-5", { name: "Claude Sonnet 5.5", contextWindow: 200_000 })]), settings);
+			});
+			assert.equal(result[0].contextWindow, 1_000_000);
+			assert.equal(result[0].name, "Claude Sonnet 5.5 1M");
+			assert.equal(applyLongContext(result, settings)[0], result[0]);
+			assert.deepEqual(lines, []);
 		}
 	});
 });

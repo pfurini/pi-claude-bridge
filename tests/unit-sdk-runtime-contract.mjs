@@ -523,8 +523,8 @@ async function captureExecutableSelection(pathToClaudeCodeExecutable) {
 }
 
 // Exact SDK pins keep executable and offline contract assertions synchronized.
-const TARGET_AGENT_SDK_VERSION = "0.3.280";
-const TARGET_CLAUDE_CODE_VERSION = "2.1.280";
+const TARGET_AGENT_SDK_VERSION = "0.3.284";
+const TARGET_CLAUDE_CODE_VERSION = "2.1.284";
 
 function agentSdkMetadata() {
   const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
@@ -610,7 +610,7 @@ describe("Claude Code executable resolution", () => {
     // Agent is not blocked in full mode, so its absence is evidence about Claude
     // Code rather than about our own policy.
     assert.ok(!inventories.full.has("Agent"), "target full mode should not expose legacy Agent");
-    // The 2.1.280 initialization probe no longer exposes these task-management tools.
+    // The selected initialization probe does not expose these task-management tools.
     for (const removed of ["TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskUpdate"]) {
       assert.ok(!inventories.full.has(removed), `target full mode unexpectedly exposes ${removed}`);
     }
