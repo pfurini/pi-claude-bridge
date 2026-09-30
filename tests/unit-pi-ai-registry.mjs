@@ -9,9 +9,15 @@
  * "No API provider registered for api: claude-bridge".
  */
 
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { getApiProvider } from "@earendil-works/pi-ai/compat";
+
+const fixtureDir = mkdtempSync(join(tmpdir(), "bridge-api-registry-"));
+after(() => rmSync(fixtureDir, { recursive: true, force: true }));
 
 const { default: activate } = await import("../src/index.js");
 
@@ -23,7 +29,7 @@ const BRIDGE_MODEL = {
 };
 
 function activateWithMockPi() {
-	activate({ on: () => {}, registerProvider: () => {} });
+	activate({ cwd: fixtureDir, agentDir: fixtureDir, on: () => {}, registerProvider: () => {}, registerTool: () => {} });
 }
 
 async function collect(stream) {
@@ -57,7 +63,7 @@ describe("pi-ai api registry registration", () => {
 					timestamp: 0,
 				},
 			],
-		});
+		}, { sessionId: "registry-fixture", sessionContext: { ownerSessionId: "registry-fixture", cwd: fixtureDir, agentDir: fixtureDir } });
 		const events = await collect(stream);
 		assert.equal(
 			events.at(-1)?.type,
@@ -80,7 +86,7 @@ describe("pi-ai api registry registration", () => {
 					timestamp: 0,
 				},
 			],
-		});
+		}, { sessionId: "registry-fixture", sessionContext: { ownerSessionId: "registry-fixture", cwd: fixtureDir, agentDir: fixtureDir } });
 		const events = await collect(stream);
 		assert.equal(
 			events.at(-1)?.type,

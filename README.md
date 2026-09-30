@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/pi-claude-bridge)](https://www.npmjs.com/package/pi-claude-bridge)
 
-Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript). Based initially on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal. This fork adds streaming, MCP tool bridging, custom pi tool bridging, session resume/persistence, context sync, thinking support, skills forwarding, and many correctness fixes.
+Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript). Originally based on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal.
 
 1. **Provider** — Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI
 2. **AskClaude tool** — Delegate tasks or questions to Claude Code when using another provider
@@ -21,7 +21,8 @@ Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/
 pi install npm:pi-claude-bridge
 ```
 
-Requires Pi 0.86.1 or newer (`pi-ai`, `pi-coding-agent`, and `pi-tui`) for the transcript provider contract.
+Supports only Paolo's Pi fork, including its transcript and session-directory APIs. Stock Pi is not supported.
+The fork must include the local provider `sessionContext` contract described in `plans/pi-provider-session-context-2026-09-30.md`.
 
 ## Provider
 
@@ -35,6 +36,10 @@ Use `/model` to select Claude models from Pi's installed Anthropic catalog, subj
 Pi's tools run through the bridge's MCP server. Bash calls receive a 120-second default timeout.
 The bridge forwards Pi's project instructions and skill listing. Mid-turn steering reaches Claude Code at a tool boundary.
 
+Direct MCP exposure maps `mcp__server__tool` to `mcp__custom-tools__mcp__server__tool` and back.
+The API accepts at most 128 characters, including the bridge's 19-character prefix; Pi tool names therefore have 109 characters available.
+The bridge preserves names without shortening them. Default codemode exposure uses `mcp__custom-tools__codemode`.
+
 **Context and eligibility:**
 
 | Models | Request ID | Registered window | Eligibility |
@@ -42,12 +47,14 @@ The bridge forwards Pi's project instructions and skill listing. Mid-turn steeri
 | Opus 5.5, 5, 4.8, 4.7 | Bare ID | 1M | No local plan gate |
 | Fable 5.1 | Bare ID | 1M | Max or Extra Usage |
 | Fable 5 | `[1m]` suffix | 1M | Max or Extra Usage |
-| Sonnet 5 | `[1m]` suffix | 1M | No local plan gate |
+| Sonnet 5.5, 5 | `[1m]` suffix | 1M | No local plan gate |
 | Opus 4.6 | `[1m]` when eligible | 1M or 200K | Max or Extra Usage for 1M |
 | Sonnet 4.6 | `[1m]` when eligible | 1M or 200K | Extra Usage for 1M |
 | Other catalog models | Bare ID | 200K | No additional local gate |
 
-Opus 5.5's bare-ID 1M policy is maintainer-confirmed. Existing measurements predate SDK 0.3.280; see [diag/CONTEXT-SIZE.md](diag/CONTEXT-SIZE.md).
+The fork pins Agent SDK 0.3.284. Opus 5.5's bare-ID 1M policy is maintainer-confirmed.
+Upstream `a78a2a5` measured Sonnet 5.5 on Pro with both Extra Usage states on 2026-09-28.
+This merge performs no new live probe; see [diag/CONTEXT-SIZE.md](diag/CONTEXT-SIZE.md) for provenance and historical measurements.
 Fable 5.1's Pro restriction remains conservative rather than measured on Pro.
 
 ## AskClaude Tool
@@ -58,7 +65,6 @@ Opt-in: set `askClaude.enabled` to `true` (see [Configuration](#configuration)).
 - "If you get stuck, ask claude for help"
 - "Ask claude to review the plan in @foo.md, implement it, then ask an isolated=true claude to review the implementation"
 - "Ask claude to poke holes in this theory"
-- "Find all the places in the codebase that handle auth"
 
 Delegated calls use the configured Claude profile and exclude native `CLAUDE.md` files.
 Full mode always receives Claude Code's preset. Read and none modes receive the preset only when the bridge has instructions to append.
@@ -127,7 +133,7 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
   - The sanitizer removes recognized Pi boilerplate while preserving authored contributions and section overrides.
   - Exact project/skill duplicates disappear only when the dedicated forwarding path already supplies the same block.
   - Provider harness corrections always apply. AskClaude receives corrections in full mode or when forwarding skills.
-  - Disabled forwarding retains capture-only customization for legacy flat contexts that lack structured prompt state.
+  - Disabled forwarding retains authored customization for legacy flat contexts that lack structured prompt state.
   - See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md) for the prompt-channel background.
 - `settingSources` — which Claude Code settings tiers the spawned binary loads (`user`/`project`/`local`). Default `[]`: no `settings.json` of any tier and no `CLAUDE.md` of Claude Code's own, so pi's forwarded context block is the only channel for project rules. Independent of `appendSystemPrompt`. (The bridge also excludes `**/CLAUDE.md` on every spawn path, so opting a tier back in for its `settings.json` — e.g. Bedrock/Vertex `apiKeyHelper` — does not re-admit a native CLAUDE.md.)
 - `strictMcpConfig` — block MCP servers from the isolated profile's `.claude.json` and project `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
@@ -137,7 +143,7 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 - `usageEvents` — publish Claude subscription usage on pi's `pi:provider-usage` event channel (default `true`). See [Usage events](#usage-events) below. An invalid value warns once and falls back to `true`.
 
 
-**Startup notice:** the first interactive session to reach Claude Code lists whichever of `provider.plan` and `askClaude.enabled` you have left unset, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
+**Startup notice:** the first session lists `provider.plan` and `askClaude.enabled` if unset, then records `startupNoticeShown` in the global config so it doesn't nag again.
 
 The bridge's explicit context-window policy lives in `src/models.ts`. This fork does not expose `provider.forceTwoHundredK`.
 
@@ -145,7 +151,7 @@ The bridge's explicit context-window policy lives in `src/models.ts`. This fork 
 
 The bridge compares projected history, tool declarations, and effective forwarded instructions before continuing an active query.
 A mismatch imports current history into a replacement query, including completed tool results.
-Recovery allows three replacements per turn and returns a terminal error when that budget is exhausted.
+Recovery rejects repeated identical checkpoints without limiting productive long turns.
 Recorded tool results prevent structural replay; the bridge does not promise exactly-once external effects after a host crash.
 
 Standalone, tool-free SDK consumers can select `cacheRetention: "none"` for an independent request with the complete system prompt and no persisted conversation reuse.
@@ -197,18 +203,16 @@ Silence would be unattributable: a consumer has no HTTP fallback for a bridge-pr
 
 ## Tests
 
-`npm run test:unit` for offline tests (`tests/unit-*.mjs`: queue, import, skills). 
+`npm run test:unit` for offline tests. `npm test` adds integration tests that hit APIs; set `CLAUDE_BRIDGE_TESTING_ALT_MODEL` in `.env.test` for the alt-provider smoke test.
 
-`npm test` for the full suite, which adds integration tests that hit APIs (`tests/int-*.{sh,mjs}`: smoke, multi-turn, cache, session-resume, session-rebuild, tool-message). Set `CLAUDE_BRIDGE_TESTING_ALT_MODEL` in `.env.test` for the alt-provider smoke test (e.g. `openrouter/z-ai/glm-4.7-flash`).
-
-Integration tests spawn real `pi` and Claude Code subprocesses, so they need write access to `~/.claude` for CC's session state — a sandbox that blocks it makes the next turn's `--resume` fail with `No conversation found with session ID`. The RPC harness probes for this at startup and fails fast.
+Integration tests spawn real `pi` and Claude Code subprocesses and need write access to `~/.claude` — a sandbox that blocks it makes `--resume` fail with `No conversation found with session ID`.
 
 ## Debugging
 
 Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 
-- **Bridge log** at `~/.pi/agent/claude-bridge.log` — every provider call, session sync decision, tool result delivery, and CC's stderr. Override location with `CLAUDE_BRIDGE_DEBUG_PATH`.
-- **Per-query Claude Code CLI logs** at `~/.pi/agent/cc-cli-logs/<timestamp>-<tag>-<seq>.log` — the CC subprocess's own debug stream, one file per `query()` call. Tags are `provider` (main turn) or `askclaude` (sub-delegation). Useful when a resume fails or CC misbehaves internally — shows the CLI's own view of session loading, API requests, and tool calls.
+- **Bridge log** at `~/.pi/agent/claude-bridge.log` — provider calls, session sync decisions, tool results, CC stderr. Override location with `CLAUDE_BRIDGE_DEBUG_PATH`.
+- **Per-query CC CLI logs** at `~/.pi/agent/cc-cli-logs/<timestamp>-<tag>-<seq>.log` — the subprocess's own debug stream; tag is `provider` or `askclaude`. Shows CC's view of session loading, API requests, and tool calls.
 
 Diagnostics use `claude-bridge-diag.log` beside the bridge log; `CLAUDE_BRIDGE_DIAG_PATH` selects an explicit destination.
 Denied log writes preserve their entries on stderr rather than replacing the provider result.
@@ -223,25 +227,32 @@ When filing a bug about a session-resume failure (e.g. "No conversation found"),
 ## Compatibility with other extensions
 
 The bridge reconstructs prompt and tool state from Pi's transcript before extracting project instructions and skills.
-The existing sanitizer removes recognized inherited Pi boilerplate and exact duplicate forwarded blocks.
+The sanitizer removes recognized inherited Pi boilerplate and exact duplicate forwarded blocks, including older and MCP-aware documentation templates.
 This fork does not use an exact-key prompt-capture registry or reject authored text merely for mentioning documentation paths.
 
 The bridge checks projected history before reusing persisted Claude sessions. Changed prefixes trigger rebuilding from Pi's projection rather than raw session entries.
-Independent child sessions retain separate imported histories.
+Each live Pi session retains its own reusable mirror, including retained native children.
+Child shutdown retires only child queries and state, leaving the parent mirror and shared provider registration intact.
+Pi owns child lifetimes; the workflow engine owns attempts, retries, and crash recovery.
 
 During tool continuation, changed history or effective MCP declarations trigger an automatic restart into a rotated Claude session.
 The bridge imports completed results rather than re-executing their tools. Recovery requires no attached client.
-Recovery allows three restarts per turn. Startup failures, cancellation, or budget exhaustion produce terminal errors rather than indefinite retries.
+Repeated identical recovery checkpoints, startup failures, and cancellation produce terminal errors rather than indefinite retries.
 Retired queries retain their observed usage and estimated costs, matching the existing abort policy when no terminal cost report arrives.
 
 ## Known issues
 
-After a Claude Code release, review `getAskClaudeToolPolicy()` in `src/sdk-options.ts`. It gates which Claude Code tools the AskClaude subagent may invoke in `read`, `full`, and `none` modes. Add new agentic tools (PlanMode, Task spawning, and similar tools) to the appropriate policy if subagents should not use them.
+After a Claude Code release, review `getAskClaudeToolPolicy()` in `src/sdk-options.ts`.
+The policy controls native tools in AskClaude's `read`, `full`, and `none` modes; new agentic tools require explicit review.
 
-**Sessions get rebuilt more often than they need to be, and a rebuild is expensive.** The bridge rewrites Claude Code's session from pi's history whenever pi's messages move underneath it — after an abort, `/compact`, tree navigation, or an API error. Measured over this repo's own bridge log, a rebuild boundary loses the prompt cache roughly 58% of the time against 26% for a plain resume, so an abort-heavy session costs noticeably more than a clean one. Aborts alone are 46% of rebuilds.
+**A session rebuild re-sends the conversation.** A rebuild can lose prompt-cache reuse beyond the system prompt.
+Upstream's `diag/AUDIT.md` records this effect on tested Claude Code 2.1.263+ runs, not every account, SDK, or rebuild.
+Earlier bridge-log rates are not a current guarantee; cache comparisons require validated metrics and matching observation periods.
 
-**Files Claude Code edits are not carried across a rebuild.** CC records the post-edit contents as an `edited_text_file` attachment; those aren't carried, because they hang off a tool-result record rather than a prompt and so have no stable position to restore them to. The edit itself survives — it's in the history as a tool call and its result — so this costs Claude the file snapshot, not the knowledge that it made the change. `@file` expansions *are* carried.
+**Files Claude Code edits are not carried across a rebuild.** The edit itself survives in the history as a tool call and result — what's lost is the post-edit file snapshot. `@file` expansions *are* carried.
 
-**On pi 0.86 with bridge 0.7.0 or older, every new session fails.** The symptoms are `WARNING session verify: file missing after save` and then `No conversation found with session ID` on the next turn: pi 0.86 moved the system prompt and tool set into `role:"system"` transcript messages, which the older bridge read as a one-message history. Upgrade the bridge rather than downgrading pi — on 0.86 the old bridge also serves no tools, so a turn that does go through looks normal while the model writes tool calls out as prose instead of calling anything.
+**Claude Code records prompts for resumed sessions.** Active-query recovery compares effective forwarded instructions and rebuilds when those instructions change.
+Changes outside Pi's projected prompt state may remain invisible to that comparison.
+Start a new session when updated instructions cannot be confirmed in the effective prompt.
 
-**Exported Anthropic environment variables override the Claude Code child (issue #107).** The bridge passes the ambient environment through, so an `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` exported for another gateway (a corporate proxy, LiteLLM) redirects Claude Code as well, and every turn fails with that gateway's auth error. Unset them for the pi process.
+**Exported Anthropic environment variables override the Claude Code child (issue #107).** An exported `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN` redirects Claude Code to that gateway and every turn fails with its auth error. Unset them for the pi process.

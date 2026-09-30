@@ -1,296 +1,105 @@
-/**
- * Regression tests for syncSharedSession's session reuse decisions.
- */
-import { describe, it, afterEach } from "node:test";
+import { it } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSession, deleteSession, getSessionPath, openSession } from "cc-session-io";
+import { createSession, getSessionPath, openSession } from "cc-session-io";
+import { __test } from "../src/index.js";
 
-const { __test } = await import("../src/index.js");
-
-// Prior history plus a current user turn. The trailing user message is the
-// current turn (turnStart() excludes it from the priors), so the assistant
-// message in between is what makes the priors non-empty and forces the
-// REBUILD path these tests exercise — an all-user context is a clean start.
-function contextMessages(suffix = "") {
-	const now = Date.now();
-	return [
-		{ role: "user", content: `Remember isolated session ${suffix}`, timestamp: now },
-		{ role: "assistant", content: [{ type: "text", text: `Acknowledged ${suffix}` }], timestamp: now + 1 },
-		{ role: "user", content: `Continue isolated session ${suffix}`, timestamp: now + 2 },
-	];
+const messages = [
+	{ role: "user", content: "Review @fixture.txt", timestamp: 1 },
+	{ role: "assistant", content: [{ type: "text", text: "Noted." }], timestamp: 2 },
+	{ role: "user", content: "Continue", timestamp: 3 },
+];
+function fixture(run) {
+	const root = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
+	const cwd = join(root, "project"), profile = join(root, "claude");
+	const sync = (history = messages, ownership = {}) => __test.syncSharedSession(history, cwd, profile, undefined, "test-model", ownership);
+	const path = id => getSessionPath(id, cwd, profile);
+	try { __test.resetSharedSession(); run({ root, cwd, profile, sync, path }); }
+	finally { __test.resetSharedSession(); __test.setPiUI(null); rmSync(root, { recursive: true, force: true }); }
 }
 
-describe("syncSharedSession", () => {
-	afterEach(() => {
-		__test.resetSharedSession();
-		__test.setPiUI(null);
-	});
+it("takes a clean start when prompt state precedes the first user", () => fixture(({ sync }) => {
+	const result = sync([{ role: "system", content: "Instructions", timestamp: 0 }, messages[0]]);
+	assert.equal(result.sessionId, null);
+	assert.equal(result.preserveSharedSession, undefined);
+	assert.equal(__test.getSharedSession(), null);
+}));
 
-	// Fresh-session transcript: the system prompt arrives as a leading system message
-	// (issue #106). It is prompt state, not history — a fresh session must still take
-	// the clean-start path (empty priors) rather than rebuild a session file holding nothing
-	// but a system head, which made --resume fail with "No conversation found".
-	it("takes the clean-start path when a transcript system message precedes the first user message", () => {
-		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
-		try {
-			const result = __test.syncSharedSession([
-				{ role: "system", content: "You are Claude Code.", timestamp: Date.now() },
-				{ role: "user", content: "Hello", timestamp: Date.now() },
-			], cwd);
+it("ignores system messages in cursor arithmetic and reuses a valid accounting baseline", () => fixture(({ sync, path }) => {
+	const first = sync();
+	assert.ok(first.accounting.snapshot, "a fresh import supplies a zero cumulative baseline");
+	const before = readFileSync(path(first.sessionId), "utf8");
+	const next = sync([...messages.slice(0, 2), { role: "system", content: "", toolsAdded: [], timestamp: 2 }, messages[2]]);
+	assert.equal(next.sessionId, first.sessionId);
+	assert.equal(next.accounting, first.accounting, "reuse retains the accounting epoch rather than rebuilding at the same ID");
+	assert.equal(__test.getSharedSession().cursor, 2);
+	assert.equal(readFileSync(path(first.sessionId), "utf8"), before);
+}));
 
-			assert.equal(result.sessionId, null, "a fresh session with only prompt state as priors is a clean start");
-			assert.equal(result.preserveSharedSession, undefined);
-			assert.equal(__test.getSharedSession(), null, "a clean start must not create a session state");
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
+it("rebuilds when the accounting baseline is missing", () => fixture(({ sync }) => {
+	const first = sync();
+	delete first.accounting.snapshot;
+	const next = sync();
+	assert.equal(next.sessionId, first.sessionId);
+	assert.notEqual(next.accounting, first.accounting);
+}));
 
-	// Mid-conversation tool-loadout updates land in the transcript as system messages. They must not inflate the cursor or be imported as history, or the next turn's
-	// reuse check (priors >= cursor) fails and every turn rebuilds the session.
-	it("keeps cursor arithmetic consistent when system messages punctuate the history", () => {
-		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
-		const sessionId = randomUUID();
-		try {
-			const seeded = createSession({ sessionId, projectPath: cwd });
-			seeded.importMessages([
-				{ role: "user", content: "Hi" },
-				{ role: "assistant", content: [{ type: "text", text: "Hello." }] },
-			]);
-			seeded.save();
-			__test.setSharedSession({ sessionId, cursor: 2, cwd });
+it("preserves an anonymous mirror when a shorter caller starts clean", () => fixture(({ sync }) => {
+	sync();
+	const parent = __test.getSharedSession();
+	const child = sync([messages[0]]);
+	assert.equal(child.sessionId, null);
+	assert.equal(child.preserveSharedSession, true);
+	assert.equal(__test.getSharedSession(), parent);
+}));
 
-			const result = __test.syncSharedSession([
-				{ role: "user", content: "Hi", timestamp: Date.now() },
-				{ role: "assistant", content: [{ type: "text", text: "Hello." }], timestamp: Date.now() },
-				{ role: "system", content: "", toolsAdded: [{ name: "grep", description: "", parameters: {} }], timestamp: Date.now() },
-				{ role: "user", content: "Next", timestamp: Date.now() },
-			], cwd);
+it("creates and rebuilds sessions beneath the explicit disposable profile", () => fixture(({ sync, path, profile }) => {
+	const first = sync();
+	assert.ok(path(first.sessionId).startsWith(profile));
+	assert.ok(existsSync(path(first.sessionId)));
+	__test.getSharedSession().needsRebuild = true;
+	assert.equal(sync().sessionId, first.sessionId);
+	assert.ok(existsSync(path(first.sessionId)));
+}));
 
-			assert.equal(result.sessionId, sessionId, "2 priors at cursor 2 must resume, not rebuild");
-			assert.equal(__test.getSharedSession()?.cursor, 2, "cursor counts non-system messages only");
-			const session = openSession({ sessionId, projectPath: cwd });
-			assert.deepEqual(
-				session.messages.map((m) => m.type),
-				["user", "assistant"],
-				"the resumed session file must hold the non-system history",
-			);
-		} finally {
-			deleteSession(sessionId, cwd);
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
+it("rotates post-abort sessions inside the explicit profile", () => fixture(({ sync, path }) => {
+	const first = sync();
+	Object.assign(__test.getSharedSession(), { needsRebuild: true, forceRotate: true });
+	const next = sync();
+	assert.notEqual(next.sessionId, first.sessionId);
+	assert.ok(existsSync(path(next.sessionId)));
+}));
 
-	// The branch this exercises is the guard that stops a reentrant subagent from
-	// resuming — and then overwriting — the parent's session: a subagent's context
-	// is shorter than the parent's cursor, so it starts fresh and the parent's
-	// session is preserved. It was previously described here as the compact-summary
-	// path, which cannot reach syncSharedSession at all, so the branch read as
-	// covered for a case that never happens.
-	it("starts a fresh session for a shorter context and preserves the parent's", () => {
-		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
-		try {
-			const mainSession = {
-				sessionId: "11111111-1111-4111-8111-111111111111",
-				cursor: 42,
-				cwd,
-			};
-			__test.setSharedSession(mainSession);
+it("deletes ephemeral synthetic sessions from the explicit profile", () => fixture(({ sync, path, cwd, profile }) => {
+	const result = sync(messages, { preserveSharedSession: true });
+	assert.ok(existsSync(path(result.sessionId)));
+	__test.deleteEphemeralSession(result.sessionId, cwd, profile);
+	assert.equal(existsSync(path(result.sessionId)), false);
+}));
 
-			const result = __test.syncSharedSession([
-				{
-					role: "user",
-					content: "Summarize this conversation.",
-					timestamp: Date.now(),
-				},
-			], cwd, join(cwd, "isolated-claude"));
-
-			assert.equal(
-				result.sessionId,
-				null,
-				"a context shorter than the cursor — a subagent, or AskClaude — must start a fresh Claude Code session instead of resuming the parent's",
-			);
-			assert.equal(
-				result.preserveSharedSession,
-				true,
-				"the fresh session must not replace the parent's when it completes",
-			);
-			assert.deepEqual(__test.getSharedSession(), mainSession);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
-	it("creates the first seeded session beneath the explicit profile", () => {
-		const root = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
-		const cwd = join(root, "project");
-		const claudeConfigDir = join(root, "isolated-claude");
-		try {
-			const result = __test.syncSharedSession(contextMessages("first"), cwd, claudeConfigDir, undefined, "test-model");
-			const jsonlPath = getSessionPath(result.sessionId, cwd, claudeConfigDir);
-			assert.equal(existsSync(jsonlPath), true);
-			assert.equal(jsonlPath.startsWith(claudeConfigDir), true);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("rebuilds in the explicit profile while preserving the session ID", () => {
-		const root = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
-		const cwd = join(root, "project");
-		const claudeConfigDir = join(root, "isolated-claude");
-		try {
-			const first = __test.syncSharedSession(contextMessages("rebuild"), cwd, claudeConfigDir, undefined, "test-model");
-			__test.setSharedSession({ ...__test.getSharedSession(), needsRebuild: true });
-			const rebuilt = __test.syncSharedSession(contextMessages("rebuild"), cwd, claudeConfigDir, undefined, "test-model");
-			assert.equal(rebuilt.sessionId, first.sessionId);
-			assert.equal(existsSync(getSessionPath(rebuilt.sessionId, cwd, claudeConfigDir)), true);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("rotates post-abort sessions inside the explicit profile", () => {
-		const root = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
-		const cwd = join(root, "project");
-		const claudeConfigDir = join(root, "isolated-claude");
-		const previousSessionId = "22222222-2222-4222-8222-222222222222";
-		try {
-			__test.setSharedSession({
-				sessionId: previousSessionId,
-				cursor: 1,
-				cwd,
-				needsRebuild: true,
-				forceRotate: true,
-			});
-			const rotated = __test.syncSharedSession(contextMessages("abort"), cwd, claudeConfigDir, undefined, "test-model");
-			assert.notEqual(rotated.sessionId, previousSessionId);
-			assert.equal(existsSync(getSessionPath(rotated.sessionId, cwd, claudeConfigDir)), true);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("deletes ephemeral synthetic sessions from the explicit profile", () => {
-		const root = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
-		const cwd = join(root, "project");
-		const claudeConfigDir = join(root, "isolated-claude");
-		try {
-			const result = __test.syncSharedSession(contextMessages("ephemeral"), cwd, claudeConfigDir, undefined, "test-model");
-			const jsonlPath = getSessionPath(result.sessionId, cwd, claudeConfigDir);
-			assert.equal(existsSync(jsonlPath), true);
-			__test.deleteEphemeralSession(result.sessionId, cwd, claudeConfigDir);
-			assert.equal(existsSync(jsonlPath), false);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	// The rebuilt file holds one line per record, and a carried `@file` expansion
-	// is an `attachment` record — which `session.messages` filters out. Counting
-	// messages told every user who at-mentioned a file before switching providers
-	// that their session was corrupt, and asked them to open an issue about it.
-	it("does not report a count mismatch when a rebuild carries an attachment", () => {
-		const cwd = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
-		const sessionId = randomUUID();
-		const prompt = "Review @fixture.txt and remember it.";
+for (const foreignEnv of [false, true]) {
+	it(`carries attachments without count warnings${foreignEnv ? " despite a foreign environment profile" : ""}`, () => fixture(({ root, sync, cwd, profile }) => {
+		const first = sync();
+		const session = createSession({ sessionId: first.sessionId, projectPath: cwd, claudeDir: profile });
+		session.importMessages(messages.slice(0, 2), { attachments: [{ afterIndex: 0, attachment: {
+			type: "file", filename: join(cwd, "fixture.txt"),
+			content: { type: "text", file: { filePath: join(cwd, "fixture.txt"), content: "token" } },
+		} }] });
+		session.save();
 		const notices = [];
+		__test.setPiUI({ notify: message => notices.push(message) });
+		__test.getSharedSession().needsRebuild = true;
+		const previous = process.env.CLAUDE_CONFIG_DIR;
 		try {
-			const seeded = createSession({ sessionId, projectPath: cwd });
-			seeded.importMessages(
-				[
-					{ role: "user", content: prompt },
-					{ role: "assistant", content: [{ type: "text", text: "Noted." }] },
-				],
-				{
-					attachments: [{
-						afterIndex: 0,
-						attachment: {
-							type: "file",
-							filename: join(cwd, "fixture.txt"),
-							content: { type: "text", file: { filePath: join(cwd, "fixture.txt"), content: "token" } },
-						},
-					}],
-				},
-			);
-			seeded.save();
-
-			__test.setSharedSession({ sessionId, cursor: 0, cwd });
-			__test.setPiUI({ notify: (message) => notices.push(message) });
-			__test.syncSharedSession([
-				{ role: "user", content: prompt, timestamp: Date.now() },
-				{ role: "assistant", content: [{ type: "text", text: "Noted." }], timestamp: Date.now() },
-				{ role: "user", content: "Now what did it say?", timestamp: Date.now() },
-			], cwd);
-
-			assert.equal(
-				openSession({ sessionId, projectPath: cwd }).attachments.length,
-				1,
-				"the rebuild did not carry the attachment, so this proves nothing about the count",
-			);
+			if (foreignEnv) process.env.CLAUDE_CONFIG_DIR = join(root, "foreign-profile");
+			sync();
+			assert.equal(openSession({ sessionId: first.sessionId, projectPath: cwd, claudeDir: profile }).attachments.length, 1);
 			assert.deepEqual(notices, []);
 		} finally {
-			deleteSession(sessionId, cwd);
-			rmSync(cwd, { recursive: true, force: true });
+			if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+			else process.env.CLAUDE_CONFIG_DIR = previous;
 		}
-	});
-
-	// Regression: attachments must be read from the threaded claudeConfigDir, not
-	// process.env.CLAUDE_CONFIG_DIR. Under config isolation the session lives in the
-	// explicit profile; reading the process env looked in the wrong one and silently
-	// dropped the carried @file across a rebuild. The env is pointed at a different,
-	// empty profile here so the pre-fix behaviour would carry nothing.
-	it("carries an attachment from the explicit profile, ignoring process.env.CLAUDE_CONFIG_DIR", () => {
-		const root = mkdtempSync(join(tmpdir(), "sync-shared-session-"));
-		const cwd = join(root, "project");
-		const claudeConfigDir = join(root, "isolated-claude");
-		const sessionId = randomUUID();
-		const prompt = "Review @fixture.txt and remember it.";
-		const notices = [];
-		const prevEnv = process.env.CLAUDE_CONFIG_DIR;
-		process.env.CLAUDE_CONFIG_DIR = join(root, "process-env-claude");
-		try {
-			const seeded = createSession({ sessionId, projectPath: cwd, claudeDir: claudeConfigDir });
-			seeded.importMessages(
-				[
-					{ role: "user", content: prompt },
-					{ role: "assistant", content: [{ type: "text", text: "Noted." }] },
-				],
-				{
-					attachments: [{
-						afterIndex: 0,
-						attachment: {
-							type: "file",
-							filename: join(cwd, "fixture.txt"),
-							content: { type: "text", file: { filePath: join(cwd, "fixture.txt"), content: "token" } },
-						},
-					}],
-				},
-			);
-			seeded.save();
-
-			__test.setSharedSession({ sessionId, cursor: 0, cwd });
-			__test.setPiUI({ notify: (message) => notices.push(message) });
-			__test.syncSharedSession([
-				{ role: "user", content: prompt, timestamp: Date.now() },
-				{ role: "assistant", content: [{ type: "text", text: "Noted." }], timestamp: Date.now() },
-				{ role: "user", content: "Now what did it say?", timestamp: Date.now() },
-			], cwd, claudeConfigDir);
-
-			assert.equal(
-				openSession({ sessionId, projectPath: cwd, claudeDir: claudeConfigDir }).attachments.length,
-				1,
-				"the rebuild dropped the attachment — readCarriedAttachments read the wrong profile",
-			);
-			assert.deepEqual(notices, []);
-		} finally {
-			if (prevEnv === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-			else process.env.CLAUDE_CONFIG_DIR = prevEnv;
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-});
+	}));
+}

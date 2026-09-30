@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown, normalizeAskClaudeDefaultMode } from "../src/config.js";
+import { claudeCodeSettings, loadConfig, loadDirs, markStartupNoticeShown, normalizeAskClaudeDefaultMode, sessionAgentDir } from "../src/config.js";
 import { defaultClaudeConfigDir } from "../src/claude-config.js";
 
 function withTempHome(fn) {
@@ -29,6 +29,34 @@ describe("claudeCodeSettings", () => {
 	it("allows auto-memory to be enabled", () => {
 		assert.deepEqual(claudeCodeSettings({ autoMemoryEnabled: true }), { autoMemoryEnabled: true });
 	});
+});
+
+describe("fork config directories", () => {
+	it("uses explicit factory directories instead of process defaults", () => {
+		const pi = { cwd: "/fork/project", agentDir: "/fork/profile" };
+		assert.deepEqual(loadDirs(pi), pi);
+	});
+
+	it("uses each session's explicit agent directory", () => {
+		const parent = { cwd: "/fork/project", agentDir: "/fork/parent-profile" };
+		const child = { cwd: parent.cwd, agentDir: "/fork/child-profile" };
+		assert.equal(sessionAgentDir(parent), parent.agentDir);
+		assert.equal(sessionAgentDir(child), child.agentDir);
+		assert.deepEqual(loadDirs(child), child);
+	});
+
+	it("loads config from the explicit fork profile", () => withTempHome((home) => {
+		const pi = { cwd: join(home, "project"), agentDir: join(home, "fork-profile") };
+		const ctx = { cwd: pi.cwd, agentDir: pi.agentDir };
+		mkdirSync(pi.agentDir, { recursive: true });
+		writeFileSync(join(pi.agentDir, "claude-bridge.json"), JSON.stringify({
+			provider: { plan: "max" },
+		}));
+
+		const dirs = loadDirs(pi);
+		assert.equal(loadConfig(dirs.cwd, dirs.agentDir).provider.plan, "max");
+		assert.equal(loadConfig(ctx.cwd, sessionAgentDir(ctx)).provider.plan, "max");
+	}));
 });
 
 describe("loadConfig", () => {

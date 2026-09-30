@@ -4,7 +4,7 @@ on:
   push:
     # Feature branches too: the long-lived branches alone would leave a branch
     # like fix/session-cwd with no signal until its PR opens.
-    branches: [personal, main, 'fix/**', 'feat/**']
+    branches: [personal, main, 'fix/**', 'feat/**', 'merge/**']
   pull_request:
   workflow_dispatch:
 
@@ -101,45 +101,4 @@ jobs:
 
       - name: Unit tests
         working-directory: pi-claude-bridge
-        run: npm run test:unit
-
-  # The published support contract. pi-claude-bridge is on npm and declares
-  # peerDependencies >=0.86.1, so it has to keep building against stock pi, where
-  # loadDirs() and sessionAgentDir() fall back to the process dirs. Nothing here
-  # is committed — the rewrite is local to the runner.
-  stock:
-    name: stock pi (registry)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      # The committed lockfile pins the `file:` links, and npm honours those
-      # entries even after package.json is rewritten — it produces symlinks to a
-      # ../pi that does not exist here. Dropping the lock is deliberate: this job
-      # answers "does the published range still work", not "does the lock resolve".
-      - name: Pin the registry release
-        run: |
-          npm pkg set \
-            'devDependencies.@earendil-works/pi-ai=0.86.1' \
-            'devDependencies.@earendil-works/pi-coding-agent=0.86.1' \
-            'devDependencies.@earendil-works/pi-tui=0.86.1'
-          rm -f package-lock.json
-          npm install --no-audit --no-fund
-
-      - name: Assert stock pi really was installed
-        run: |
-          types=node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts
-          if grep -q 'readonly agentDir: string' "$types"; then
-            echo "::error::Installed pi carries fork-only API; this job is not testing the published contract."
-            exit 1
-          fi
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Unit tests
         run: npm run test:unit

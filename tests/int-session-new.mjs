@@ -40,10 +40,9 @@ try {
 	const fullLog = readFileSync(DEBUG_LOG, "utf8");
 	const postNewLog = fullLog.slice(NEW_MARKER_LOG);
 
-	// The bridge logs `session_start:new: clearing session ...` when it
-	// observes the event. Make sure we saw it.
-	if (!/session_start:new: clearing session/.test(postNewLog)) {
-		throw new Error("no `session_start:new: clearing session` marker — bridge didn't observe /new");
+	// A new session binds only its own state; other live sessions remain untouched.
+	if (!/session_start:new: bound session /.test(postNewLog)) {
+		throw new Error("no session_start:new binding marker; bridge did not observe /new");
 	}
 
 	// First syncResult after /new must be clean-start (sharedSession=null,
@@ -56,7 +55,7 @@ try {
 	if (syncResults[0] !== "clean-start") {
 		throw new Error(
 			`bridge took ${syncResults[0]} path after /new — expected clean-start.\n` +
-			`       sharedSession should be cleared by the session_start:new handler.`);
+			`       the new session must not reuse the previous session\'s mirror.`);
 	}
 
 	console.log("PASS");

@@ -45,7 +45,8 @@ it("the real bridge factory honors the compiled Pi transcript and summary contra
 		assert.ok(model);
 		const project = '<project_context><project_instructions path="/fixture/AGENTS.md">PROJECT_CONTRACT_RULE</project_instructions></project_context>';
 		const skills = '<available_skills version="2"><skill><name>contract-skill</name><description>Test skill</description><location>/fixture/SKILL.md</location></skill></available_skills>';
-		const response = await runtime.completeSimple(model, { systemPrompt: `${project}\n\n${skills}`, tools: [tool("read"), tool("bash"), tool("skill")], messages: [user("provider turn")] }, { sessionId: "built-parent" });
+		const scope = sessionId => ({ sessionId, sessionContext: { ownerSessionId: sessionId, cwd, agentDir } });
+		const response = await runtime.completeSimple(model, { systemPrompt: `${project}\n\n${skills}`, tools: [tool("read"), tool("bash"), tool("skill")], messages: [user("provider turn")] }, scope("built-parent"));
 		assert.equal(response.stopReason, "stop");
 		assert.deepEqual(servedTools(state.queries.at(-1)).sort(), ["bash", "read", "skill"]);
 		assert.ok(state.queries.at(-1).options.systemPrompt.append.includes("PROJECT_CONTRACT_RULE"));
@@ -53,10 +54,10 @@ it("the real bridge factory honors the compiled Pi transcript and summary contra
 		assert.equal(state.queries.at(-1).options.extraArgs.model, "claude-opus-5-5");
 		const seedsBeforeReuse = state.seeds;
 		const secondContext = [user("provider turn"), response, user("unchanged followup")];
-		const secondResponse = await runtime.completeSimple(model, { systemPrompt: project, messages: secondContext }, { sessionId: "built-parent" });
+		const secondResponse = await runtime.completeSimple(model, { systemPrompt: project, messages: secondContext }, scope("built-parent"));
 		assert.equal(state.seeds, seedsBeforeReuse, "unchanged history must reuse rather than reimport");
 		const editedLatest = [...secondContext, { ...secondResponse, content: [{ type: "text", text: "EDITED_LATEST_ASSISTANT" }] }, user("after edit")];
-		await runtime.completeSimple(model, { systemPrompt: project, messages: editedLatest }, { sessionId: "built-parent" });
+		await runtime.completeSimple(model, { systemPrompt: project, messages: editedLatest }, scope("built-parent"));
 		assert.equal(state.seeds, seedsBeforeReuse + 1, "editing the latest assistant must rebuild too");
 		const editedQuery = state.queries.at(-1).options;
 		const editedHistory = openSession({ sessionId: editedQuery.resume, projectPath: editedQuery.cwd, claudeDir: editedQuery.env.CLAUDE_CONFIG_DIR }).messages;
@@ -64,9 +65,9 @@ it("the real bridge factory honors the compiled Pi transcript and summary contra
 
 		const head = { role: "system", content: `${project}\n\n${skills}`, toolsAdded: [tool("read"), tool("bash")], timestamp: 0 };
 		const removed = { role: "system", content: "", toolsRemoved: [{ name: "bash" }], timestamp: 1 };
-		await runtime.completeSimple(model, { messages: [head, removed, user("restricted turn")] }, { sessionId: "built-tools" });
+		await runtime.completeSimple(model, { messages: [head, removed, user("restricted turn")] }, scope("built-tools"));
 		assert.deepEqual(servedTools(state.queries.at(-1)), ["read"]);
-		await runtime.completeSimple(model, { messages: [head, removed, { role: "system", content: "", toolsAdded: [tool("bash")], timestamp: 2 }, user("restored turn")] }, { sessionId: "built-tools" });
+		await runtime.completeSimple(model, { messages: [head, removed, { role: "system", content: "", toolsAdded: [tool("bash")], timestamp: 2 }, user("restored turn")] }, scope("built-tools"));
 		assert.deepEqual(servedTools(state.queries.at(-1)).sort(), ["bash", "read"]);
 
 		const manager = SessionManager.inMemory(cwd);
@@ -75,7 +76,7 @@ it("the real bridge factory honors the compiled Pi transcript and summary contra
 		const preparation = prepareCompaction(branchEntries, { enabled: false, reserveTokens: 1000, keepRecentTokens: 1 });
 		assert.ok(preparation);
 		const notices = [];
-		const ctx = { model, cwd, agentDir, ui: { notify: message => notices.push(message) } };
+		const ctx = { model, cwd, agentDir, sessionManager: manager, ui: { notify: message => notices.push(message) } };
 		const handlers = loaded.extensions[0].handlers;
 		const compact = await handlers.get("session_before_compact")[0]({ type: "session_before_compact", preparation, branchEntries, reason: "manual", willRetry: false, signal: new AbortController().signal }, ctx);
 		assert.ok(compact.compaction?.summary.includes("MOCK_BRIDGE_REPLY"), JSON.stringify({ compact, notices }));
@@ -83,7 +84,7 @@ it("the real bridge factory honors the compiled Pi transcript and summary contra
 		assert.equal(typeof state.queries.at(-1).options.systemPrompt, "string");
 		const tree = await handlers.get("session_before_tree")[0]({ type: "session_before_tree", preparation: { entriesToSummarize: branchEntries, userWantsSummary: true, targetId: branchEntries[0].id }, signal: new AbortController().signal }, ctx);
 		assert.ok(tree.summary?.summary.includes("MOCK_BRIDGE_REPLY"), JSON.stringify({ tree, notices }));
-		const oneOff = await runtime.completeSimple(model, { systemPrompt: "SUMMARY_SYSTEM", messages: [user("summarize")] }, { cacheRetention: "none", reasoning: "max" });
+		const oneOff = await runtime.completeSimple(model, { systemPrompt: "SUMMARY_SYSTEM", messages: [user("summarize")] }, { ...scope("built-summary"), cacheRetention: "none", reasoning: "max" });
 		assert.equal(oneOff.stopReason, "stop");
 		assert.equal(state.queries.at(-1).options.systemPrompt, "SUMMARY_SYSTEM");
 		assert.equal(state.queries.at(-1).options.persistSession, false);

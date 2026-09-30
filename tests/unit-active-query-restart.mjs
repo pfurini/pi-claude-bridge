@@ -27,7 +27,19 @@ async function withBridge(plans, run, providerOverrides = {}) {
 		let provider;
 		activate({ cwd: root, agentDir: root, on(name, handler) { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); }, registerProvider(_name, config) { provider = config; }, registerTool() {} });
 		const model = { ...provider.models.find(model => model.id === "claude-opus-5"), api: "claude-bridge", provider: "claude-bridge", baseUrl: "claude-bridge" };
-		const request = (messages, inventory = tools, options = {}) => provider.streamSimple(model, { messages, tools: inventory, systemPrompt: "<project_context>RULE</project_context>" }, { cwd: root, sessionId: "parent", ...options });
+		const bindSession = async (id = 'parent') => {
+			const context = { cwd: root, agentDir: root, mode: 'rpc', ui: { notify() {} }, sessionManager: { getSessionId: () => id }, modelRegistry: { getProvider: () => provider } };
+			for (const handler of handlers.get('session_start') ?? []) await handler({ type: 'session_start', reason: 'new' }, context);
+		};
+		await bindSession();
+		const bridgeTest = { ...__test, setUserSystemPrompt(value) {
+			for (const handler of handlers.get('before_agent_start') ?? []) handler({ systemPromptOptions: { customPrompt: value.custom, appendSystemPrompt: value.append } });
+		} };
+		const request = (messages, inventory = tools, options = {}) => {
+			const sessionId = options.sessionId ?? 'parent';
+			return provider.streamSimple(model, { messages, tools: inventory, systemPrompt: "<project_context>RULE</project_context>" },
+				{ sessionId, sessionContext: { ownerSessionId: sessionId, cwd: root, agentDir: root }, ...options });
+		};
 		const completeTool = output => {
 			assert.equal(output.stopReason, "toolUse");
 			const call = output.content.find(block => block.type === "toolCall");
@@ -36,7 +48,7 @@ async function withBridge(plans, run, providerOverrides = {}) {
 		};
 		const imported = query => openSession({ sessionId: query.options.resume, projectPath: query.options.cwd, claudeDir: query.options.env.CLAUDE_CONFIG_DIR }).messages;
 		const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); gates.push(() => resolve()); return { promise, resolve }; };
-		await run({ state, request, completeTool, imported, deferred, bridgeTest: __test, root, shutdown: () => { for (const handler of handlers.get('session_shutdown') ?? []) handler(); } });
+		await run({ state, request, completeTool, imported, deferred, bridgeTest, root, bindSession, shutdown: () => { for (const handler of handlers.get('session_shutdown') ?? []) handler(); } });
 	} finally {
 		for (const release of gates) release();
 		state.release?.();
@@ -142,11 +154,12 @@ for (const change of ["history", "last-assistant", "remove-tool", "schema"]) {
 	}));
 }
 
-it('fences callbacks from a shutdown query before the same factory serves another session', { timeout: 10_000 }, () => withBridge([], async ({ state, request, completeTool, deferred, shutdown }) => {
+it('fences callbacks from a shutdown query before the same factory serves another session', { timeout: 10_000 }, () => withBridge([], async ({ state, request, completeTool, deferred, shutdown, bindSession }) => {
 	const late = deferred();
 	state.plans.push({ tool: 'read', lateFinish: late.promise, failFinish: true }, { tool: 'read', reply: 'NEW_SESSION' });
 	await request([user('old session')]).result();
 	shutdown();
+	await bindSession('new-owner');
 	const next = await request([user('new session')], tools, { sessionId: 'new-owner' }).result();
 	late.resolve();
 	await state.controls[0].done;
@@ -294,7 +307,7 @@ it('shares a cumulative accounting checkpoint between provider and shared AskCla
 it('rebuilds an unknown accounting baseline instead of assuming zero on reuse', { timeout: 10_000 }, () => withBridge([accountingPlan(1, 10, 10), accountingPlan(0.2, 5, 5)], async ({ state, request, bridgeTest }) => {
 	const initial = user('accounting task');
 	const first = await request([initial]).result();
-	const old = bridgeTest.getSharedSession();
+	const old = bridgeTest.getSharedSession('parent');
 	old.accounting.snapshot = undefined;
 	const next = await request([initial, first, user('next')]).result();
 	assert.equal(state.seeds, 1);
@@ -310,8 +323,8 @@ it('preserves failed shared AskClaude usage when the SDK throws after its result
 		assert.equal(error.usage.input, 25);
 		return true;
 	});
-	assert.equal(bridgeTest.getSharedSession().accounting.snapshot, undefined);
-	assert.equal(bridgeTest.getSharedSession().forceRotate, true);
+	assert.equal(bridgeTest.getSharedSession('parent').accounting.snapshot, undefined);
+	assert.equal(bridgeTest.getSharedSession('parent').forceRotate, true);
 }));
 
 it('closes an AskClaude query cancelled during construction even when interrupt resolves', { timeout: 10_000 }, () => withBridge([{}], async ({ state, bridgeTest, root }) => {
@@ -332,10 +345,10 @@ it('forks parallel shared AskClaude calls instead of racing one transcript accou
 	const child = await bridgeTest.promptAndWait('two', 'none', new Map(), undefined, options);
 	assert.notEqual(state.queries[1].options.resume, state.queries[2].options.resume);
 	assert.equal(child.usage.cost.total, 0.5);
-	assert.equal(bridgeTest.getSharedSession().accounting.inFlight, true);
+	assert.equal(bridgeTest.getSharedSession('parent').accounting.inFlight, true);
 	state.release();
 	assert.equal((await pending).usage.cost.total, 2);
-	assert.equal(bridgeTest.getSharedSession().accounting.snapshot.totalCostUsd, 3);
+	assert.equal(bridgeTest.getSharedSession('parent').accounting.snapshot.totalCostUsd, 3);
 }));
 
 it("a retired asynchronous delivery cannot mutate its replacement", { timeout: 10_000 }, () => withBridge([], async ({ bridgeTest }) => {
@@ -346,11 +359,11 @@ it("a retired asynchronous delivery cannot mutate its replacement", { timeout: 1
 	const delivery = bridgeTest.deliverToolResults(c, [{ toolCallId: "old", content: [] }], [{ type: "text", text: "steer" }], 1, () => current);
 	current = false;
 	c.pendingToolCalls.set("old", { toolName: "read", resolve: () => { delivered = true; } });
-	bridgeTest.setSharedSession({ sessionId: "replacement", cursor: 1, cwd: "/fixture" });
+	bridgeTest.setSharedSession('parent', { sessionId: "replacement", cursor: 1, cwd: "/fixture" });
 	rejectPush(new Error("retired"));
 	await delivery;
 	assert.equal(delivered, false);
 	assert.equal(c.pendingResults.size, 0);
 	assert.equal(c.pendingToolCalls.size, 1);
-	assert.equal(bridgeTest.getSharedSession().needsRebuild, undefined);
+	assert.equal(bridgeTest.getSharedSession('parent').needsRebuild, undefined);
 }));

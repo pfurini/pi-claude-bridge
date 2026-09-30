@@ -13,8 +13,14 @@
  * summary itself, which would need a Claude Code subprocess.
  */
 
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
+
+const fixtureDir = mkdtempSync(join(tmpdir(), "bridge-branch-summary-"));
+after(() => rmSync(fixtureDir, { recursive: true, force: true }));
 
 const { default: activate, __test } = await import("../src/index.js");
 
@@ -24,7 +30,7 @@ function activateWithMockPi() {
 	// config enables AskClaude (e.g. a developer's global ~/.pi/agent/claude-bridge.json),
 	// so a mock missing it throws before any handler is registered. CI has no such
 	// config, which is why this only surfaced locally.
-	activate({ on: (event, handler) => handlers.set(event, handler), registerProvider: () => {}, registerTool: () => {} });
+	activate({ cwd: fixtureDir, agentDir: fixtureDir, on: (event, handler) => handlers.set(event, handler), registerProvider: () => {}, registerTool: () => {} });
 	return handlers;
 }
 

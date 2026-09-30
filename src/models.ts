@@ -98,6 +98,8 @@ export function resolveClaudeCodeRuntimeModel(modelId: string, settings: LongCon
 			return { cliModelId: modelId, contextWindow: ONE_M_CONTEXT };
 		case "claude-fable-5":
 		case "claude-sonnet-5":
+		// Upstream a78a2a5 measured Sonnet 5.5 on Pro with both Extra Usage states (2026-09-28).
+		case "claude-sonnet-5-5":
 			return { cliModelId: `${modelId}[1m]`, contextWindow: ONE_M_CONTEXT };
 		case "claude-opus-4-6": {
 			const useOneM = settings.plan === "max" || settings.longContextExtraUsage;

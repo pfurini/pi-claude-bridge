@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeHarnessPrompt } from "../src/sanitize-prompt.js";
+import { sanitizeHarnessPrompt, sanitizeSystemSection } from "../src/sanitize-prompt.js";
 // Not re-exported from the package root, and the `exports` map blocks deep
 // bare-specifier imports (ERR_PACKAGE_PATH_NOT_EXPORTED), so this goes
 // through the `file:` devDependency link by relative path — the fork
@@ -54,6 +54,31 @@ function wrapAsSubagentAppend(parentSystemPrompt) {
 }
 
 describe("sanitizeHarnessPrompt", () => {
+	const docsHeader = "Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):";
+	const legacyDocsLine = "- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)";
+	for (const [version, docsLine] of [
+		["legacy", legacyDocsLine],
+		["MCP", `${legacyDocsLine}, MCP servers (docs/mcp.md)`],
+	]) {
+		it(`strips the ${version} stock docs line from sections and built Pi prompts`, () => {
+			const docs = `${docsHeader}\n${docsLine}`;
+			assert.equal(sanitizeSystemSection("docs", docs), undefined);
+			assert.equal(sanitizeSystemSection("docs", `<docs>\n${docs}\n</docs>`), undefined);
+			assert.equal(sanitizeHarnessPrompt(buildSystemPrompt({ cwd: CWD, sections: { docs } })), undefined);
+		});
+
+		it(`retains authored docs alongside the ${version} stock docs line`, () => {
+			const authored = "- Project MCP documentation: docs/mcp.md (retain this authored guidance)";
+			const docs = `${docsHeader}\n${docsLine}\n${authored}`;
+			assert.equal(sanitizeSystemSection("docs", docs), authored);
+			assert.equal(sanitizeSystemSection("docs", `<docs>\n${docs}\n</docs>`), `<docs>\n${authored}\n</docs>`);
+			assert.equal(
+				sanitizeHarnessPrompt(buildSystemPrompt({ cwd: CWD, sections: { docs } })),
+				`<docs>\n${authored}\n</docs>`,
+			);
+		});
+	}
+
 	it('keeps tool and extension guidelines inside the real structured skeleton', () => {
 		const prompt = buildSystemPrompt({ cwd: CWD, selectedTools: ['read'], toolGuidelines: { read: ['TOOL_DATA_BOUNDARY'] }, promptGuidelines: ['EXTENSION_DATA_BOUNDARY'] });
 		const result = sanitizeHarnessPrompt(prompt);

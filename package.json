@@ -1,6 +1,6 @@
 {
   "name": "pi-claude-bridge",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": false,
   "description": "Pi extension that uses Claude Code (via Agent SDK) as a model provider and adds an AskClaude tool.",
   "keywords": [
@@ -28,13 +28,13 @@
   "scripts": {
     "test:unit": "node --import tsx --import ./tests/lib/setup.mjs --test tests/unit-*.mjs",
     "test:auth-preflight": "node --import tsx tests/lib/claude-auth.mjs",
-    "test": "set -a && [ -f .env.test ] && . .env.test; set +a && npm run test:unit && npm run test:auth-preflight && rm -f .test-output/*-debug.log && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs && node diag/gate-warnings.mjs .test-output",
+    "test": "set -a; if [ -f .env.test ]; then . ./.env.test || exit 1; fi; set +a; CLAUDE_BRIDGE_TEST_LOG_DIR=$(mktemp -d) || exit 1; export CLAUDE_BRIDGE_TEST_LOG_DIR; npm run test:unit && npm run test:auth-preflight && tests/int-smoke.sh && tests/int-multi-turn.sh && tests/int-cache.sh && node --import tsx --test tests/int-*.mjs && node tests/lib/check-deadlock-logs.mjs \"$CLAUDE_BRIDGE_TEST_LOG_DIR\" && node diag/gate-warnings.mjs \"$CLAUDE_BRIDGE_TEST_LOG_DIR\"",
     "test:usage": "tests/usage-test.sh",
     "typecheck": "tsc --noEmit"
   },
   "type": "module",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.280",
+    "@anthropic-ai/claude-agent-sdk": "0.3.284",
     "@modelcontextprotocol/sdk": "1.29.0",
     "cc-session-io": "^0.4.0",
     "change-case": "^5.4.4"

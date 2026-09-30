@@ -174,27 +174,16 @@ export function normalizeUsageEvents(value: unknown): boolean {
 	return true;
 }
 
-// The agent dir backing a session. pi.createAgentSession({ agentDir }) lets a
-// harness isolate a run under its own dir, and only ctx reports it; getAgentDir()
-// is process-wide and would hand that run the operator's personal profile.
-// ctx.agentDir is absent on pi builds that predate it, hence the fallback.
+// The fork reports the session's agent directory, including isolated harness profiles.
+// getAgentDir() instead resolves the process-wide profile.
 export function sessionAgentDir(ctx: ExtensionContext): string {
-	return (ctx as ExtensionContext & { agentDir?: string }).agentDir ?? getAgentDir();
+	return ctx.agentDir;
 }
 
-// The same dirs at extension load, where the factory registers models and the
-// AskClaude tool. Those registrations are flushed before any event fires, so
-// session_start is too late to correct them. pi.cwd/pi.agentDir are absent on
-// pi builds that predate them (including published 0.82.1), where the process
-// dirs were the only option.
-//
-// Where they are present, these are still the dirs of whichever session first
-// loaded this module: pi keys its extension-module cache on the cwd alone, so a
-// second same-cwd session re-runs the factory with its own dirs against shared
-// module state. See providerOwnerClaimed in index.ts for who wins.
+// Registration happens before session_start, so load config from the fork's factory directories.
+// Same-cwd sessions share module state but receive their own factory directories.
 export function loadDirs(pi: ExtensionAPI): { cwd: string; agentDir: string } {
-	const api = pi as ExtensionAPI & { cwd?: string; agentDir?: string };
-	return { cwd: api.cwd ?? process.cwd(), agentDir: api.agentDir ?? getAgentDir() };
+	return { cwd: pi.cwd, agentDir: pi.agentDir };
 }
 
 export function loadConfig(cwd: string, agentDir: string = getAgentDir()): Config {
