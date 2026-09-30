@@ -3,18 +3,24 @@
 // Uses pi in RPC mode with the bridge + SlowTool test extension.
 // Exercises how the bridge handles messages arriving during tool execution.
 
-import { describe, it, before, after, afterEach } from "node:test";
+import { describe, it, before, beforeEach, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getProjectDir } from "cc-session-io";
 import { defaultClaudeConfigDir } from "../src/claude-config.js";
 import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
 const TEST_TIMEOUT = 40_000;
 
+const agentDir = mkdtempSync(join(tmpdir(), "bridge-tool-message-agent-"));
+writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false }, compaction: { enabled: false } }));
+writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({ startupNoticeShown: "test", provider: { usageEvents: false, claudeConfigDir: defaultClaudeConfigDir() } }));
 const harness = createRpcHarness({
 	name: "tool-message",
 	args: ["-e", "./tests/fixtures/slow-tool-extension.ts", "--model", "claude-bridge/claude-haiku-4-5"],
+	env: { PI_CODING_AGENT_DIR: agentDir },
 	defaultTimeout: TEST_TIMEOUT,
 });
 
@@ -50,6 +56,15 @@ describe("tool-message integration", () => {
 		await startAndWait();
 	});
 
+	beforeEach(async () => {
+		// Each case owns its conversation; earlier refusal text must not become another case's instructions.
+		await send({ type: "new_session" });
+		await send({ type: "set_model", provider: "claude-bridge", modelId: "claude-haiku-4-5" });
+		const state = await send({ type: "get_state" });
+		assert.equal(state.model?.provider, "claude-bridge", "each case must exercise the bridge, not the user default provider");
+		assert.equal(state.model?.id, "claude-haiku-4-5");
+	});
+
 	afterEach(async () => {
 		if (harness.pi().exitCode !== null) {
 			await startAndWait();
@@ -58,6 +73,7 @@ describe("tool-message integration", () => {
 
 	after(async () => {
 		await stop();
+		rmSync(agentDir, { recursive: true, force: true });
 		console.log(`  RPC log: ${RPC_LOG}`);
 		console.log(`  Debug log: ${DEBUG_LOG}`);
 	});
@@ -114,7 +130,7 @@ describe("tool-message integration", () => {
 		const mark = logMark();
 		await send({
 			type: "prompt",
-			message: "Call SlowTool three times in parallel: seconds=3, seconds=4, seconds=5. Then list all three results.",
+			message: "Call SlowTool three times in parallel: seconds=3, seconds=4, seconds=5. Then list all three complete tool results verbatim, preserving their wording.",
 		});
 		// Wait for at least one tool to start, then inject steer
 		await waitForEvent("tool_execution_start");
@@ -125,9 +141,10 @@ describe("tool-message integration", () => {
 		});
 		await waitForEvent("agent_end");
 		const text = collector.stop();
-		// All three tools should have their results in the response
-		const matches = (text.match(/slowtool completed/gi) || []).length;
-		assert.ok(matches >= 3, `Expected 3 SlowTool results, found ${matches}: ${text.slice(0, 300)}`);
+		// Each distinct result must survive, regardless of labels or Markdown around it.
+		for (const milliseconds of [3000, 4000, 5000]) {
+			assert.match(text, new RegExp(`completed after\\s+${milliseconds}ms`, "i"), `missing the ${milliseconds}ms result`);
+		}
 		// Delivery only forwards a steer when the trailing message is a user message.
 		// Pi injects drained steers between tool results too (see extract-tool-results),
 		// and in that shape the steer would be dropped and the cursor advanced past it,

@@ -106,4 +106,4 @@ Do not run the suites through the pi-fence launcher.
 The fence passes only allowlisted environment names, so the bridge never sees `CLAUDE_BRIDGE_DEBUG` and writes no debug log.
 Every assertion that reads the debug log then fails with a misleading message such as "the query never completed".
 `tests/lib/rpc-harness.mjs` fails at startup instead, when the bridge has written nothing to its debug log.
-`tests/int-shutdown-kills-cc.mjs` is the deliberate exception: it launches `pi run --profile` to test the fence.
+`tests/int-shutdown-kills-cc.mjs` explicitly launches `pi-fence run --profile` to test the fence, avoiding npm's local `pi` executable.

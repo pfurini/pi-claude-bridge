@@ -109,3 +109,16 @@ Paolo subsequently approves the companion implementation, focused offline checks
 Paolo subsequently authorizes staging and committing the Pi companion and finishing the bridge merge commit locally.
 Pushes, PRs, and authenticated validation remain unapproved.
 The approved companion plan is `plans/pi-provider-session-context-2026-09-30.md`.
+
+## Live validation rulings (2026-09-30)
+
+Paolo requires live Pi and bridge validation before publication; offline checks alone do not close the work.
+Paolo accepts fenced checks as blocked by pi-fence's unrelated Codex credential-layout refusal.
+Paolo approves fresh sessions for independent steering cases while retaining each case's internal multi-turn and content assertions.
+Paolo approves opaque fixture values and explicit verbatim-return instructions.
+Paolo approves replacing UI-summary absence checks with per-tool denial evidence, retaining exact-token and forbidden-file assertions.
+The evidence checker rejects successful or unexplained forbidden requests and generic command errors.
+Test-runner repairs remove inherited Node worker protocol state and reject empty child reports.
+Full results and coverage gaps are in `plans/upstream-merge-results-2026-09-30.md`.
+After live validation passes within the accepted scope, Paolo authorizes the follow-up commit, both pushes, and PR creation.
+The Pi prerequisite must be pushed first. PR merging still requires separate approval.

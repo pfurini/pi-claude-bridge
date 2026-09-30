@@ -6,7 +6,8 @@ import { resolve, join } from 'node:path';
 it('charges each real resumed Claude query once rather than recharging saved session totals', {
   skip: process.env.CLAUDE_BRIDGE_LIVE !== '1', timeout: 120000,
 }, async () => {
-  assert.equal(process.env.PI_FENCE, '1');
+  const authProfile = process.env.CLAUDE_BRIDGE_LIVE_AUTH_PROFILE;
+  assert.ok(process.env.PI_FENCE === '1' || authProfile, 'Use inherited fenced credentials or an explicitly selected authenticated profile');
   mkdirSync(resolve('.test-output'), { recursive: true });
   const root = mkdtempSync(resolve('.test-output/live-accounting-'));
   const agentDir = join(root, 'agent');
@@ -16,7 +17,7 @@ it('charges each real resumed Claude query once rather than recharging saved ses
   process.env.CLAUDE_BRIDGE_DEBUG = '1';
   process.env.CLAUDE_BRIDGE_DEBUG_PATH = join(root, 'bridge.log');
   process.env.CLAUDE_BRIDGE_DIAG_PATH = join(root, 'diagnostics.jsonl');
-  writeFileSync(join(agentDir, 'claude-bridge.json'), JSON.stringify({ startupNoticeShown: 'test', provider: { usageEvents: false, claudeConfigDir: join(root, 'claude') } }));
+  writeFileSync(join(agentDir, 'claude-bridge.json'), JSON.stringify({ startupNoticeShown: 'test', provider: { usageEvents: false, claudeConfigDir: authProfile ?? join(root, 'claude') } }));
   const { ModelRuntime } = await import('@earendil-works/pi-coding-agent');
   const { loadExtensions } = await import('../node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js');
   const loaded = await loadExtensions([resolve('src/index.ts')], root, agentDir);
@@ -28,7 +29,7 @@ it('charges each real resumed Claude query once rather than recharging saved ses
   const charges = [];
   for (let turn = 1; turn <= 3; turn++) {
     history.push({ role: 'user', content: `Reply with exactly ACCOUNTING_${turn}.`, timestamp: Date.now() });
-    const response = await runtime.completeSimple(model, { messages: history }, { sessionId: 'accounting-fixture', cwd: root, signal: AbortSignal.timeout(30000) });
+    const response = await runtime.completeSimple(model, { messages: history }, { sessionId: 'accounting-fixture', sessionContext: { ownerSessionId: 'accounting-fixture', cwd: root, agentDir }, signal: AbortSignal.timeout(30000) });
     assert.equal(response.stopReason, 'stop', response.errorMessage);
     history.push(response);
     charges.push(response.usage.cost.total);

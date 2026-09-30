@@ -6,6 +6,7 @@ import { Type } from 'typebox';
 import { openSession } from 'cc-session-io';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { subprocessTestEnv } from './lib/subprocess-test-env.mjs';
 
 // The fixture keeps tool effects and bridge diagnostics in a disposable directory.
 it('recovers real SDK queries after active history and tool changes without replaying completed effects', {
@@ -16,10 +17,11 @@ it('recovers real SDK queries after active history and tool changes without repl
     // Separate processes isolate skill instructions, registries, and Claude session ownership.
     for (const kind of cases) {
       const child = spawnSync(process.execPath, ['--import', 'tsx', '--test', fileURLToPath(import.meta.url)], {
-        env: { ...process.env, CLAUDE_BRIDGE_LIVE_CASES: kind }, encoding: 'utf8', timeout: 90000,
+        env: subprocessTestEnv({ CLAUDE_BRIDGE_LIVE_CASES: kind }), encoding: 'utf8', timeout: 90000,
       });
       console.log(`Recovery case ${kind}:\n${child.stdout ?? ''}`);
       assert.equal(child.status, 0, `${kind}: ${child.stderr ?? ''}`);
+      assert.match(child.stdout ?? '', /Live recovery evidence: /, `${kind}: the subprocess exited without executing the live case`);
     }
     return;
   }
@@ -30,8 +32,8 @@ it('recovers real SDK queries after active history and tool changes without repl
   const agentDir = join(root, 'agent');
   mkdirSync(agentDir);
   const authProfile = process.env.CLAUDE_BRIDGE_LIVE_AUTH_PROFILE;
-  // Only checkpoint-chain may use an existing profile; fault-startup replaces its profile path.
-  if (authProfile && cases[0] !== 'checkpoint-chain') throw new Error('An existing Claude profile is only supported for checkpoint-chain');
+  // Startup-fault testing deliberately changes its profile path; never apply it to a real profile.
+  if (authProfile && cases.includes('fault-startup')) throw new Error('fault-startup requires disposable fenced credentials, not an existing Claude profile');
   const claudeDir = authProfile ?? join(root, 'claude');
   const debugPath = join(root, 'bridge.log');
   process.env.CLAUDE_BRIDGE_DEBUG = '1';

@@ -10,9 +10,17 @@ The current fork pins Agent SDK 0.3.284. The measurements below retain their ori
 - Sonnet 5.5 follows upstream `a78a2a5` measurements on Pro with both Extra Usage states, dated 2026-09-28.
 - Opus 4.6 and Sonnet 4.6 retain their existing plan and Extra Usage gates.
 - Newly discovered models receive 200K metadata until an explicit policy covers them.
-- This merge performs no new authenticated context-window measurements.
+- Paolo later authorizes live validation; the local 2026-09-30 probe below confirms the suffixed Sonnet 5.5 window.
 
 The current policy is implemented in `src/models.ts`. Historical upstream measurements below do not override the approved fork policy.
+
+## Local Sonnet 5.5 validation (2026-09-30)
+
+A single subscription-authenticated turn requests `claude-sonnet-5-5[1m]` through Agent SDK 0.3.284 and reports Claude Code 2.1.284.
+The result reports `contextWindow: 1000000`, `maxOutputTokens: 128000`, and canonical model `claude-sonnet-5-5`.
+The account tier and Extra Usage state are not classified; the probe does not establish Pro/Max parity or near-limit behavior.
+Evidence: `.test-output/live-merge-2026-09-30/sonnet-55.json`.
+The upstream matrix remains the source for the separate Pro-with-and-without-Extra-Usage claim.
 
 ## Scope and evidence labels
 

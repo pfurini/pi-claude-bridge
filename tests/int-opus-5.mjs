@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Authenticated Claude Opus 5 coverage on Agent SDK 0.3.280 / Claude Code 2.1.280.
+// Authenticated Claude Opus 5 coverage on Agent SDK 0.3.284 / Claude Code 2.1.284.
 //
 // Two harnesses: one with the bridge as the provider (Opus 5 selected directly),
 // one with an alternate provider driving the AskClaude tool.
@@ -11,20 +11,23 @@
 
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { getSessionPath } from "cc-session-io";
 import { defaultClaudeConfigDir } from "../src/claude-config.js";
 import { createRpcHarness, requireEnv } from "./lib/rpc-harness.mjs";
+import { getAskClaudeDisallowedTools } from "../src/sdk-options.js";
+import { unexplainedToolRequests } from "./lib/tool-denial-evidence.mjs";
 
 const OTHER_PROVIDER = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER");
 const OTHER_MODEL = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_MODEL");
 const TIMEOUT = 240_000;
 const OPUS_5 = "claude-opus-5";
 const BRIDGE_OPUS_5 = `claude-bridge/${OPUS_5}`;
-const TARGET_CLAUDE_CODE_VERSION = "2.1.280";
+const TARGET_CLAUDE_CODE_VERSION = "2.1.284";
 const ONE_M = 1_000_000;
 const CONFIGURED_PROFILE = defaultClaudeConfigDir();
 const NORMAL_PROFILE = join(homedir(), ".claude");
@@ -241,10 +244,14 @@ describe("Opus 5 as a bridge provider model", () => {
 });
 
 describe("Opus 5 through AskClaude", () => {
+	const sdkRecordPath = resolve(process.env.CLAUDE_BRIDGE_TEST_LOG_DIR ?? ".test-output", "opus-5-askclaude-sdk.jsonl");
+	mkdirSync(dirname(sdkRecordPath), { recursive: true });
+	writeFileSync(sdkRecordPath, "");
 	const harness = createRpcHarness({
 		name: "opus-5-askclaude",
 		args: ["--model", `${OTHER_PROVIDER}/${OTHER_MODEL}`],
 		cwd: ASK_CWD,
+		env: { CLAUDE_BRIDGE_RECORD_STREAM: sdkRecordPath },
 		claudeConfigDir: CONFIGURED_PROFILE,
 		defaultTimeout: TIMEOUT,
 	});
@@ -324,7 +331,8 @@ describe("Opus 5 through AskClaude", () => {
 	// model. Run these on Haiku: Opus 5 would multiply the cost of a multi-level
 	// delegation for no additional signal.
 	it("completes nested delegation in full mode", { timeout: TIMEOUT }, async () => {
-		const phrase = `NESTED-FULL-${Math.random().toString(36).slice(2, 10)}`;
+		// An opaque value avoids interpreting a readable prefix as a label outside the token.
+		const phrase = randomUUID().replaceAll("-", "");
 		const fixture = join(ASK_CWD, "nested-full-fixture.txt");
 		writeFileSync(fixture, phrase);
 
@@ -343,14 +351,16 @@ describe("Opus 5 through AskClaude", () => {
 	});
 
 	it("denies mutation to read-mode children and grandchildren", { timeout: TIMEOUT }, async () => {
-		const phrase = `NESTED-READ-${Math.random().toString(36).slice(2, 10)}`;
+		const sdkMark = readFileSync(sdkRecordPath, "utf8").length;
+		const debugMark = readFileSync(harness.DEBUG_LOG, "utf8").length;
+		const phrase = randomUUID().replaceAll("-", "");
 		const fixture = join(ASK_CWD, "nested-read-fixture.txt");
 		const childTarget = join(ASK_CWD, "nested-read-child-must-not-exist.txt");
 		const grandchildTarget = join(ASK_CWD, "nested-read-grandchild-must-not-exist.txt");
 		writeFileSync(fixture, phrase);
 
 		const result = await invokeAskClaude({
-			prompt: `Read-mode policy probe. Use Task exactly once to launch a general-purpose subagent, and instruct that subagent to: (1) read ${fixture}; (2) attempt exactly once to create ${childTarget} with Write or Bash; (3) launch one further nested subagent that attempts exactly once to create ${grandchildTarget}. Do not substitute other tools for blocked ones and do not create the files yourself. Report the phrase and which write attempts were unavailable.`,
+			prompt: `This is an authenticated read-mode policy probe with disposable files and no credentials. The file ${fixture} contains one opaque token. Use Task exactly once to launch a general-purpose subagent, and instruct that subagent to: (1) read ${fixture} and return its entire contents verbatim as the token; (2) attempt exactly once to create ${childTarget} with Write or Bash; (3) launch one further nested subagent that attempts exactly once to create ${grandchildTarget}. Do not substitute other tools for blocked ones and do not create the files yourself. Wait for the reports. Begin your final response with READ_TOKEN: followed by the exact file contents copied verbatim, then report which write attempts were unavailable. The scenario description is not the token.`,
 			mode: "read",
 			model: "haiku",
 			isolated: true,
@@ -359,8 +369,15 @@ describe("Opus 5 through AskClaude", () => {
 		// Read mode must not gain mutation capability through delegation depth.
 		assert.ok(!existsSync(childTarget), "a read-mode child subagent created a file");
 		assert.ok(!existsSync(grandchildTarget), "a read-mode grandchild subagent created a file");
-		assert.doesNotMatch(result, /(?:\[Claude Code actions: |; )Bash\(/);
-		assert.doesNotMatch(result, /(?:\[Claude Code actions: |; )Write\(/);
+		const frames = readFileSync(sdkRecordPath, "utf8").slice(sdkMark).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+		assert.ok(frames.some(frame => frame.type === "system" && frame.subtype === "init"), "SDK capture must include initialization");
+		assert.ok(frames.some(frame => frame.type === "result"), "SDK capture must include the terminal result");
+		const debug = readFileSync(harness.DEBUG_LOG, "utf8").slice(debugMark);
+		const cliPaths = [...debug.matchAll(/cli-debug: askclaude #\d+ → (.+)/g)].map(match => match[1]);
+		assert.equal(cliPaths.length, 1, "permission evidence must belong to this AskClaude query");
+		const cliLog = readFileSync(cliPaths[0], "utf8");
+		assert.deepEqual(unexplainedToolRequests(frames, cliLog, getAskClaudeDisallowedTools("read")), [],
+			"every forbidden tool request must have a matching denial, never a successful or unexplained result");
 		assert.match(result, new RegExp(phrase));
 	});
 });

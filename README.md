@@ -54,7 +54,7 @@ The bridge preserves names without shortening them. Default codemode exposure us
 
 The fork pins Agent SDK 0.3.284. Opus 5.5's bare-ID 1M policy is maintainer-confirmed.
 Upstream `a78a2a5` measured Sonnet 5.5 on Pro with both Extra Usage states on 2026-09-28.
-This merge performs no new live probe; see [diag/CONTEXT-SIZE.md](diag/CONTEXT-SIZE.md) for provenance and historical measurements.
+A local 2026-09-30 probe confirms the suffixed ID reports 1M on the configured subscription profile; see [diag/CONTEXT-SIZE.md](diag/CONTEXT-SIZE.md).
 Fable 5.1's Pro restriction remains conservative rather than measured on Pro.
 
 ## AskClaude Tool
@@ -205,7 +205,17 @@ Silence would be unattributable: a consumer has no HTTP fallback for a bridge-pr
 
 `npm run test:unit` for offline tests. `npm test` adds integration tests that hit APIs; set `CLAUDE_BRIDGE_TESTING_ALT_MODEL` in `.env.test` for the alt-provider smoke test.
 
-Integration tests spawn real `pi` and Claude Code subprocesses and need write access to `~/.claude` — a sandbox that blocks it makes `--resume` fail with `No conversation found with session ID`.
+Integration tests spawn real Pi and Claude Code processes. The selected Claude profile needs writable session storage (default: `~/.pi/agent/claude`).
+
+Run the focused native-session live probe only with quota approval:
+
+```sh
+node --import tsx diag/live-pi-session-context.mjs --run
+```
+
+The probe covers extension-free native children, directory routing, parent and child resume, scoped teardown, and nested MCP names.
+`CLAUDE_BRIDGE_LIVE_AUTH_PROFILE` selects an existing authenticated profile for non-destructive recovery and accounting probes.
+Exclude `fault-startup` when selecting an existing profile; that case requires disposable fenced credentials.
 
 ## Debugging
 

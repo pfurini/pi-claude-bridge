@@ -44,10 +44,8 @@ const DEBUG_LOG_PATH = process.env.CLAUDE_BRIDGE_DEBUG_PATH || join(homedir(), "
 // a temp dir), so setting CLAUDE_BRIDGE_DEBUG_PATH redirects both together.
 const DIAG_LOG_PATH = process.env.CLAUDE_BRIDGE_DIAG_PATH || join(dirname(DEBUG_LOG_PATH), "claude-bridge-diag.log");
 
-// CLAUDE_BRIDGE_RECORD_STREAM=<path> appends every SDK message consumeQuery sees,
-// one JSON object per line. Used by tests/lib/record-sdk-streams.mjs to capture
-// replay fixtures, so unit tests assert against message shapes Claude Code really
-// emitted rather than ones we imagined.
+// CLAUDE_BRIDGE_RECORD_STREAM=<path> records provider and AskClaude SDK messages as JSONL.
+// Replay fixtures and live denial checks use the raw message shapes without interpreting UI summaries.
 const RECORD_STREAM_PATH = process.env.CLAUDE_BRIDGE_RECORD_STREAM;
 
 // Ensure log directories exist when debug is enabled
@@ -2489,6 +2487,7 @@ async function promptAndWait(
 	try {
 		if (wasAborted) throw new Error("Aborted");
 		for await (const message of sdkQuery) {
+			if (RECORD_STREAM_PATH) appendLog(RECORD_STREAM_PATH, JSON.stringify(message) + "\n");
 			if (wasAborted) break;
 			sdkMessageCount++;
 			capturedSessionId = systemInitSessionId(message) ?? capturedSessionId;
