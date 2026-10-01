@@ -44,6 +44,19 @@ const DIAG_LOG_PATH = process.env.CLAUDE_BRIDGE_DIAG_PATH || join(dirname(DEBUG_
 // CLAUDE_BRIDGE_RECORD_STREAM=<path> records provider SDK messages as JSONL.
 // Replay fixtures and live denial checks use the raw message shapes without interpreting UI summaries.
 const RECORD_STREAM_PATH = process.env.CLAUDE_BRIDGE_RECORD_STREAM;
+let recordStreamFailed = false;
+
+/** Recording is diagnostic: a failed write stops it with one warning and never fails the query. */
+function recordSdkMessage(message: unknown): void {
+	if (!RECORD_STREAM_PATH || recordStreamFailed) return;
+	try {
+		appendFileSync(RECORD_STREAM_PATH, `${JSON.stringify(message)}\n`);
+	} catch (error) {
+		recordStreamFailed = true;
+		const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+		try { writeSync(2, `claude-bridge: CLAUDE_BRIDGE_RECORD_STREAM write failed (${code}); recording stopped\n`); } catch {}
+	}
+}
 
 // Ensure log directories exist when debug is enabled
 if (DEBUG) {
@@ -1673,7 +1686,7 @@ async function consumeQuery(
 	let capturedSessionId: string | undefined;
 
 	for await (const message of sdkQuery) {
-		if (RECORD_STREAM_PATH) appendLog(RECORD_STREAM_PATH, `${JSON.stringify(message)}\n`);
+		recordSdkMessage(message);
 		if (wasAborted()) break;
 		// Everything below the currentPiStream guard is content, which there is
 		// nowhere to put once a turn has ended on a tool call. These three are not
@@ -1881,7 +1894,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 	const stream = createAssistantMessageEventStream();
 	// Before any binding exists: a late call for a disposed session must not recreate one.
-	if (options?.signal?.aborted) return failProviderStream(stream, model, new Error("Operation aborted"), true);
+	if (options?.signal?.aborted) {
+		// An aborted tool batch still reaches the provider with its results. A query parked by an
+		// earlier Pi run listens to that run's signal only, so retire it here; left parked, it would
+		// turn every later request of its session into a private import.
+		const parked = activeQueryContexts.size > 0 ? contextForToolResults(extractAllToolResults(context), options.sessionId) : undefined;
+		parked?.retire?.("Operation aborted");
+		return failProviderStream(stream, model, new Error("Operation aborted"), true);
+	}
 	let binding: SessionBinding;
 	try { binding = requestSessionBinding(options); }
 	catch (error) { return failProviderStream(stream, model, error, options?.signal?.aborted); }

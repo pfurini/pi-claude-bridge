@@ -126,6 +126,19 @@ it('continues from tool results whose query failed, without replaying the tool',
 	assert.match(JSON.stringify(imported(state.queries[1])), new RegExp(result.content[0].text));
 }));
 
+// Pi still sends an aborted tool batch's results. A query parked by an earlier run never sees
+// this run's abort, so the bridge must retire it, or the session falls back to private imports.
+it('retires a query parked by an earlier run when its results arrive aborted', { timeout: 10_000 }, () => withBridge([{ tool: 'read' }], async ({ state, request, completeTool, bridgeTest }) => {
+	const initial = user('task');
+	const first = await request([initial]).result();
+	const result = completeTool(first);
+	const ended = await request([initial, first, result], tools, { signal: AbortSignal.abort() }).result();
+	assert.equal(ended.stopReason, 'aborted');
+	assert.equal(state.controls[0].closed, true);
+	assert.equal(bridgeTest.activeQueryContexts.size, 0);
+	assert.equal(bridgeTest.getSharedSession('parent')?.forceRotate ?? true, true);
+}));
+
 it('ends an aborted request for orphaned tool results without starting a query', { timeout: 10_000 }, () => withBridge([], async ({ state, request }) => {
 	const result = { role: 'toolResult', toolCallId: 'gone', toolName: 'read', content: [{ type: 'text', text: 'late' }], isError: false, timestamp: 2 };
 	const ended = await request([user('task'), result], tools, { signal: AbortSignal.abort() }).result();
