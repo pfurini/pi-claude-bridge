@@ -186,9 +186,31 @@ export function loadDirs(pi: ExtensionAPI): { cwd: string; agentDir: string } {
 	return { cwd: pi.cwd, agentDir: pi.agentDir };
 }
 
+// A project's .pi/claude-bridge.json is outside Pi's project trust, so a cloned repository could
+// otherwise choose the executable Claude Code runs as, the settings tiers whose hooks it loads, or
+// the profile whose credentials it uses. These keys come from the global file only.
+const GLOBAL_ONLY_PROVIDER_KEYS = ["pathToClaudeCodeExecutable", "claudeConfigDir", "settingSources", "strictMcpConfig"] as const;
+const warnedProjectKeys = new Set<string>();
+
+function withoutGlobalOnlyKeys(provider: Config["provider"], path: string): Config["provider"] {
+	if (!provider) return provider;
+	const kept = { ...provider } as Record<string, unknown>;
+	for (const key of GLOBAL_ONLY_PROVIDER_KEYS) {
+		if (kept[key] === undefined) continue;
+		delete kept[key];
+		const warning = `claude-bridge: ignoring provider.${key} in ${path}; set it in the global claude-bridge.json`;
+		if (!warnedProjectKeys.has(warning)) {
+			warnedProjectKeys.add(warning);
+			console.warn(warning);
+		}
+	}
+	return kept as Config["provider"];
+}
+
 export function loadConfig(cwd: string, agentDir: string = getAgentDir()): Config {
 	const global = tryParseJson(globalConfigPath(agentDir));
-	const project = tryParseJson(join(cwd, CONFIG_DIR_NAME, "claude-bridge.json"));
+	const projectPath = join(cwd, CONFIG_DIR_NAME, "claude-bridge.json");
+	const project = tryParseJson(projectPath);
 	const askClaude = { ...global.askClaude, ...project.askClaude } as NonNullable<Config["askClaude"]> & {
 		defaultMode?: unknown;
 	};
@@ -198,17 +220,10 @@ export function loadConfig(cwd: string, agentDir: string = getAgentDir()): Confi
 	);
 	if (defaultMode !== undefined) askClaude.defaultMode = defaultMode;
 
-	const provider = { ...global.provider, ...project.provider } as NonNullable<Config["provider"]> & {
+	const provider = { ...global.provider, ...withoutGlobalOnlyKeys(project.provider, projectPath) } as NonNullable<Config["provider"]> & {
 		claudeConfigDir?: unknown;
 	};
-	// Validate each source on its own rather than the merged value, so an invalid
-	// project override falls back to a still-valid global setting (an authenticated
-	// profile) instead of all the way to the built-in default.
-	const globalClaudeConfigDir = normalizeClaudeConfigDir(global.provider?.claudeConfigDir);
-	provider.claudeConfigDir = normalizeClaudeConfigDir(
-		project.provider?.claudeConfigDir,
-		globalClaudeConfigDir,
-	);
+	provider.claudeConfigDir = normalizeClaudeConfigDir(global.provider?.claudeConfigDir);
 	return {
 		startupNoticeShown: project.startupNoticeShown ?? global.startupNoticeShown,
 		askClaude: askClaude as NonNullable<Config["askClaude"]>,

@@ -50,10 +50,6 @@ const PROVIDER_CWD = join(TEST_ROOT, "provider");
 const ASK_CWD = join(TEST_ROOT, "ask");
 for (const cwd of [PROVIDER_CWD, ASK_CWD]) mkdirSync(join(cwd, ".pi"), { recursive: true });
 writeFileSync(
-	join(PROVIDER_CWD, ".pi", "claude-bridge.json"),
-	JSON.stringify({ provider: { claudeConfigDir: CONFIGURED_PROFILE } }),
-);
-writeFileSync(
 	join(ASK_CWD, ".pi", "claude-bridge.json"),
 	JSON.stringify({ askClaude: { enabled: true, allowFullMode: true } }),
 );

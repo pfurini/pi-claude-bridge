@@ -98,7 +98,8 @@ describe("loadConfig", () => {
 
 			assert.deepEqual(loadConfig(cwd), {
 				startupNoticeShown: undefined,
-				provider: { plan: "max", strictMcpConfig: true, claudeConfigDir: "/project/claude", autoMemoryEnabled: true },
+				// claudeConfigDir is global-only: a project file may not pick the credentials profile.
+				provider: { plan: "max", strictMcpConfig: true, claudeConfigDir: "/global/claude", autoMemoryEnabled: true },
 				askClaude: { enabled: false, defaultMode: "read" },
 			});
 		} finally {
@@ -222,7 +223,7 @@ describe("loadConfig", () => {
 		const warnings = [];
 		const originalWarn = console.warn;
 		try {
-			const configDir = join(cwd, CONFIG_DIR_NAME);
+			const configDir = join(home, ".pi", "agent");
 			mkdirSync(configDir, { recursive: true });
 			console.warn = (...args) => warnings.push(args.join(" "));
 			for (const value of ["relative/profile", 42]) {
@@ -240,7 +241,7 @@ describe("loadConfig", () => {
 		}
 	}));
 
-	it("falls back to a valid global profile when the project override is invalid", () => withTempHome((home) => {
+	it("ignores the keys that choose what runs, with one warning each", () => withTempHome((home) => {
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
 		const warnings = [];
 		const originalWarn = console.warn;
@@ -250,25 +251,30 @@ describe("loadConfig", () => {
 			mkdirSync(globalDir, { recursive: true });
 			mkdirSync(projectDir, { recursive: true });
 			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({
-				provider: { claudeConfigDir: "/global/authenticated-profile" },
+				provider: { claudeConfigDir: "/global/authenticated-profile", settingSources: [] },
 			}));
 			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
-				provider: { claudeConfigDir: "typo-relative/profile" },
+				provider: {
+					claudeConfigDir: "/repo/profile",
+					pathToClaudeCodeExecutable: "./tools/claude.js",
+					settingSources: ["project"],
+					strictMcpConfig: false,
+					appendSystemPrompt: false,
+				},
 			}));
 			console.warn = (...args) => warnings.push(args.join(" "));
 
-			const effective = loadConfig(cwd).provider.claudeConfigDir;
-			assert.equal(
-				effective,
-				"/global/authenticated-profile",
-				"a bad project override must not discard a valid global profile for the built-in default",
-			);
-			assert.notEqual(effective, defaultClaudeConfigDir(home));
-			assert.equal(warnings.length, 1);
-			assert.match(
-				warnings[0],
-				/invalid provider\.claudeConfigDir "typo-relative\/profile"; using \/global\/authenticated-profile/,
-			);
+			for (let i = 0; i < 2; i++) {
+				const provider = loadConfig(cwd).provider;
+				assert.equal(provider.claudeConfigDir, "/global/authenticated-profile");
+				assert.equal(provider.pathToClaudeCodeExecutable, undefined);
+				assert.deepEqual(provider.settingSources, []);
+				assert.equal(provider.strictMcpConfig, undefined);
+				// Prompt-level keys stay project-overridable.
+				assert.equal(provider.appendSystemPrompt, false);
+			}
+			assert.deepEqual(warnings.map((warning) => warning.match(/provider\.(\w+)/)[1]).sort(),
+				["claudeConfigDir", "pathToClaudeCodeExecutable", "settingSources", "strictMcpConfig"]);
 		} finally {
 			console.warn = originalWarn;
 			rmSync(cwd, { recursive: true, force: true });
@@ -280,9 +286,9 @@ describe("loadConfig", () => {
 		const warnings = [];
 		const originalWarn = console.warn;
 		try {
-			const projectDir = join(cwd, CONFIG_DIR_NAME);
-			mkdirSync(projectDir, { recursive: true });
-			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
+			const globalDir = join(home, ".pi", "agent");
+			mkdirSync(globalDir, { recursive: true });
+			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({
 				provider: { claudeConfigDir: "repeated-relative/profile" },
 			}));
 			console.warn = (...args) => warnings.push(args.join(" "));

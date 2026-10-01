@@ -45,7 +45,7 @@ it("the real bridge factory honors the compiled Pi transcript and summary contra
 		assert.ok(model);
 		const project = '<project_context><project_instructions path="/fixture/AGENTS.md">PROJECT_CONTRACT_RULE</project_instructions></project_context>';
 		const skills = '<available_skills version="2"><skill><name>contract-skill</name><description>Test skill</description><location>/fixture/SKILL.md</location></skill></available_skills>';
-		const scope = sessionId => ({ sessionId, sessionContext: { ownerSessionId: sessionId, cwd, agentDir } });
+		const scope = sessionId => ({ sessionId, sessionContext: { agentSessionId: sessionId, cwd, agentDir } });
 		const response = await runtime.completeSimple(model, { systemPrompt: `${project}\n\n${skills}`, tools: [tool("read"), tool("bash"), tool("skill")], messages: [user("provider turn")] }, scope("built-parent"));
 		assert.equal(response.stopReason, "stop");
 		assert.deepEqual(servedTools(state.queries.at(-1)).sort(), ["bash", "read", "skill"]);

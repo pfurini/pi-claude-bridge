@@ -63,7 +63,7 @@ async function fixture(plans, run) {
 		activate({ cwd: root, agentDir: root, on(name, handler) { handlers.set(name, handler); }, registerProvider(_name, config) { provider = config; }, registerTool() {} });
 		await handlers.get("session_start")?.({ type: "session_start", reason: "new" }, { cwd: root, agentDir: root, mode: "rpc", ui: { notify() {} }, sessionManager: { getSessionId: () => "parent" }, modelRegistry: { getProvider: () => provider } });
 		const model = { ...provider.models[0], api: "claude-bridge", provider: "claude-bridge", baseUrl: "claude-bridge" };
-		const request = (messages, sessionId = "parent") => provider.streamSimple(model, { messages, tools }, { sessionId, sessionContext: { ownerSessionId: sessionId, cwd: root, agentDir: root } });
+		const request = (messages, sessionId = "parent") => provider.streamSimple(model, { messages, tools }, { sessionId, sessionContext: { agentSessionId: sessionId, cwd: root, agentDir: root } });
 		const complete = output => {
 			assert.equal(output.stopReason, "toolUse");
 			const call = output.content.find(block => block.type === "toolCall");

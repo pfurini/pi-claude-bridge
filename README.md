@@ -84,6 +84,7 @@ You could also create skills or add something to AGENTS.md to e.g. "Always call 
 ## Configuration
 
 Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config directory, usually `.pi/claude-bridge.json` (project; merged over global).
+Pi's project trust does not cover the project file, so it cannot set `pathToClaudeCodeExecutable`, `claudeConfigDir`, `settingSources` or `strictMcpConfig`. The bridge reads those four keys from the global file only and warns once when a project file sets one.
 
 Claude Code subprocesses use an isolated filesystem profile at `~/.pi/agent/claude` by default. This keeps bridge settings, plugins, skills, and session history separate from the normal interactive `~/.claude` profile. Existing Claude sessions and settings are not copied automatically. Linux and Windows store credentials inside the profile, while macOS stores OAuth credentials in Keychain but still keeps account metadata in the profile. A new isolated profile can therefore require a one-time login on every platform:
 
@@ -138,7 +139,7 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 - `settingSources` — which Claude Code settings tiers the spawned binary loads (`user`/`project`/`local`). Default `[]`: no `settings.json` of any tier and no `CLAUDE.md` of Claude Code's own, so pi's forwarded context block is the only channel for project rules. Independent of `appendSystemPrompt`. (The bridge also excludes `**/CLAUDE.md` on every spawn path, so opting a tier back in for its `settings.json` — e.g. Bedrock/Vertex `apiKeyHelper` — does not re-admit a native CLAUDE.md.)
 - `strictMcpConfig` — block MCP servers from the isolated profile's `.claude.json` and project `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`). The default off both sets the SDK settings layer and passes `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` to the subprocess; opting in drops both.
-- `claudeConfigDir` — absolute path to the Claude Code filesystem profile (default `~/.pi/agent/claude`). Each config file is validated on its own, so an invalid or relative value warns and falls back to the next valid setting (a bad project value falls back to your global one, not to the default). An inherited `CLAUDE_CONFIG_DIR` does not override this setting.
+- `claudeConfigDir` — absolute path to the Claude Code filesystem profile (default `~/.pi/agent/claude`). Global file only. An invalid or relative value warns and falls back to the default. An inherited `CLAUDE_CONFIG_DIR` does not override this setting.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
 - `usageEvents` — publish Claude subscription usage on pi's `pi:provider-usage` event channel (default `true`). See [Usage events](#usage-events) below. An invalid value warns once and falls back to `true`.
 

@@ -158,6 +158,17 @@ describe("usage endpoint failures", () => {
 		}
 	});
 
+	// A stalled body would otherwise hold the cross-process refresh lock, whose heartbeat keeps it fresh.
+	it("bounds the body read with the request timeout", { timeout: 2_000 }, async () => {
+		const outcome = await fetchClaudeUsage(FIXTURE_TOKEN, {
+			timeoutMs: 20,
+			fetchFn: async (_url, init) => response(null, {
+				json: () => new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted")))),
+			}),
+		});
+		assert.deepEqual(outcome, { ok: false, reason: REASON_UNREADABLE });
+	});
+
 	it("distinguishes a rejected credential from a transport failure (B3.8)", async () => {
 		const outcome = await fetchClaudeUsage(FIXTURE_TOKEN, {
 			fetchFn: recordingFetch(response(null, { status: 401 })).fetchFn,

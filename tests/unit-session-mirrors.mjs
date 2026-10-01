@@ -162,11 +162,11 @@ it("auxiliary routing IDs remain private while disposal follows the owning sessi
 	const mirror = bridge.getSharedSession("owner");
 	await parent.request([user("separate work")], {
 		sessionId: "auxiliary-route",
-		sessionContext: { ownerSessionId: "owner", cwd: parent.cwd, agentDir: parent.agentDir },
+		sessionContext: { agentSessionId: "owner", cwd: parent.cwd, agentDir: parent.agentDir },
 	}).result();
 	assert.equal(bridge.getSharedSession("auxiliary-route"), null);
 	assert.equal(bridge.getSharedSession("owner"), mirror);
-	assert.equal([...bridge.activeQueryContexts].find(c => c.piSessionId === "auxiliary-route").ownerSessionId, "owner");
+	assert.equal([...bridge.activeQueryContexts].find(c => c.piSessionId === "auxiliary-route").agentSessionId, "owner");
 	cleanupSessionResources("owner");
 	assert.equal(state.controls[1].closed, true);
 	assert.equal(bridge.getSharedSession("owner"), null);

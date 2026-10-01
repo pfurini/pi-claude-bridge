@@ -105,12 +105,29 @@ it("does not trust a session that has no prefix snapshot", () => withFixture(({ 
 }));
 
 it("retains unchanged prefixes when only timestamp or usage metadata differs", async () => {
-	const { snapshotHistory, matchesHistoryPrefix } = await import("../src/session-history.js");
+	const { snapshotHistory, alignHistory } = await import("../src/session-history.js");
 	const first = [{ role: "assistant", provider: "claude-bridge", content: [{ type: "text", text: "same" }], timestamp: 1 }];
 	const second = [{ ...first[0], timestamp: 2, usage: { output: 9 } }];
 	assert.deepEqual(snapshotHistory(first), snapshotHistory(second));
-	assert.equal(matchesHistoryPrefix(undefined, snapshotHistory(second), 1), false);
-	assert.equal(matchesHistoryPrefix(snapshotHistory(first), snapshotHistory(second), 1), true);
+	assert.equal(alignHistory(undefined, snapshotHistory(second)), undefined);
+	assert.equal(alignHistory(snapshotHistory(first), snapshotHistory(second)), 1);
 	const details = {}; details.self = details;
 	assert.doesNotThrow(() => snapshotHistory([{ role: "toolResult", toolCallId: "call", content: [], details, isError: false }]));
+});
+
+it("lets a request's trailing user messages drop out of the next projection, and nothing else", async () => {
+	const { snapshotHistory, snapshotRequestHistory, alignHistory } = await import("../src/session-history.js");
+	const prompt = { role: "user", content: "task", timestamp: 1 };
+	const call = { role: "assistant", provider: "claude-bridge", content: [{ type: "toolCall", id: "t1", name: "read", arguments: {} }], timestamp: 2 };
+	const result = { role: "toolResult", toolCallId: "t1", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 3 };
+	const reminder = { role: "user", content: "TASK_REMINDER", timestamp: 4 };
+	const steer = { role: "user", content: "STEER", timestamp: 4 };
+	const reply = { role: "assistant", provider: "claude-bridge", content: [{ type: "text", text: "done" }], timestamp: 5 };
+	const recorded = [...snapshotRequestHistory([prompt, call, result, steer, reminder]), ...snapshotHistory([reply])];
+	// A context hook's reminder is absent from the next projection; the persisted steer is present.
+	assert.equal(alignHistory(recorded, snapshotHistory([prompt, call, result, steer, reply])), 5);
+	assert.equal(alignHistory(recorded, snapshotHistory([prompt, call, result, steer, reminder, reply])), 6);
+	// Only the trailing user run is transient: a missing tool result or prompt is a divergence.
+	assert.equal(alignHistory(recorded, snapshotHistory([prompt, call, steer, reply])), undefined);
+	assert.equal(alignHistory(snapshotRequestHistory([prompt, call, result]), snapshotHistory([call, result])), undefined);
 });

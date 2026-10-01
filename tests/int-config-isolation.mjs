@@ -32,15 +32,11 @@ const INHERITED_PROFILE = join(TEST_ROOT, "inherited-profile");
 // would still land here and every assertion below would still pass. That plumbing is
 // covered at both ends by unit-config.mjs (config merge and fallback) and
 // unit-sdk-options.mjs (claudeConfigDir reaching the child as CLAUDE_CONFIG_DIR).
-// The project config written below is realistic but non-discriminating today.
+// provider.claudeConfigDir is global-only, so this test writes no project config.
 const CONFIGURED_PROFILE = defaultClaudeConfigDir();
 const NORMAL_PROFILE = join(homedir(), ".claude");
 
 mkdirSync(join(TEST_CWD, ".pi"), { recursive: true });
-writeFileSync(
-	join(TEST_CWD, ".pi", "claude-bridge.json"),
-	JSON.stringify({ provider: { claudeConfigDir: CONFIGURED_PROFILE } }),
-);
 
 const harness = createRpcHarness({
 	name: "config-isolation",

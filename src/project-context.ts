@@ -16,6 +16,7 @@
 
 const START_MARKER = "<project_context>";
 const END_MARKER = "</project_context>";
+const HEADING = "Project-specific instructions and guidelines:";
 
 /**
  * Extract pi's project-context block from its assembled system prompt, for
@@ -32,6 +33,8 @@ export function extractProjectContextBlock(systemPrompt?: string): string | unde
 	if (end === -1) return undefined;
 	const block = systemPrompt.slice(start, end + END_MARKER.length).trim();
 	// The preset Claude Code prompt has no heading for this; give the block the
-	// one-line frame pi gives it, so the model knows what these tags are.
-	return `Project-specific instructions and guidelines:\n\n${block}`;
+	// one-line frame pi gives it, so the model knows what these tags are. Pi's
+	// sectioned prompt already opens the block with that line.
+	if (block.slice(START_MARKER.length).trimStart().startsWith(HEADING)) return block;
+	return `${HEADING}\n\n${block}`;
 }

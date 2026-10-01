@@ -110,6 +110,23 @@ describe("non-streaming fallback after a stalled stream", () => {
 		assert.deepStrictEqual(c.turnOutput.content.map((b) => b.text), ["hi"]);
 	});
 
+	it("delivers a non-streaming answer's text once, not again from the result", async () => {
+		const c = makeCtx();
+		await consume(c, [
+			{ type: "assistant", message: { id: "msg_plain", content: [{ type: "text", text: "Answer." }] } },
+			{ type: "result", subtype: "success", is_error: false, result: "Answer.", session_id: "s", usage: {}, total_cost_usd: 0 },
+		]);
+		assert.deepStrictEqual(c.turnOutput.content.map((b) => b.text), ["Answer."]);
+	});
+
+	it("still delivers the result text when nothing else did", async () => {
+		const c = makeCtx();
+		await consume(c, [
+			{ type: "result", subtype: "success", is_error: false, result: "Only here.", session_id: "s", usage: {}, total_cost_usd: 0 },
+		]);
+		assert.deepStrictEqual(c.turnOutput.content.map((b) => b.text), ["Only here."]);
+	});
+
 	for (const recovery of ["non-streaming", "restream"]) {
 		it(`preserves observed usage across ${recovery} recovery`, async () => {
 			const c = makeCtx();

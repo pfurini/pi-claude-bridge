@@ -38,7 +38,7 @@ async function withBridge(plans, run, providerOverrides = {}) {
 		const request = (messages, inventory = tools, options = {}) => {
 			const sessionId = options.sessionId ?? 'parent';
 			return provider.streamSimple(model, { messages, tools: inventory, systemPrompt: "<project_context>RULE</project_context>" },
-				{ sessionId, sessionContext: { ownerSessionId: sessionId, cwd: root, agentDir: root }, ...options });
+				{ sessionId, sessionContext: { agentSessionId: sessionId, cwd: root, agentDir: root }, ...options });
 		};
 		const completeTool = output => {
 			assert.equal(output.stopReason, "toolUse");
@@ -84,6 +84,53 @@ it("continues an unchanged query despite metadata and equivalent declaration ord
 	assert.equal(final.content[0].text, "NORMAL");
 	assert.equal(state.queries.length, 1);
 	assert.equal(state.controls[0].toolResult.isError, false);
+}));
+
+// The fork's tasks `context` hook appends a reminder to one request only; Pi never persists it.
+it('continues the query when the previous delivery carried a transient reminder', { timeout: 10_000 }, () => withBridge([{ tool: ['read', 'read'], reply: 'DONE' }], async ({ state, request, completeTool }) => {
+	const initial = user('task');
+	const first = await request([initial]).result();
+	const firstResult = completeTool(first);
+	const second = await request([initial, first, firstResult, user('TASK_REMINDER')]).result();
+	const secondResult = completeTool(second);
+	const final = await request([initial, first, firstResult, second, secondResult]).result();
+	assert.equal(final.content[0].text, 'DONE');
+	assert.equal(state.queries.length, 1);
+	assert.equal(state.executions, 2);
+	assert.ok(state.prompts.some(prompt => JSON.stringify(prompt).includes('TASK_REMINDER')));
+}));
+
+it('resumes the Claude session after a turn whose last delivery carried a transient reminder', { timeout: 10_000 }, () => withBridge([{ tool: 'read', ...accountingPlan(1, 10, 10) }, accountingPlan(3, 25, 35)], async ({ state, request, completeTool }) => {
+	const initial = user('task');
+	const first = await request([initial]).result();
+	const result = completeTool(first);
+	const final = await request([initial, first, result, user('TASK_REMINDER')]).result();
+	const seeds = state.seeds;
+	await request([initial, first, result, final, user('next task')]).result();
+	assert.equal(state.seeds, seeds);
+	assert.equal(state.queries[1].options.resume, state.controls[0].sessionId);
+}));
+
+// Pi's auto-retry drops the failed reply and continues from the same tool results.
+it('continues from tool results whose query failed, without replaying the tool', { timeout: 10_000 }, () => withBridge([{ tool: 'read', failFinish: true }, { reply: 'RECOVERED' }], async ({ state, request, completeTool, imported }) => {
+	const initial = user('task');
+	const first = await request([initial]).result();
+	const result = completeTool(first);
+	const failed = await request([initial, first, result]).result();
+	assert.equal(failed.stopReason, 'error');
+	const retried = await request([initial, first, result]).result();
+	assert.equal(retried.stopReason, 'stop');
+	assert.equal(retried.content[0].text, 'RECOVERED');
+	assert.equal(state.queries.length, 2);
+	assert.equal(state.executions, 1);
+	assert.match(JSON.stringify(imported(state.queries[1])), new RegExp(result.content[0].text));
+}));
+
+it('ends an aborted request for orphaned tool results without starting a query', { timeout: 10_000 }, () => withBridge([], async ({ state, request }) => {
+	const result = { role: 'toolResult', toolCallId: 'gone', toolName: 'read', content: [{ type: 'text', text: 'late' }], isError: false, timestamp: 2 };
+	const ended = await request([user('task'), result], tools, { signal: AbortSignal.abort() }).result();
+	assert.equal(ended.stopReason, 'aborted');
+	assert.equal(state.queries.length, 0);
 }));
 
 for (const change of ['replace-project-rule', 'remove-project-rule', 'skill-listing']) {

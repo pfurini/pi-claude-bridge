@@ -50,8 +50,7 @@ describe("pi-ai api registry registration", () => {
 	it("routes a call into streamClaudeAgentSdk", async () => {
 		activateWithMockPi();
 		const provider = getApiProvider("claude-bridge");
-		// An orphaned tool result with no active query takes the one path that
-		// ends the stream without spawning a Claude Code subprocess.
+		// An aborted request ends the stream without spawning a Claude Code subprocess.
 		const stream = provider.streamSimple(BRIDGE_MODEL, {
 			messages: [
 				{
@@ -63,11 +62,11 @@ describe("pi-ai api registry registration", () => {
 					timestamp: 0,
 				},
 			],
-		}, { sessionId: "registry-fixture", sessionContext: { ownerSessionId: "registry-fixture", cwd: fixtureDir, agentDir: fixtureDir } });
+		}, { sessionId: "registry-fixture", signal: AbortSignal.abort(), sessionContext: { agentSessionId: "registry-fixture", cwd: fixtureDir, agentDir: fixtureDir } });
 		const events = await collect(stream);
 		assert.equal(
-			events.at(-1)?.type,
-			"done",
+			events.at(-1)?.error?.errorMessage,
+			"Operation aborted",
 			"the bridge provider never answered — registration points elsewhere",
 		);
 	});
@@ -86,11 +85,11 @@ describe("pi-ai api registry registration", () => {
 					timestamp: 0,
 				},
 			],
-		}, { sessionId: "registry-fixture", sessionContext: { ownerSessionId: "registry-fixture", cwd: fixtureDir, agentDir: fixtureDir } });
+		}, { sessionId: "registry-fixture", signal: AbortSignal.abort(), sessionContext: { agentSessionId: "registry-fixture", cwd: fixtureDir, agentDir: fixtureDir } });
 		const events = await collect(stream);
 		assert.equal(
-			events.at(-1)?.type,
-			"done",
+			events.at(-1)?.error?.errorMessage,
+			"Operation aborted",
 			"the stream slot never answered — complete()/stream() on a bridge model would hang or throw",
 		);
 	});

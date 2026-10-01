@@ -29,7 +29,7 @@ it('charges each real resumed Claude query once rather than recharging saved ses
   const charges = [];
   for (let turn = 1; turn <= 3; turn++) {
     history.push({ role: 'user', content: `Reply with exactly ACCOUNTING_${turn}.`, timestamp: Date.now() });
-    const response = await runtime.completeSimple(model, { messages: history }, { sessionId: 'accounting-fixture', sessionContext: { ownerSessionId: 'accounting-fixture', cwd: root, agentDir }, signal: AbortSignal.timeout(30000) });
+    const response = await runtime.completeSimple(model, { messages: history }, { sessionId: 'accounting-fixture', sessionContext: { agentSessionId: 'accounting-fixture', cwd: root, agentDir }, signal: AbortSignal.timeout(30000) });
     assert.equal(response.stopReason, 'stop', response.errorMessage);
     history.push(response);
     charges.push(response.usage.cost.total);

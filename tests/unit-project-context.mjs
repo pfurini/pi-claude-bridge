@@ -31,7 +31,14 @@ describe("extractProjectContextBlock", () => {
 		assert.ok(out.includes('path="/home/u/.pi/agent/AGENTS.md"'));
 		assert.ok(out.indexOf("GLOBAL") < out.indexOf("ROOT RULES"));
 		assert.ok(out.indexOf("ROOT RULES") < out.indexOf("PKG RULES"));
-		assert.ok(out.startsWith("Project-specific instructions and guidelines:"));
+		// Pi's block already carries the heading; the bridge must not add a second one.
+		assert.equal(out.split("Project-specific instructions and guidelines:").length, 2);
+		assert.ok(out.startsWith("<project_context>"));
+	});
+
+	it("frames a block that lacks pi's heading", () => {
+		const out = extractProjectContextBlock(`<project_context>\n${file("/r/AGENTS.md", "R")}</project_context>`);
+		assert.ok(out.startsWith("Project-specific instructions and guidelines:\n\n<project_context>"));
 	});
 
 	it("covers the CLAUDE.md-only project the old resolver silently dropped", () => {

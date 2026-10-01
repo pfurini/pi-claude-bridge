@@ -74,7 +74,7 @@ let clock = 0;
 const user = (text) => ({ role: "user", content: text, timestamp: clock++ });
 const toolResult = (id) => ({ role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "text", text: "file" }], isError: false, timestamp: clock++ });
 
-const call = (sessionId, messages) => streamSimple(model, { messages, tools: [{ name: "read", description: "read", parameters: { type: "object", properties: {} } }] }, { sessionId, sessionContext: { ownerSessionId: sessionId, cwd: claudeDir, agentDir: claudeDir } });
+const call = (sessionId, messages) => streamSimple(model, { messages, tools: [{ name: "read", description: "read", parameters: { type: "object", properties: {} } }] }, { sessionId, sessionContext: { agentSessionId: sessionId, cwd: claudeDir, agentDir: claudeDir } });
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
 beforeEach(() => {

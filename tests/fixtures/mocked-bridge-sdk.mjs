@@ -39,12 +39,14 @@ export function query(input) {
 					await ready;
 				}
 				yield { type: "system", subtype: "init", session_id, claude_code_version: "mock-transport", tools: [] };
-				if (plan.tool) {
-					const id = `tool_${ordinal}`;
+				// `tool` names one call, or an array of calls made one after another.
+				for (const [step, tool] of [plan.tool ?? []].flat().entries()) {
+					const suffix = step === 0 ? `${ordinal}` : `${ordinal}_${step}`;
+					const id = `tool_${suffix}`;
 					const server = Object.values(input.options.mcpServers)[0].instance;
-					const result = server.handlers.get("tools/call")({ params: { name: plan.tool, _meta: { "claudecode/toolUseId": id } } });
-					yield event({ type: "message_start", message: { id: `msg_tool_${ordinal}`, usage } });
-					yield event({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id, name: `mcp__custom-tools__${plan.tool}`, input: plan.arguments ?? {} } });
+					const result = server.handlers.get("tools/call")({ params: { name: tool, _meta: { "claudecode/toolUseId": id } } });
+					yield event({ type: "message_start", message: { id: `msg_tool_${suffix}`, usage } });
+					yield event({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id, name: `mcp__custom-tools__${tool}`, input: plan.arguments ?? {} } });
 					yield event({ type: "content_block_stop", index: 0 });
 					yield event({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage });
 					yield event({ type: "message_stop" });

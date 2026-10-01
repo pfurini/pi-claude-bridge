@@ -125,12 +125,21 @@ export async function fetchClaudeUsage(token: string, deps: UsageFetchDeps = {})
 			signal: controller.signal,
 		});
 	} catch {
+		clearTimeout(timeout);
 		// The exception message can quote the request, so it is neither reported
 		// nor logged: a transport failure is one fact, and that fact is the reason.
 		return { ok: false, reason: REASON_UNREACHABLE };
+	}
+	// The timer also bounds the body read below: a server that stalls mid-body would
+	// otherwise hold the cross-process refresh lock, whose heartbeat keeps it fresh.
+	try {
+		return await readUsageResponse(response, now);
 	} finally {
 		clearTimeout(timeout);
 	}
+}
+
+async function readUsageResponse(response: Response, now: () => number): Promise<UsageFetchOutcome> {
 
 	if (response.status === 403) {
 		// Nothing an operator can act on, so the publisher stays silent rather

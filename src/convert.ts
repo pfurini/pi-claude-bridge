@@ -1,6 +1,7 @@
 // Pure pi→Anthropic message conversion helpers.
 // Extracted so they can be tested without pulling in the full extension runtime.
 
+import { createHash } from "node:crypto";
 import type { Message as PiMessage } from "@earendil-works/pi-ai";
 import type { Message as SessionMessage } from "cc-session-io";
 import { pascalCase } from "change-case";
@@ -14,10 +15,19 @@ export const PI_TO_SDK_TOOL_NAME: Record<string, string> = {
 	read: "Read", write: "Write", edit: "Edit", bash: "Bash",
 };
 
+// Anthropic caps tool_use ids at 64 characters; Pi's own Anthropic provider truncates the same
+// way. Another provider's ids can be far longer (OpenAI Responses ids run past 450), and a
+// rebuilt transcript replays them to the API. A hash suffix keeps truncated ids distinct.
+const MAX_TOOL_ID_LENGTH = 64;
+
 export function sanitizeToolId(id: string, cache: Map<string, string>): string {
 	const existing = cache.get(id);
 	if (existing) return existing;
-	const clean = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+	let clean = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+	if (clean.length > MAX_TOOL_ID_LENGTH) {
+		const suffix = createHash("sha256").update(id).digest("hex").slice(0, 16);
+		clean = `${clean.slice(0, MAX_TOOL_ID_LENGTH - suffix.length - 1)}_${suffix}`;
+	}
 	cache.set(id, clean);
 	return clean;
 }

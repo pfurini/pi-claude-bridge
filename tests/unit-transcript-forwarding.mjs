@@ -32,6 +32,16 @@ describe("transcript forwarding without prompt captures", () => {
 		} finally { __test.setUserSystemPrompt(previous); }
 	});
 
+	it("forwards the listing once, without pi's emptied skills wrapper or a second project heading", () => {
+		const heading = "Project-specific instructions and guidelines:";
+		const project = `<project_context>\n${heading}\n\n<project_instructions path="/workspace/AGENTS.md">PROJECT_RULE</project_instructions>\n</project_context>`;
+		const context = toBridgeContext({ messages: [system({ sections: { project_context: project, skills: skillSection }, toolsAdded: [tool("read"), tool("skill")] }), user("go")] });
+		const append = __test.buildProviderSystemPromptAppend({ id: "claude-haiku-4-5" }, context);
+		assert.equal(append.split(listing).length - 1, 1);
+		assert.doesNotMatch(append, /<skills>\s*<\/skills>/);
+		assert.equal(append.split(heading).length - 1, 1);
+	});
+
 	it("extracts project instructions and versioned skills after prompt widening", () => {
 		const context = toBridgeContext({ messages: [initial(), system({ sections: { tools: "Expanded MCP descriptions" } }), user("go")] });
 		assert.ok(context.systemPrompt.includes("Expanded MCP descriptions"));

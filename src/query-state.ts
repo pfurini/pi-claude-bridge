@@ -64,7 +64,7 @@ export class QueryContext {
 	 */
 	piSessionId: string | null = null;
 	/** Session owning the request, which can differ from an auxiliary routing ID. */
-	ownerSessionId: string | null = null;
+	agentSessionId: string | null = null;
 	/** The live session binding that started this query; distinct from its persisted conversation ID. */
 	sessionLifetime: object | undefined;
 	/** pi rewrote the history this query was built from (session_compact,

@@ -2,6 +2,23 @@
 
 Ideas and open questions, ordered by rough priority. Nothing is a commitment.
 
+## Deferred findings from the 2026-10-01 review
+
+Each item was verified against source; none is fixed yet.
+
+1. **Summed segment usage reads as context size.** Several API calls inside one Pi assistant message (unserved-tool retry, stalled-stream restream, max-output recovery) sum their prompt tokens. Pi reads `input + cacheRead` and `totalTokens` as context size, so a sum can trigger a spurious overflow or threshold compaction. A fix revisits `plans/token-usage-truth.md` D5 and possibly Pi's `Usage` contract.
+2. **Synthetic API-error assistant messages mid-stream.** CC 2.1.284 yields a `<synthetic>` message before the stream's `message_delta` on some stops. `processAssistantMessage` treats its new id as a non-streaming fallback, drops the streamed blocks, and double-counts input. `mapStopReason("refusal")` returns `stop`, while Pi's Anthropic provider maps refusal to an error. Needs a live probe of which synthetic kinds reach SDK output.
+3. **Abort reaches only the first run's signal.** A query parked across Pi runs (a `finishTurn` end, or a later run steering into it) keeps its first run's abort listener, so Esc in a later run does not stop Claude Code. Rebind `onAbort` on each delivery.
+4. **Module instances accumulate on `/reload`.** Each instance keeps its `registerSessionResourceCleanup`, `sessionEndHooks` and `markRebuildHooks` registrations. Unregistering on reload is unsafe while a retained child's query lives in the old instance, because the old cleanup is what reaps it at the child's dispose.
+5. **Claude session files leak** on aborted preserve-mode queries, the `.catch` path, retired clean-start sessions and rotated rebuilds.
+6. **Compaction and branch-summary takeovers bypass Pi's retry and thinking settings.** Since Pi 0.99.1, Pi's own summarizer path reaches the bridge with `cacheRetention: "none"` and routes to `isolatedStreamFn`, so the takeovers may be removable. Needs the live compaction suites.
+7. **Agent mention clones drive the parent's mirror.** `mention-clone.ts` routes by the parent's `sessionId`, so the clone's exchange lands in the parent's Claude session and the parent's next turn rebuilds.
+8. **`plan` and `longContextExtraUsage` stay project-overridable.** A repository can enable `[1m]` requests billed as Extra Usage. Consider making both global-only, like the four security keys.
+9. **Skills framing assumes `read` or `skill`.** A session with `bash` but neither tool gets framing that names an unserved MCP `read` tool.
+10. **Pi thinking level `off` does not disable thinking.** The bridge omits effort and Claude Code applies its adaptive default; the SDK offers `thinking: { type: "disabled" }`.
+11. **Carried `@file` attachments drop after multi-message turns**, because CC records one joined prompt where Pi keeps separate user messages.
+12. **Usage publishing:** a credential without the usage scope is published as a fault during the 30-second cooldown; per-segment estimates never set Pi's `cacheWrite1h`; an exhausted 5-hour or weekly quota matches Pi's retryable "rate limit" pattern.
+
 ## Ideas
 
 1. **#30: pruning costs Claude all context for that turn.** When `pi-context-prune`

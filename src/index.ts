@@ -30,7 +30,7 @@ import { createSdkMessageState, parseSdkResult, parseSdkSystemInit, rateLimitRes
 import { buildActionSummary, formatUsageLine, type ToolCallState } from "./askclaude-ui.js";
 import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode } from "./askclaude-schema.js";
 import { effectiveInstructions, nonSystemMessages, toBridgeContext } from "./transcript.js";
-import { matchesHistoryPrefix, snapshotHistory, snapshotTools } from "./session-history.js";
+import { alignHistory, snapshotHistory, snapshotRequestHistory, snapshotTools } from "./session-history.js";
 import { newAccountingEpoch, queryAccounting, type AccountingEpoch, type AccountingSnapshot } from "./session-accounting.js";
 
 // --- Debug logging ---
@@ -236,7 +236,7 @@ const sharedSessions = new Map<string, SessionState>();
 
 /** Metadata belongs to a live Pi session, not the first extension factory in a process. */
 interface SessionBinding {
-	ownerSessionId: string;
+	agentSessionId: string;
 	cwd: string;
 	agentDir: string;
 	provider: NonNullable<Config["provider"]>;
@@ -260,7 +260,7 @@ function claudeConfigDirFor(id?: string | null): string {
 
 /** Each module retires only its queries; a child may use another module's registered provider. */
 function endSessionBinding(id: string, binding: SessionBinding): void {
-	const ownedQueries = [...activeQueryContexts].filter(c => c.ownerSessionId === id && c.sessionLifetime === binding);
+	const ownedQueries = [...activeQueryContexts].filter(c => c.agentSessionId === id && c.sessionLifetime === binding);
 	reportLeaks("session_shutdown", ownedQueries);
 	for (const c of ownedQueries) {
 		reapLiveQueriesIfOwner(true, new Set([c]), "session_shutdown");
@@ -275,7 +275,7 @@ sessionEndHooks.add(endSessionBinding);
 
 // Core disposal also reaches children that inherit the provider without loading this extension.
 registerSessionResourceCleanup((id) => {
-	const owned = [...activeQueryContexts].filter(c => id === undefined || c.ownerSessionId === id);
+	const owned = [...activeQueryContexts].filter(c => id === undefined || c.agentSessionId === id);
 	reapLiveQueriesIfOwner(true, new Set(owned), "session_dispose");
 	for (const c of owned) activeQueryContexts.delete(c);
 	if (id === undefined) {
@@ -296,7 +296,7 @@ function releaseSessionBinding(id: string, binding: SessionBinding): void {
 
 function requestSessionBinding(options?: SimpleStreamOptions): SessionBinding {
 	const metadata = options?.sessionContext;
-	const id = metadata?.ownerSessionId ?? options?.sessionId;
+	const id = metadata?.agentSessionId ?? options?.sessionId;
 	const current = id ? sessionBindings.get(id) : undefined;
 	if (!metadata) {
 		if (current) return current;
@@ -305,10 +305,10 @@ function requestSessionBinding(options?: SimpleStreamOptions): SessionBinding {
 	if (current && current.cwd === metadata.cwd && current.agentDir === metadata.agentDir) return current;
 	const config = loadConfig(metadata.cwd, metadata.agentDir);
 	const binding: SessionBinding = {
-		ownerSessionId: metadata.ownerSessionId, cwd: metadata.cwd, agentDir: metadata.agentDir,
+		agentSessionId: metadata.agentSessionId, cwd: metadata.cwd, agentDir: metadata.agentDir,
 		provider: config.provider ?? {}, askClaudeToolName: config.askClaude?.name ?? "AskClaude", customization: {},
 	};
-	if (!current) sessionBindings.set(metadata.ownerSessionId, binding);
+	if (!current) sessionBindings.set(metadata.agentSessionId, binding);
 	return binding;
 }
 
@@ -572,9 +572,15 @@ function extractIsolatedSummaryPrompt(messages: Context["messages"]): string {
  *  result; the dedicated error subtypes carry `errors` instead. Same semantics as
  *  sdk-messages' parseSdkResult failure path, but callable on its own where only the
  *  error text is needed (the above-guard failure recording in consumeQuery). */
+// Claude Code's wording when generation reaches the context window (stop_reason
+// model_context_window_exceeded, CC 2.1.284). It matches none of Pi's overflow patterns, so Pi
+// would neither compact nor retry; the appended marker matches Pi's generic one.
+const CONTEXT_LIMIT_TEXT = /reached its context window limit/i;
+const piOverflowText = (text: string) => CONTEXT_LIMIT_TEXT.test(text) ? `${text} (context_length_exceeded)` : text;
+
 function resultErrorText(message: SDKMessage): string | undefined {
 	const result = message as SDKMessage & { subtype?: string; is_error?: boolean; result?: string; errors?: unknown; error?: unknown };
-	if (result.subtype === "success") return result.is_error ? result.result || "Claude Code reported an error" : undefined;
+	if (result.subtype === "success") return result.is_error ? piOverflowText(result.result || "Claude Code reported an error") : undefined;
 	if (Array.isArray(result.errors) && result.errors.length) return result.errors.map(String).join("\n");
 	if (typeof result.error === "string") return result.error;
 	return `Claude Code failed: ${result.subtype ?? "unknown result"}`;
@@ -752,7 +758,7 @@ function verifyWrittenSession(
 		piUI?.notify(
 			`Session file issue: ${msg}\n` +
 			`cwd=${cwd} realpath=${safeRealpath(cwd)} claudeConfigDir=${claudeConfigDir}\n` +
-			`Please copy and paste this message into a new issue at https://github.com/elidickinson/pi-claude-bridge/issues/new` +
+			`Please copy and paste this message into a new issue at https://github.com/pfurini/pi-claude-bridge/issues/new` +
 			(DEBUG ? ` and attach ${DEBUG_LOG_PATH}` : ` (rerun with CLAUDE_BRIDGE_DEBUG=1 to capture a debug log)`),
 			"warning",
 		);
@@ -822,19 +828,19 @@ function syncSharedSession(
 	const sharedSession = sessionStateFor(piSessionId);
 	const history = nonSystemMessages(messages);
 	const priorMessages = ownership.replayAll ? history : history.slice(0, turnStart(history));
-	const priorSnapshot = snapshotHistory(priorMessages);
+	const priorSnapshot = snapshotRequestHistory(priorMessages);
 	const anonymousShorterContext = sharedSession && !piSessionId && !sharedSession.needsRebuild && priorMessages.length < sharedSession.cursor;
 	const foreignStorage = sharedSession && (sharedSession.cwd !== cwd || (sharedSession.claudeConfigDir !== undefined && sharedSession.claudeConfigDir !== claudeConfigDir));
 	const preserveSharedSession = Boolean(ownership.preserveSharedSession || anonymousShorterContext || foreignStorage || sharedSession?.accounting?.inFlight);
 	const previous = preserveSharedSession ? null : sharedSession;
 
-	if (previous?.accounting?.snapshot && !ownership.forceRotate && !previous.needsRebuild && matchesHistoryPrefix(previous.history, priorSnapshot, previous.cursor)) {
-		if (priorMessages.length === previous.cursor) {
-			setSessionStateFor(piSessionId, { ...previous, cursor: priorMessages.length, history: priorSnapshot, cwd });
-			debug(`Case 3: resuming session ${previous.sessionId.slice(0, 8)}, cursor=${priorMessages.length}`);
-			debug(`syncResult: path=reuse sessionId=${previous.sessionId} cursor=${priorMessages.length}`);
-			return { sessionId: previous.sessionId, accounting: previous.accounting };
-		}
+	// Every recorded message must reappear, except transient ones a context hook added to a single request.
+	const recorded = previous?.history && previous.history.length >= previous.cursor ? previous.history.slice(0, previous.cursor) : undefined;
+	if (previous?.accounting?.snapshot && !ownership.forceRotate && !previous.needsRebuild && alignHistory(recorded, priorSnapshot) === priorMessages.length) {
+		setSessionStateFor(piSessionId, { ...previous, cursor: priorMessages.length, history: priorSnapshot, cwd });
+		debug(`Case 3: resuming session ${previous.sessionId.slice(0, 8)}, cursor=${priorMessages.length}`);
+		debug(`syncResult: path=reuse sessionId=${previous.sessionId} cursor=${priorMessages.length}`);
+		return { sessionId: previous.sessionId, accounting: previous.accounting };
 	}
 
 	const accounting = newAccountingEpoch();
@@ -1095,6 +1101,8 @@ function contextForToolResults(results: McpResult[], piSessionId?: string): Quer
 		if (!id) continue;
 		for (const queryCtx of activeQueryContexts) {
 			if (piSessionId !== undefined && queryCtx.piSessionId !== piSessionId) continue;
+			// An ended query cannot take results; its context may linger until its cleanup runs.
+			if (queryCtx.activeQuery === null) continue;
 			if (queryCtx.pendingToolCalls.has(id) || queryCtx.pendingResults.has(id) || queryCtx.turnToolCallIds.includes(id)) {
 				return queryCtx;
 			}
@@ -1712,7 +1720,7 @@ async function consumeQuery(
 	let capturedSessionId: string | undefined;
 
 	for await (const message of sdkQuery) {
-		if (RECORD_STREAM_PATH) appendFileSync(RECORD_STREAM_PATH, `${JSON.stringify(message)}\n`);
+		if (RECORD_STREAM_PATH) appendLog(RECORD_STREAM_PATH, `${JSON.stringify(message)}\n`);
 		if (wasAborted()) break;
 		// Everything below the currentPiStream guard is content, which there is
 		// nowhere to put once a turn has ended on a tool call. These three are not
@@ -1779,7 +1787,10 @@ async function consumeQuery(
 				// session id the result carries.
 				const terminalResult = parseSdkResult(message);
 				capturedSessionId = terminalResult?.sessionId ?? capturedSessionId;
-				if (resultError === undefined && terminalResult?.successful && !queryCtx.turnSawStreamEvent) {
+				// A non-streaming answer (no stream events at all) already delivered its text through
+				// processAssistantMessage; pushing the result text again would duplicate it.
+				const textDelivered = queryCtx.turnBlocks.some((block) => block.type === "text");
+				if (resultError === undefined && terminalResult?.successful && !queryCtx.turnSawStreamEvent && !textDelivered) {
 					ensureTurnStarted(queryCtx);
 					const text = terminalResult.text;
 					queryCtx.turnBlocks.push({ type: "text", text });
@@ -1916,6 +1927,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	}
 
 	const stream = createAssistantMessageEventStream();
+	// Before any binding exists: a late call for a disposed session must not recreate one.
+	if (options?.signal?.aborted) return failProviderStream(stream, model, new Error("Operation aborted"), true);
 	let binding: SessionBinding;
 	try { binding = requestSessionBinding(options); }
 	catch (error) { return failProviderStream(stream, model, error, options?.signal?.aborted); }
@@ -1938,11 +1951,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// (everything after the last assistant message) and match against waiting MCP
 	// handlers. Results that arrive before their handler get queued in pendingResults.
 	if (resultCtx) {
-		const nextHistory = snapshotHistory(context.messages);
+		const nextHistory = snapshotRequestHistory(context.messages);
 		const tools = resolveMcpTools(context, binding.askClaudeToolName).mcpTools;
 		const nextTools = snapshotTools(tools);
 		const nextInstructions = buildProviderSystemPromptAppend(model, context, binding);
-		const historyChanged = !matchesHistoryPrefix(resultCtx.latestHistory, nextHistory, resultCtx.latestHistory.length);
+		// A transient message (a context hook added it to the previous request only) may drop out.
+		const historyChanged = alignHistory(resultCtx.latestHistory, nextHistory) === undefined;
 		const toolsChanged = resultCtx.toolInventory !== nextTools;
 		const instructionsChanged = resultCtx.systemPromptAppend !== nextInstructions;
 		const historyRewritten = resultCtx.historyStale || Boolean(resultCtx.piSessionId && historyRewrittenBySession.has(resultCtx.piSessionId));
@@ -1952,7 +1966,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				resultCtx.retire();
 				const restart = resultCtx.recordRestartCheckpoint(nextHistory, nextTools, nextInstructions);
 				if (restart === 4) {
-					const firstDifference = historyChanged ? nextHistory.findIndex((hash, index) => hash !== resultCtx.latestHistory[index]) : -1;
+					const bare = (hash: string | undefined) => hash?.replace(/^~/, "");
+					const firstDifference = historyChanged ? nextHistory.findIndex((hash, index) => bare(hash) !== bare(resultCtx.latestHistory[index])) : -1;
 					diagDump("query_restart_threshold", {
 						model: model.id, historyChanged, toolsChanged, instructionsChanged,
 						previousHistoryLength: resultCtx.latestHistory.length, incomingHistoryLength: nextHistory.length,
@@ -1982,26 +1997,17 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		return stream;
 	}
 
-	// --- Orphaned tool result (e.g. user aborted a tool call) ---
-	// The query is gone but pi still delivered the result. Nothing to do — just
-	// emit end_turn so pi waits for the next real user message.
+	// --- Tool results no live query owns ---
+	// The query that asked for them is gone. Pi retried after a failure mid-loop (its
+	// retry drops the failed reply and continues from these results), a /reload
+	// replaced this module under a parked child, or Claude Code exited at a tool call.
+	// Continue from the recorded results in a fresh query: an empty reply here would
+	// end Pi's turn as a silent success. The recovery path imports completed results
+	// and never replays a tool.
 	const lastMsg = context.messages[context.messages.length - 1];
 	if (lastMsg?.role === "toolResult") {
-		debug(`provider: orphaned tool result after abort, emitting end_turn`);
-		const orphanState = sessionStateFor(options?.sessionId);
-		if (orphanState && ![...activeQueryContexts].some(c => c.piSessionId === (options?.sessionId ?? null))) orphanState.needsRebuild = true;
-		// No query owns this result, so there is no context to reset: resetTurnState
-		// on the top-level ctx() would replace a live parent's turnOutput mid-stream,
-		// stranding the blocks it had already emitted. A throwaway context just
-		// supplies the empty message this turn ends with.
-		const c = new QueryContext();
-		c.resetTurnState(model);
-		queueMicrotask(() => {
-			stream.push({ type: "done", reason: "stop", message: c.turnOutput });
-			markStreamComplete(stream);
-			stream.end();
-		});
-		return stream;
+		debug(`provider: tool results with no live query, continuing from them in a recovery query`);
+		return startProviderQuery(model, context, options, stream, new QueryContext(), true);
 	}
 
 	return startProviderQuery(model, context, options, stream, activeQuery ? new QueryContext() : ctx());
@@ -2067,7 +2073,7 @@ function setupProviderQuery(
 	const isReentrant = queryCtx !== ctx();
 	const piSessionId = options?.sessionId;
 	const binding = requestSessionBinding(options);
-	const preserveSharedSession = piSessionId !== binding.ownerSessionId || (recovery && queryCtx.preserveSharedSession) || [...activeQueryContexts].some(c => c !== queryCtx && c.activeQuery !== null && c.piSessionId === (piSessionId ?? null));
+	const preserveSharedSession = piSessionId !== binding.agentSessionId || (recovery && queryCtx.preserveSharedSession) || [...activeQueryContexts].some(c => c !== queryCtx && c.activeQuery !== null && c.piSessionId === (piSessionId ?? null));
 	if (!recovery) queryCtx.resetRestartCheckpoints();
 	queryCtx.retire = undefined;
 	// 2. Fresh child context — constructor already gave us clean Maps and empty
@@ -2084,12 +2090,12 @@ function setupProviderQuery(
 	// resetTurnState deliberately preserves it across tool-result deliveries.
 	queryCtx.beginQuery();
 	queryCtx.piSessionId = piSessionId ?? null;
-	queryCtx.ownerSessionId = binding.ownerSessionId;
+	queryCtx.agentSessionId = binding.agentSessionId;
 	queryCtx.sessionLifetime = binding;
 	queryCtx.historyStale = false;
 	queryCtx.missedSteer = false;
 	if (piSessionId) historyRewrittenBySession.delete(piSessionId);
-	queryCtx.latestHistory = snapshotHistory(context.messages);
+	queryCtx.latestHistory = snapshotRequestHistory(context.messages);
 
 	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, binding.askClaudeToolName);
 	queryCtx.toolInventory = snapshotTools(mcpTools);
@@ -2664,7 +2670,7 @@ export default function (pi: ExtensionAPI) {
 		const agentDir = sessionAgentDir(context);
 		const sessionConfig = loadConfig(context.cwd, agentDir);
 		boundSessionId = id;
-		boundSession = { ownerSessionId: id, cwd: context.cwd, agentDir, provider: sessionConfig.provider ?? {},
+		boundSession = { agentSessionId: id, cwd: context.cwd, agentDir, provider: sessionConfig.provider ?? {},
 			askClaudeToolName: sessionConfig.askClaude?.name ?? "AskClaude", customization: {} };
 		sessionBindings.set(id, boundSession);
 		debug(`session_start:${event.reason}: bound session ${id}`);
@@ -2689,6 +2695,10 @@ export default function (pi: ExtensionAPI) {
 			const globals = globalThis as Record<symbol, unknown>;
 			if (globals[ACTIVE_STREAM_SIMPLE_KEY] === streamClaudeAgentSdk) globals[ACTIVE_STREAM_SIMPLE_KEY] = undefined;
 			usagePublisher?.dispose();
+			// /new, /resume and /fork in the same cwd re-run this factory in the same module.
+			// The replacement session must become the owner, or it never applies its config
+			// and the disposed publisher stays silent for the rest of the process.
+			providerOwnerClaimed = false;
 		}
 	});
 
@@ -2709,7 +2719,7 @@ export default function (pi: ExtensionAPI) {
 				event.customInstructions,
 				event.signal,
 				undefined,
-				(model, context, options) => isolatedStreamFn(model, context, { ...options, sessionContext: { ownerSessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, agentDir: ctx.agentDir } }),
+				(model, context, options) => isolatedStreamFn(model, context, { ...options, sessionContext: { agentSessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, agentDir: ctx.agentDir } }),
 				undefined,
 			);
 			debug(`session_before_compact: takeover complete summaryLen=${compaction.summary.length}`);
@@ -2765,7 +2775,7 @@ export default function (pi: ExtensionAPI) {
 				signal: event.signal,
 				customInstructions,
 				replaceInstructions,
-				streamFn: (model, context, options) => isolatedStreamFn(model, context, { ...options, sessionContext: { ownerSessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, agentDir: ctx.agentDir } }),
+				streamFn: (model, context, options) => isolatedStreamFn(model, context, { ...options, sessionContext: { agentSessionId: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, agentDir: ctx.agentDir } }),
 			});
 			return branchSummaryOutcome(result);
 		} catch (err) {

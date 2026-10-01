@@ -504,3 +504,15 @@ describe("dropped-content accounting", () => {
 		assert.equal(dropped.other.size, 0);
 	});
 });
+
+it("caps foreign tool ids at Anthropic's 64 characters, deterministically and distinctly", () => {
+	const long = (tail) => `fc_${"x".repeat(440)}${tail}`;
+	const cache = new Map();
+	const first = sanitizeToolId(long("a"), cache);
+	const second = sanitizeToolId(long("b"), cache);
+	assert.equal(first.length, 64);
+	assert.match(first, /^[a-zA-Z0-9_-]+$/);
+	assert.notEqual(first, second);
+	assert.equal(sanitizeToolId(long("a"), new Map()), first);
+	assert.equal(sanitizeToolId("toolu_short", new Map()), "toolu_short");
+});

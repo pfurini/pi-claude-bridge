@@ -50,6 +50,15 @@ describe("resultErrorText", () => {
 		assert.strictEqual(__test.resultErrorText({ type: "result", subtype: "error_during_execution", errors: ["boom", "bang"] }), "boom\nbang");
 	});
 
+	// CC 2.1.284 words stop_reason model_context_window_exceeded this way; Pi must read it as overflow.
+	it("names Claude Code's context-window stop so Pi compacts", async () => {
+		const { isContextOverflow } = await import("@earendil-works/pi-ai/utils/overflow");
+		const text = __test.resultErrorText({ type: "result", subtype: "success", is_error: true, result: "API Error: The model has reached its context window limit." });
+		assert.match(text, /^API Error: The model has reached its context window limit\./);
+		assert.equal(isContextOverflow({ role: "assistant", stopReason: "error", errorMessage: text, usage: { input: 0, cacheRead: 0, output: 0 } }), true);
+		assert.equal(isContextOverflow({ role: "assistant", stopReason: "error", errorMessage: "API Error: The model has reached its context window limit.", usage: { input: 0, cacheRead: 0, output: 0 } }), false);
+	});
+
 	it("never returns an empty message for a failure", () => {
 		assert.ok(__test.resultErrorText({ type: "result", subtype: "success", is_error: true, result: "" }));
 		assert.ok(__test.resultErrorText({ type: "result", subtype: "error_max_budget_usd" }));

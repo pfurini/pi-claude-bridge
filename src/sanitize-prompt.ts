@@ -150,6 +150,11 @@ function removeForwardedSkills(text: string, source: string): string {
 		const stockPreamble = preamble !== -1 && result.slice(preamble, at).split("\n").every(line => line === "" || preambleLines.has(line));
 		result = spliceCollapsingSeam(result, stockPreamble ? preamble : at, at + block.length).text;
 	}
+	// Pi's skills section wraps the listing in <skills> tags; forwarding the listing on its own empties them.
+	const emptySection = /<skills>\s*<\/skills>/;
+	for (let match = emptySection.exec(result); match; match = emptySection.exec(result)) {
+		result = spliceCollapsingSeam(result, match.index, match.index + match[0].length).text;
+	}
 	return result;
 }
 
