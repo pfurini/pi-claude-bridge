@@ -17,6 +17,12 @@ export interface PendingToolCall {
 	resolve: (result: McpResult) => void;
 }
 
+/** The stop_details of a refusal (stop_reason "refusal"). Both fields are optional on the wire. */
+export interface RefusalDetails {
+	category?: string | null;
+	explanation?: string | null;
+}
+
 /** The token fields accumulated per segment and per query. The first four are the
  *  billable set reconciled against CC's result.usage; `reasoning` is a subset of
  *  `output`, carried informationally and never reconciled or added to totals. */
@@ -56,6 +62,9 @@ export class QueryContext {
 	/** Highest 5% utilization bucket we notified for, so repeat rate_limit_event spam is suppressed. */
 	lastRateLimitWarnStep: number | null = null;
 	lastRateLimitWarnThreshold: number | undefined;
+	/** stop_details from Claude Code's refusal notice. The result that follows names the
+	 *  refusal but carries neither field, so the result path reads them here and clears them. */
+	refusal: RefusalDetails | null = null;
 	/** pi session this query serves, from SimpleStreamOptions.sessionId at fresh-query
 	 *  setup. A bridge process serves several pi sessions at once (subagents run their
 	 *  own AgentSessions), and history rewrites must only discard the rewriting
@@ -138,6 +147,8 @@ export class QueryContext {
 		this.querySegments = [];
 		this.accountingBaseline = { totalCostUsd: 0, modelUsage: {} };
 		this.accountingResult = undefined;
+		// A query aborted between a refusal notice and its result must not name the next one.
+		this.refusal = null;
 	}
 
 	/** A changed checkpoint may require another query regardless of turn length. */

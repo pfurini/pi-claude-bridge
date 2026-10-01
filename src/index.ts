@@ -1,4 +1,4 @@
-import { calculateCost, createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type Usage, type UserMessage } from "@earendil-works/pi-ai";
+import { calculateCost, createAssistantMessageEventStream, isContextOverflow, isRetryableAssistantError, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type Usage, type UserMessage } from "@earendil-works/pi-ai";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { getModels, registerApiProvider } from "@earendil-works/pi-ai/compat";
 import { compact, generateBranchSummary, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
@@ -13,7 +13,7 @@ import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSetti
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, SKILL_TOOL_NAME, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx, drainForAbort, reapLiveQueriesIfOwner } from "./query-state.js";
+import { QueryContext, ctx, drainForAbort, reapLiveQueriesIfOwner, type RefusalDetails } from "./query-state.js";
 import { loadConfig, loadDirs, markStartupNoticeShown, normalizeUsageEvents, sessionAgentDir, type Config } from "./config.js";
 import { defaultClaudeConfigDir } from "./claude-config.js";
 import { UsagePublisher } from "./usage-publisher.js";
@@ -562,20 +562,41 @@ function extractIsolatedSummaryPrompt(messages: Context["messages"]): string {
 	return promptText;
 }
 
-/** Failure text for an SDK result, or undefined when it succeeded. CC reports API failures
- *  (429 capacity, overload, prompt-too-long) with `is_error` on an otherwise success-shaped
- *  result; the dedicated error subtypes carry `errors` instead. Same semantics as
- *  sdk-messages' parseSdkResult failure path, but callable on its own where only the
- *  error text is needed (the above-guard failure recording in consumeQuery). */
 // Claude Code's wording when generation reaches the context window (stop_reason
 // model_context_window_exceeded, CC 2.1.284). It matches none of Pi's overflow patterns, so Pi
 // would neither compact nor retry; the appended marker matches Pi's generic one.
 const CONTEXT_LIMIT_TEXT = /reached its context window limit/i;
 const piOverflowText = (text: string) => CONTEXT_LIMIT_TEXT.test(text) ? `${text} (context_length_exceeded)` : text;
 
-function resultErrorText(message: SDKMessage): string | undefined {
-	const result = message as SDKMessage & { subtype?: string; is_error?: boolean; result?: string; errors?: unknown; error?: unknown };
-	if (result.subtype === "success") return result.is_error ? piOverflowText(result.result || "Claude Code reported an error") : undefined;
+const REFUSAL_TEXT = "Claude refused to complete the request";
+
+/** The failure text for a refusal, modelled on Pi's own Anthropic provider. Pi must read it
+ *  as neither retryable nor an overflow: a retry repeats the refused request, and compaction
+ *  does not address a refusal. Claude Code's notice is not reused. It ends in request and
+ *  message ids, whose digits can match Pi's retryable status codes ("429", "500"), and it
+ *  gives advice for CC's own UI. The API's category and explanation are free text, so they
+ *  are kept only while the text still classifies as a plain refusal. */
+function refusalErrorText(details?: RefusalDetails | null): string {
+	const category = details?.category ? ` (${details.category})` : "";
+	const explanation = details?.explanation?.trim() ? `: ${details.explanation.trim()}` : "";
+	const text = `${REFUSAL_TEXT}${category}${explanation}`;
+	const probe = { stopReason: "error", errorMessage: text, usage: { input: 0, output: 0, cacheRead: 0 } } as AssistantMessage;
+	return isRetryableAssistantError(probe) || isContextOverflow(probe) ? REFUSAL_TEXT : text;
+}
+
+/** Failure text for an SDK result, or undefined when it succeeded. CC reports API failures
+ *  (429 capacity, overload, prompt-too-long) with `is_error` on an otherwise success-shaped
+ *  result; the dedicated error subtypes carry `errors` instead. Same semantics as
+ *  sdk-messages' parseSdkResult failure path, but callable on its own where only the
+ *  error text is needed (the above-guard failure recording in consumeQuery). A refusal's
+ *  result names the stop but not its details, so the caller passes those in. */
+function resultErrorText(message: SDKMessage, refusal?: RefusalDetails | null): string | undefined {
+	const result = message as SDKMessage & { subtype?: string; is_error?: boolean; result?: string; errors?: unknown; error?: unknown; stop_reason?: string | null };
+	if (result.subtype === "success") {
+		if (!result.is_error) return undefined;
+		if (result.stop_reason === "refusal") return refusalErrorText(refusal);
+		return piOverflowText(result.result || "Claude Code reported an error");
+	}
 	if (Array.isArray(result.errors) && result.errors.length) return result.errors.map(String).join("\n");
 	if (typeof result.error === "string") return result.error;
 	return `Claude Code failed: ${result.subtype ?? "unknown result"}`;
@@ -1323,10 +1344,14 @@ function logServedContextWindow(label: string, message: SDKMessage, model: Model
 
 // --- Provider helpers: misc ---
 
-function mapStopReason(reason: string | undefined): "stop" | "length" | "toolUse" {
+function mapStopReason(reason: string | undefined): "stop" | "length" | "toolUse" | "error" {
 	switch (reason) {
 		case "tool_use": return "toolUse";
 		case "max_tokens": return "length";
+		// An error, as in Pi's Anthropic provider. It is provisional: the failure text of a
+		// final refusal comes from the result, a refused tool call still ends its segment as
+		// toolUse at message_stop, and a successful result clears a refusal CC retried past.
+		case "refusal": return "error";
 		case "end_turn": default: return "stop";
 	}
 }
@@ -1552,6 +1577,21 @@ function dropAbandonedStreamBlocks(c: QueryContext, why: string): void {
 function processAssistantMessage(message: SDKMessage, model: Model<any>, customToolNameToPi: Map<string, string>, c: QueryContext): void {
 	const assistantMsg = (message as any).message;
 	if (!assistantMsg?.content) return;
+	// Claude Code's notice of a failed API response, not model output: a synthetic message
+	// under a fresh id, with zero usage and the SDK's `error` set. It never becomes content.
+	// A failure that ends the turn reaches pi through the is_error result that follows. A
+	// refused response that carried a tool call does not end it: CC 2.1.284 sends the
+	// notice, dispatches the call, and goes on, so the tool call must stay and end this
+	// segment at message_stop as usual. The notice must also bypass the fallback test
+	// below. On a refusal it arrives before the refused stream's message_delta, and its
+	// new id read as CC abandoning that stream: the streamed blocks were dropped, a tool
+	// call CC was about to dispatch with them, and message_delta counted the input twice.
+	const apiError = (message as { error?: string }).error;
+	if (apiError !== undefined) {
+		debug(`processAssistantMessage: Claude Code error notice ${assistantMsg.id} (${apiError}, stop_reason=${assistantMsg.stop_reason}), not delivered as content`);
+		if (assistantMsg.stop_reason === "refusal") c.refusal = assistantMsg.stop_details ?? null;
+		return;
+	}
 	if (c.turnSawStreamEvent) {
 		// Same id was already delivered; a new id is CC's non-streaming fallback.
 		// Drop the stalled stream's partial blocks if it never stopped. Deliberately
@@ -1706,7 +1746,8 @@ async function consumeQuery(
 			logServedContextWindow("result", message, model);
 			const accounting = queryAccounting(message, queryCtx.accountingBaseline);
 			queryCtx.accountingResult = accounting.snapshot;
-			resultError = resultErrorText(message);
+			resultError = resultErrorText(message, queryCtx.refusal);
+			queryCtx.refusal = null;
 			if (resultError !== undefined) {
 				// Consume the rejection alongside the failure it caused, so a later
 				// unrelated failure on this query doesn't inherit the label.
@@ -1728,6 +1769,11 @@ async function consumeQuery(
 				// so the cost override lands on the message pi receives.
 				const cost = adoptCcCost(accounting.message, model, queryCtx);
 				reconcileQueryUsage(accounting.message, model, queryCtx, cost);
+				// Before a result, only a refusal's message_delta sets "error". CC completed the
+				// turn, so that was a refusal it retried past, not the turn's outcome. The
+				// retry's own message_delta normally overwrites it, but a non-streaming
+				// fallback carries none.
+				if (queryCtx.turnOutput.stopReason === "error" && !queryCtx.turnOutput.errorMessage) queryCtx.turnOutput.stopReason = "stop";
 			}
 		}
 		if (message.type === "rate_limit_event") {

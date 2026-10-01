@@ -36,6 +36,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createSession, openSession, repairToolPairing } from "cc-session-io";
+import { isPresetRequest, sseMessage, startStubApi } from "../diag/lib/stub-api.mjs";
 // Side-effect import: loads .env.test (CLAUDE_CONFIG_DIR in particular, which
 // selects the Claude Code profile these queries authenticate against) and probes
 // that dir for writability, so running this file directly behaves like `npm test`,
@@ -598,4 +599,91 @@ test("includeGitInstructions:false strips gitStatus and keeps the preset static 
 		api.close();
 		rmSync(repo, { recursive: true, force: true });
 	}
+});
+
+// --- Stops Claude Code reports with its own notice ---
+
+/** Every SDK message of one turn against a stub that answers the n-th preset request
+ *  (from 1) with `stopFor(n)`. The SDK throws after an is_error result; that throw is the
+ *  expected end. */
+async function stubbedStop(stopFor, extra = {}) {
+	let preset = 0;
+	const api = await startStubApi((body, n) => sseMessage({
+		id: `msg_stub_${n}`,
+		...(isPresetRequest(body) ? { text: "PARTIAL", ...stopFor(++preset) } : { text: "OK", stopReason: "end_turn" }),
+	}));
+	const messages = [];
+	try {
+		const q = query({
+			prompt: "Say hi.",
+			options: providerOptions({
+				persistSession: false, includePartialMessages: true,
+				systemPrompt: { type: "preset", preset: "claude_code" },
+				env: { ...providerOptions().env, ANTHROPIC_BASE_URL: api.url, CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1" },
+				...extra,
+			}),
+		});
+		try {
+			for await (const message of q) messages.push(message);
+		} catch (error) {
+			if (!/returned an error result/.test(String(error?.message))) throw error;
+		}
+	} finally {
+		await api.close();
+	}
+	const notice = messages.find((m) => m.type === "assistant" && m.error !== undefined);
+	return { messages, notice, result: messages.find((m) => m.type === "result"), presetRequests: api.requests.filter(isPresetRequest).length };
+}
+
+test("a final refusal's notice is a <synthetic> error message sent before the refused stream's message_delta", { timeout: 120_000 }, async () => {
+	// processAssistantMessage must keep this notice away from its non-streaming-fallback
+	// test: the notice's fresh id, while the refused stream is still open, is exactly what
+	// that test reads as CC abandoning a stream. The result names the refusal without its
+	// stop_details, which only the notice carries.
+	const { messages, notice, result, presetRequests } = await stubbedStop(() => ({
+		stopReason: "refusal",
+		stopDetails: { type: "refusal", category: null, explanation: null },
+	}));
+	assert.equal(presetRequests, 2, "CC no longer retries a first refusal exactly once");
+	assert.ok(notice, `no assistant message with an SDK error field: ${messages.map((m) => m.type).join(",")}`);
+	assert.equal(notice.message.model, "<synthetic>");
+	assert.equal(notice.message.stop_reason, "refusal");
+	assert.deepEqual(notice.message.stop_details, { type: "refusal", category: null, explanation: null });
+	assert.equal(notice.message.usage.input_tokens, 0);
+	const next = messages[messages.indexOf(notice) + 1];
+	assert.equal(next?.event?.type, "message_delta", "the notice no longer precedes the refused stream's message_delta");
+	const lastStart = messages.findLast((m) => m.event?.type === "message_start");
+	assert.notEqual(notice.message.id, lastStart.event.message.id);
+	assert.equal(result?.is_error, true);
+	assert.equal(result?.stop_reason, "refusal");
+});
+
+test("a final refusal of a response with a tool call still dispatches the call, and the turn goes on", { timeout: 120_000 }, async () => {
+	// Why processAssistantMessage leaves the refused stream's tool call in place: CC sends
+	// its notice, then calls the tool over MCP and waits for the result. Had the bridge
+	// dropped the call, pi would never run it and CC would wait forever. The third
+	// request answers normally, or CC would loop on the scripted refusal.
+	const calls = [];
+	const { messages, notice, result } = await stubbedStop((n) => (n > 2 ? { text: "DONE", stopReason: "end_turn" } : {
+		toolUse: { id: `toolu_stub_${n}`, name: "mcp__custom-tools__alpha", input: {} },
+		stopReason: "refusal",
+		stopDetails: { type: "refusal", category: null, explanation: null },
+	}), { mcpServers: toolServer([noArgTool("alpha")], calls) });
+	assert.ok(notice, `no assistant message with an SDK error field: ${messages.map((m) => m.type).join(",")}`);
+	const dispatched = calls.find((c) => c.meta?.[TOOL_USE_ID_META] === "toolu_stub_2");
+	assert.ok(dispatched, `CC did not dispatch the finally refused call: ${JSON.stringify(calls.map((c) => c.meta))}`);
+	assert.equal(result?.is_error, false, "a refused tool call now ends the turn — revisit processAssistantMessage's notice comment");
+});
+
+test("a context-window stop's notice is withheld through max-output recovery and worded as src/index.ts expects", { timeout: 120_000 }, async () => {
+	// CONTEXT_LIMIT_TEXT in src/index.ts matches this wording to mark the failure as an
+	// overflow for Pi. The notice arrives only after the last stream closed.
+	const { messages, notice, result } = await stubbedStop(() => ({ stopReason: "model_context_window_exceeded" }));
+	assert.ok(notice, `no assistant message with an SDK error field: ${messages.map((m) => m.type).join(",")}`);
+	assert.equal(notice.message.model, "<synthetic>");
+	assert.equal(notice.error, "max_output_tokens");
+	assert.ok(messages.indexOf(notice) > messages.findLastIndex((m) => m.event?.type === "message_stop"),
+		"the notice now arrives inside a stream — it would reach the fallback test with the stream open");
+	assert.equal(result?.is_error, true);
+	assert.match(result?.result ?? "", /reached its context window limit/i);
 });

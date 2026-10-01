@@ -1,8 +1,9 @@
 /**
  * CC reports API failures (429 capacity, overload, prompt-too-long) as a result with
- * is_error set while subtype stays "success", after streaming the text as a <synthetic>
- * assistant message. Shape verified against claude-agent-sdk 0.2.141. Without this the
- * turn finalizes as a normal stop and the failure never reaches pi.
+ * is_error set while subtype stays "success", after sending the text as a <synthetic>
+ * assistant message with the SDK's `error` field set. Shape verified against
+ * claude-agent-sdk 0.2.141, the `error` field against 0.3.284. Without this the turn
+ * finalizes as a normal stop and the failure never reaches pi.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -126,15 +127,17 @@ describe("error results", () => {
 		assert.strictEqual(terminal.error.errorMessage, errorResult.result);
 	});
 
-	it("does not re-emit text the synthetic assistant message already delivered", async () => {
+	// Claude Code's notice carries the same text as the result. Shown as content too,
+	// pi would report the failure twice.
+	it("reports an error notice once, through the result", async () => {
 		const c = makeCtx();
 		await consume(c, [
-			{ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: errorResult.result }] } },
+			{ type: "assistant", error: "rate_limit", message: { id: "notice", model: "<synthetic>", stop_reason: "stop_sequence", content: [{ type: "text", text: errorResult.result }] } },
 			errorResult,
 		]);
 
-		const texts = c.turnOutput.content.filter((b) => b.type === "text");
-		assert.deepStrictEqual(texts.map((b) => b.text), [errorResult.result]);
+		assert.deepStrictEqual(c.turnOutput.content, []);
+		assert.strictEqual(c.turnOutput.errorMessage, errorResult.result);
 	});
 
 	it("still streams and finalizes a successful result normally", async () => {
