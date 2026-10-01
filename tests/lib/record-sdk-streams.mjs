@@ -2,6 +2,7 @@
 // Records real Claude Code SDK message streams as replay fixtures.
 //
 //   node --import tsx tests/lib/record-sdk-streams.mjs [scenario ...]
+//   node --import tsx tests/lib/record-sdk-streams.mjs --from-raw name=raw.jsonl ...
 //
 // Costs API calls, so it is not part of `npm test`. Re-run it when the SDK is
 // bumped, then read the diff: a changed fixture is the SDK changing shape under
@@ -67,10 +68,37 @@ function scrub(message, ids) {
 	return walk(kept);
 }
 
+/** Scrub a raw CLAUDE_BRIDGE_RECORD_STREAM file into fixtures/sdk-streams/<name>.jsonl.
+ *  Returns the number of messages written. */
+function writeFixture(name, raw) {
+	const ids = new Map();
+	const messages = readFileSync(raw, "utf8").split("\n").filter(Boolean)
+		.map((line) => scrub(JSON.parse(line), ids));
+	const body = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
+	// A delta can split the home path so no string replacement sees it whole.
+	// Refuse to write rather than commit a fixture carrying the username.
+	const user = homedir().split("/").filter(Boolean).pop();
+	if (user && body.includes(user)) throw new Error(`${name}: "${user}" survived scrubbing — inspect ${raw} and re-run`);
+	writeFileSync(join(FIXTURES, `${name}.jsonl`), body);
+	return messages.length;
+}
+
 const wanted = process.argv.slice(2);
+mkdirSync(FIXTURES, { recursive: true });
+
+// --from-raw name=path ...: scrub streams another tool already recorded, such as
+// diag/probe-stop-reasons.mjs, whose stub API makes stops no prompt can provoke.
+if (wanted[0] === "--from-raw") {
+	for (const pair of wanted.slice(1)) {
+		const [name, raw] = pair.split("=");
+		if (!name || !raw) throw new Error(`expected name=path, got "${pair}"`);
+		console.log(`${name}: ${writeFixture(name, raw)} messages scrubbed from ${raw}`);
+	}
+	process.exit(0);
+}
+
 const chosen = wanted.length ? wanted : Object.keys(SCENARIOS);
 
-mkdirSync(FIXTURES, { recursive: true });
 rmSync(WORKDIR, { recursive: true, force: true });
 mkdirSync(WORKDIR, { recursive: true });
 for (const [name, body] of Object.entries(FILES)) writeFileSync(join(WORKDIR, name), body);
@@ -79,7 +107,6 @@ for (const name of chosen) {
 	const prompt = SCENARIOS[name];
 	if (!prompt) throw new Error(`unknown scenario "${name}"; known: ${Object.keys(SCENARIOS).join(", ")}`);
 
-	const target = join(FIXTURES, `${name}.jsonl`);
 	const raw = join(WORKDIR, `${name}.raw.jsonl`);
 	rmSync(raw, { force: true });
 	writeFileSync(raw, "");
@@ -94,16 +121,7 @@ for (const name of chosen) {
 	await harness.startAndWait();
 	try {
 		const text = await harness.promptAndWait(prompt, 180_000);
-		const ids = new Map();
-		const messages = readFileSync(raw, "utf8").split("\n").filter(Boolean)
-			.map((line) => scrub(JSON.parse(line), ids));
-		const body = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
-		// A delta can split the home path so no string replacement sees it whole.
-		// Refuse to write rather than commit a fixture carrying the username.
-		const user = homedir().split("/").filter(Boolean).pop();
-		if (user && body.includes(user)) throw new Error(`${name}: "${user}" survived scrubbing — inspect ${raw} and re-run`);
-		writeFileSync(target, body);
-		console.log(`${name}: ${messages.length} messages recorded — ${text.trim().slice(0, 60)}`);
+		console.log(`${name}: ${writeFixture(name, raw)} messages recorded — ${text.trim().slice(0, 60)}`);
 	} finally {
 		await harness.stop();
 	}
