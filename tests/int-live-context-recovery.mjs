@@ -39,7 +39,7 @@ it('recovers real SDK queries after active history and tool changes without repl
   process.env.CLAUDE_BRIDGE_DEBUG = '1';
   process.env.CLAUDE_BRIDGE_DEBUG_PATH = debugPath;
   process.env.CLAUDE_BRIDGE_DIAG_PATH = join(root, 'diagnostics.jsonl');
-  writeFileSync(join(agentDir, 'claude-bridge.json'), JSON.stringify({ startupNoticeShown: 'test', askClaude: { enabled: false }, provider: { usageEvents: false, plan: 'max', claudeConfigDir: claudeDir } }));
+  writeFileSync(join(agentDir, 'claude-bridge.json'), JSON.stringify({ startupNoticeShown: 'test', provider: { usageEvents: false, plan: 'max', claudeConfigDir: claudeDir } }));
   const effects = join(root, 'effects.jsonl');
   const manager = SessionManager.inMemory(root);
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });

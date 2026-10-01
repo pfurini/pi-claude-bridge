@@ -54,43 +54,6 @@ describe("harness corrections", () => {
 		assert.ok(block.includes("exact model ID"));
 	});
 
-	it("disclaims the shell only where no shell tool is reachable", () => {
-		const withShell = buildHarnessCorrections({
-			modelId: "claude-sonnet-5",
-			cliModelId: "claude-sonnet-5[1m]",
-			toolsAreMcpOnly: false,
-			noShellTool: false,
-		});
-		const withoutShell = buildHarnessCorrections({
-			modelId: "claude-sonnet-5",
-			cliModelId: "claude-sonnet-5[1m]",
-			toolsAreMcpOnly: false,
-			noShellTool: true,
-		});
-
-		assert.ok(!withShell.includes("no shell tool"));
-		assert.ok(withoutShell.includes("no shell tool"));
-	});
-
-	// The preset tells the model to confirm before hard-to-reverse actions, which a
-	// delegated sub-agent cannot do: AskUserQuestion is blocked and nobody is
-	// listening. The provider path keeps the guidance, since pi's TUI does put a
-	// user on the other end.
-	it("releases a delegated sub-agent from confirmation it cannot obtain", () => {
-		const delegated = buildHarnessCorrections({
-			modelId: "claude-sonnet-5",
-			cliModelId: "claude-sonnet-5",
-			toolsAreMcpOnly: false,
-			noInteractiveChannel: true,
-		});
-
-		assert.ok(delegated.includes("delegated sub-agent"));
-		assert.ok(delegated.includes("operate more autonomously"));
-		// The escape must not become a licence to ignore blast radius.
-		assert.ok(delegated.includes("reversibility and blast radius"));
-		assert.ok(delegated.includes("stop and report"));
-	});
-
 	it("leaves the provider path's confirmation guidance intact", () => {
 		const provider = buildHarnessCorrections({
 			modelId: "claude-sonnet-5",
@@ -125,21 +88,13 @@ describe("harness corrections", () => {
 
 	// The block joins the cached prompt prefix on every request, so a regression that
 	// let it grow unbounded would be paid for on each cache write. Both maxima are
-	// checked: the MCP and shell bullets are mutually exclusive, so the largest
-	// provider block and the largest AskClaude block are different shapes.
+	// checked against the largest provider block.
 	it("stays small enough to be irrelevant against the preset", () => {
 		const maxima = {
 			provider: buildHarnessCorrections({
 				modelId: "claude-sonnet-5",
 				cliModelId: "claude-sonnet-5[1m]",
 				toolsAreMcpOnly: true,
-			}),
-			askClaude: buildHarnessCorrections({
-				modelId: "claude-sonnet-5",
-				cliModelId: "claude-sonnet-5[1m]",
-				toolsAreMcpOnly: false,
-				noShellTool: true,
-				noInteractiveChannel: true,
 			}),
 		};
 

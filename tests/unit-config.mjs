@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { claudeCodeSettings, loadConfig, loadDirs, markStartupNoticeShown, normalizeAskClaudeDefaultMode, sessionAgentDir } from "../src/config.js";
+import { claudeCodeSettings, loadConfig, loadDirs, markStartupNoticeShown, sessionAgentDir } from "../src/config.js";
 import { defaultClaudeConfigDir } from "../src/claude-config.js";
 
 function withTempHome(fn) {
@@ -67,13 +67,11 @@ describe("loadConfig", () => {
 			mkdirSync(configDir, { recursive: true });
 			writeFileSync(join(configDir, "claude-bridge.json"), JSON.stringify({
 				provider: { plan: "max" },
-				askClaude: { enabled: false },
 			}));
 
 			assert.deepEqual(loadConfig(cwd), {
 				startupNoticeShown: undefined,
 				provider: { plan: "max", claudeConfigDir: defaultClaudeConfigDir(home) },
-				askClaude: { enabled: false },
 			});
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
@@ -89,72 +87,17 @@ describe("loadConfig", () => {
 			mkdirSync(projectDir, { recursive: true });
 			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({
 				provider: { plan: "pro", strictMcpConfig: true, claudeConfigDir: "/global/claude" },
-				askClaude: { enabled: true, defaultMode: "read" },
 			}));
 			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
 				provider: { plan: "max", claudeConfigDir: "/project/claude", autoMemoryEnabled: true },
-				askClaude: { enabled: false },
 			}));
 
 			assert.deepEqual(loadConfig(cwd), {
 				startupNoticeShown: undefined,
 				// claudeConfigDir is global-only: a project file may not pick the credentials profile.
 				provider: { plan: "max", strictMcpConfig: true, claudeConfigDir: "/global/claude", autoMemoryEnabled: true },
-				askClaude: { enabled: false, defaultMode: "read" },
 			});
 		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	}));
-
-	it("normalizes an invalid default mode to read with one clear warning", () => withTempHome(() => {
-		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
-		const warnings = [];
-		const originalWarn = console.warn;
-		try {
-			const configDir = join(cwd, CONFIG_DIR_NAME);
-			mkdirSync(configDir, { recursive: true });
-			writeFileSync(join(configDir, "claude-bridge.json"), JSON.stringify({
-				askClaude: { defaultMode: "typo", description: "do not log me" },
-			}));
-			console.warn = (...args) => warnings.push(args.join(" "));
-
-			assert.equal(loadConfig(cwd).askClaude.defaultMode, "read");
-			assert.deepEqual(warnings, [
-				'claude-bridge: invalid askClaude.defaultMode "typo"; using "read"',
-			]);
-			assert.doesNotMatch(warnings[0], /do not log me/);
-		} finally {
-			console.warn = originalWarn;
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	}));
-
-	it("makes allowFullMode false override a merged full default", () => withTempHome((home) => {
-		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
-		const warnings = [];
-		const originalWarn = console.warn;
-		try {
-			const globalDir = join(home, ".pi", "agent");
-			const projectDir = join(cwd, CONFIG_DIR_NAME);
-			mkdirSync(globalDir, { recursive: true });
-			mkdirSync(projectDir, { recursive: true });
-			writeFileSync(join(globalDir, "claude-bridge.json"), JSON.stringify({
-				askClaude: { defaultMode: "full" },
-			}));
-			writeFileSync(join(projectDir, "claude-bridge.json"), JSON.stringify({
-				askClaude: { allowFullMode: false },
-			}));
-			console.warn = (...args) => warnings.push(args.join(" "));
-
-			const config = loadConfig(cwd);
-			assert.equal(config.askClaude.defaultMode, "read");
-			assert.equal(config.askClaude.allowFullMode, false);
-			assert.deepEqual(warnings, [
-				'claude-bridge: askClaude.defaultMode "full" is disabled by allowFullMode=false; using "read"',
-			]);
-		} finally {
-			console.warn = originalWarn;
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	}));
@@ -165,6 +108,7 @@ describe("loadConfig", () => {
 			const globalDir = getAgentDir();
 			mkdirSync(globalDir, { recursive: true });
 			const path = join(globalDir, "claude-bridge.json");
+			// A key this version no longer reads (AskClaude was removed) must survive the write.
 			writeFileSync(path, JSON.stringify({
 				askClaude: { enabled: false },
 				provider: { strictMcpConfig: false },
@@ -307,13 +251,6 @@ describe("loadConfig", () => {
 		}
 	}));
 
-	it("preserves valid modes and leaves an unset mode for the caller default", () => {
-		assert.equal(normalizeAskClaudeDefaultMode(undefined), undefined);
-		assert.equal(normalizeAskClaudeDefaultMode("read"), "read");
-		assert.equal(normalizeAskClaudeDefaultMode("none"), "none");
-		assert.equal(normalizeAskClaudeDefaultMode("full", true), "full");
-	});
-
 	it("resolves global config via PI_CODING_AGENT_DIR override, not hardcoded ~/.pi/agent", () => withTempHome((home) => {
 		const agentDir = mkdtempSync(join(tmpdir(), "claude-bridge-agent-"));
 		const cwd = mkdtempSync(join(tmpdir(), "claude-bridge-project-"));
@@ -327,7 +264,6 @@ describe("loadConfig", () => {
 			assert.deepEqual(loadConfig(cwd), {
 				startupNoticeShown: undefined,
 				provider: { plan: "max", claudeConfigDir: defaultClaudeConfigDir(home) },
-				askClaude: {},
 			});
 		} finally {
 			if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR;

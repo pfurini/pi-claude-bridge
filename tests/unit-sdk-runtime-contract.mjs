@@ -8,10 +8,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { Type } from "typebox";
-import {
-  buildAskClaudeQueryOptions,
-  getAskClaudeToolPolicy,
-} from "../src/sdk-options.js";
+import { buildProviderQueryOptions } from "../src/sdk-options.js";
 import {
   createSdkMessageState,
   reduceSdkMessage,
@@ -77,7 +74,7 @@ function terminalResult(messages) {
   return messages.find((message) => message.type === "result");
 }
 
-async function captureBundledSystemInit(mode) {
+async function captureBundledSystemInit(provider = false) {
   const tempRoot = mkdtempSync(join(tmpdir(), "claude-sdk-init-"));
   const configDir = join(tempRoot, "config");
   const workspace = join(tempRoot, "workspace");
@@ -87,16 +84,18 @@ async function captureBundledSystemInit(mode) {
     CLAUDE_CONFIG_DIR: configDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
   });
-  const options = mode
-    ? buildAskClaudeQueryOptions({
-        cwd: workspace,
-        baseEnv,
-        claudeConfigDir: configDir,
-        cliModel: "fake-claude",
-        mode,
-        settingSources: [],
-        isolated: true,
-      })
+  const options = provider
+    ? {
+        ...buildProviderQueryOptions({
+          cwd: workspace,
+          baseEnv,
+          claudeConfigDir: configDir,
+          cliModel: "fake-claude",
+          settingSources: [],
+          strictMcpConfigEnabled: true,
+        }),
+        persistSession: false,
+      }
     : {
         cwd: workspace,
         env: baseEnv,
@@ -145,18 +144,17 @@ describe("offline Agent SDK process contracts", () => {
     assert.equal(state.result.text, "offline contract response");
   });
 
-  it("delivers partial text events through AskClaude-built options", {
+  it("delivers partial text events through provider-built options", {
     timeout: 10_000,
   }, async () => {
-    const options = buildAskClaudeQueryOptions({
+    const options = buildProviderQueryOptions({
       cwd: process.cwd(),
       baseEnv: credentialFreeEnv(),
       claudeConfigDir: runtimeConfigDir,
       cliModel: "fake-claude",
-      mode: "read",
       settingSources: [],
-      isolated: true,
       claudeExecutable: fakeClaude,
+      strictMcpConfigEnabled: true,
     });
     const messages = await runFakeQuery({
       options: { ...options, env: { ...options.env, FAKE_CLAUDE_RESPONSE: "partial response" } },
@@ -172,15 +170,14 @@ describe("offline Agent SDK process contracts", () => {
   it("observes a partial tool start before its completed assistant block", {
     timeout: 10_000,
   }, async () => {
-    const options = buildAskClaudeQueryOptions({
+    const options = buildProviderQueryOptions({
       cwd: process.cwd(),
       baseEnv: credentialFreeEnv(),
       claudeConfigDir: runtimeConfigDir,
       cliModel: "fake-claude",
-      mode: "read",
       settingSources: [],
-      isolated: true,
       claudeExecutable: fakeClaude,
+      strictMcpConfigEnabled: true,
     });
     const messages = await runFakeQuery({
       scenario: "tool-use",
@@ -282,93 +279,6 @@ describe("offline Agent SDK process contracts", () => {
       );
     } finally {
       rmSync(logDir, { recursive: true, force: true });
-    }
-  });
-
-  it("enforces the upgraded AskClaude read, full, and none tool policies", {
-    timeout: 10_000,
-  }, async (t) => {
-    const inventories = {};
-    for (const mode of ["read", "full", "none"]) {
-      await t.test(mode, async () => {
-        const options = buildAskClaudeQueryOptions({
-          cwd: process.cwd(),
-          baseEnv: credentialFreeEnv(),
-          claudeConfigDir: runtimeConfigDir,
-          cliModel: "fake-claude",
-          mode,
-          isolated: true,
-          claudeExecutable: fakeClaude,
-        });
-        const messages = await runFakeQuery({
-          options,
-          useNativeToolInventory: true,
-        });
-        inventories[mode] = new Set(systemInit(messages).tools);
-      });
-    }
-
-    for (const tool of ["Read", "Glob", "Grep"]) {
-      assert.ok(inventories.read.has(tool), `read mode should expose ${tool}`);
-    }
-    for (const tool of ["Write", "Edit", "Bash"]) {
-      assert.ok(!inventories.read.has(tool), `read mode should block ${tool}`);
-    }
-
-    for (const tool of [
-      "Read",
-      "Grep",
-      "Glob",
-      "Write",
-      "Bash",
-      "WebSearch",
-      "Agent",
-      "Task",
-      "TaskCreate",
-      "Workflow",
-      "ReportFindings",
-      "SendMessage",
-    ]) {
-      assert.ok(inventories.full.has(tool), `full mode should expose ${tool}`);
-    }
-    for (const tool of [
-      "AskUserQuestion",
-      "ToolSearch",
-      "ScheduleWakeup",
-      "RemoteTrigger",
-    ]) {
-      assert.ok(!inventories.full.has(tool), `all modes should block ${tool}`);
-    }
-
-    for (const tool of [
-      "Skill",
-      "Read",
-      "Write",
-      "Glob",
-      "Grep",
-      "Bash",
-      "WebFetch",
-      "WebSearch",
-      "Agent",
-      "Task",
-      "TaskCreate",
-      "TaskGet",
-      "TaskList",
-      "TaskOutput",
-      "TaskStop",
-      "TaskUpdate",
-      "Workflow",
-      "ReportFindings",
-      "SendMessage",
-    ]) {
-      assert.ok(!inventories.none.has(tool), `none mode should block ${tool}`);
-    }
-    const nonePolicy = new Set(getAskClaudeToolPolicy("none").disallowedTools);
-    for (const transitionalName of ["Agent", "RemoteTrigger"]) {
-      assert.ok(
-        nonePolicy.has(transitionalName),
-        `none mode should retain transitional block for ${transitionalName}`,
-      );
     }
   });
 
@@ -563,7 +473,7 @@ describe("Claude Code executable resolution", () => {
     assert.match(version.stdout, new RegExp(TARGET_CLAUDE_CODE_VERSION));
   });
 
-  it("reports the selected bundled Claude Code inventory and policies without credentials", {
+  it("reports the selected bundled Claude Code inventory without credentials", {
     timeout: 30_000,
   }, async () => {
     const init = await captureBundledSystemInit();
@@ -571,7 +481,7 @@ describe("Claude Code executable resolution", () => {
 
     assert.equal(init.claude_code_version, agentSdkMetadata().claudeCodeVersion);
     assert.equal(init.claude_code_version, TARGET_CLAUDE_CODE_VERSION);
-    // Probe the mode-specific inventories instead of inferring tool availability from SDK type declarations.
+    // Probe the inventories instead of inferring tool availability from SDK type declarations.
     for (const transitionalName of ["Agent", "RemoteTrigger"]) {
       assert.ok(
         !init.tools.includes(transitionalName),
@@ -579,74 +489,12 @@ describe("Claude Code executable resolution", () => {
       );
     }
 
-    const inventories = {};
-    for (const mode of ["read", "full", "none"]) {
-      const modeInit = await captureBundledSystemInit(mode);
-      assert.ok(modeInit);
-      inventories[mode] = new Set(modeInit.tools);
-    }
-    for (const tool of ["Read", "Grep", "Glob"]) {
-      assert.ok(inventories.read.has(tool), `target read mode should expose ${tool}`);
-    }
-    for (const tool of ["Write", "Edit", "Bash"]) {
-      assert.ok(!inventories.read.has(tool), `target read mode should block ${tool}`);
-    }
-    // Full mode is the eager inventory the bridge actually receives, so this is
-    // where the delegation family is pinned by its current names.
-    for (const tool of [
-      "Read",
-      "Grep",
-      "Glob",
-      "Write",
-      "Bash",
-      "Task",
-      "TaskStop",
-      "Workflow",
-      "ReportFindings",
-      "SendMessage",
-    ]) {
-      assert.ok(inventories.full.has(tool), `target full mode should expose ${tool}`);
-    }
-    // Agent is not blocked in full mode, so its absence is evidence about Claude
-    // Code rather than about our own policy.
-    assert.ok(!inventories.full.has("Agent"), "target full mode should not expose legacy Agent");
-    // The selected initialization probe does not expose these task-management tools.
-    for (const removed of ["TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskUpdate"]) {
-      assert.ok(!inventories.full.has(removed), `target full mode unexpectedly exposes ${removed}`);
-    }
-    for (const tool of ["ToolSearch", "ScheduleWakeup"]) {
-      assert.ok(!inventories.full.has(tool), `target full mode should block ${tool}`);
-    }
-    for (const tool of [
-      "Skill",
-      "Read",
-      "Write",
-      "Grep",
-      "Glob",
-      "Bash",
-      "WebFetch",
-      "WebSearch",
-      "Task",
-      "TaskCreate",
-      "TaskGet",
-      "TaskList",
-      "TaskOutput",
-      "TaskStop",
-      "TaskUpdate",
-      "Workflow",
-      "ReportFindings",
-      "SendMessage",
-      // Enumeration tools, read-only but still tools: ListAgents arrived with
-      // 2.1.259, CronList was already leaking on 2.1.220.
-      "ListAgents",
-      "CronList",
-    ]) {
-      assert.ok(!inventories.none.has(tool), `target none mode should block ${tool}`);
-    }
-    // none mode's contract is no tools at all, so pin the whole set empty rather
-    // than only the names we thought to list.
-    assert.deepEqual([...inventories.none].sort(), [],
-      `none mode exposed tools: ${[...inventories.none].sort().join(", ")}`);
+    // The provider runs Claude Code with tools: [], so the model reaches pi's tools over MCP only.
+    // Pin the whole native inventory empty rather than the names we thought to list.
+    const providerInit = await captureBundledSystemInit(true);
+    assert.ok(providerInit);
+    const nativeTools = providerInit.tools.filter((tool) => !tool.startsWith("mcp__"));
+    assert.deepEqual(nativeTools, [], `the provider path exposed native tools: ${nativeTools.join(", ")}`);
   });
 
   it("honors pathToClaudeCodeExecutable for an external script", {

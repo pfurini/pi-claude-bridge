@@ -16,21 +16,10 @@ export interface HarnessCorrectionsInput {
 	cliModelId: string;
 	/**
 	 * True on the provider path, which sends `tools: []` and bridges pi's tools
-	 * over MCP instead. False for AskClaude, where Claude Code's native tools are
-	 * really present and must not be disclaimed.
+	 * over MCP instead. False only for diagnostics that capture a request with
+	 * Claude Code's native tools present.
 	 */
 	toolsAreMcpOnly: boolean;
-	/**
-	 * True when no shell tool is reachable. On the provider path this is covered
-	 * by the MCP bullet; set it for AskClaude modes that block Bash.
-	 */
-	noShellTool?: boolean;
-	/**
-	 * True for AskClaude, whose output returns to another model rather than a
-	 * person. Leave false for the provider path, where pi's TUI does put a user on
-	 * the other end and the preset's confirmation guidance is actionable.
-	 */
-	noInteractiveChannel?: boolean;
 }
 
 export function buildHarnessCorrections(input: HarnessCorrectionsInput): string | undefined {
@@ -46,33 +35,6 @@ export function buildHarnessCorrections(input: HarnessCorrectionsInput): string 
 			`and there is no PowerShell. Every tool in this session is supplied by the host application under the ` +
 			`\`${MCP_TOOL_PREFIX}\` prefix. Use the tools you were actually given and disregard guidance naming ` +
 			`Claude Code's tools or a specific shell.`,
-		);
-	} else if (input.noShellTool) {
-		bullets.push(
-			`You have no shell tool in this session. Disregard guidance about running commands through ` +
-			`PowerShell or Bash, and do not substitute another tool for shell execution.`,
-		);
-	}
-
-	// `# Executing actions with care` tells the model to confirm before hard-to-
-	// reverse actions and to "always confirm first". On a delegated call there is
-	// nobody to answer and no tool to ask with: AskUserQuestion is blocked by
-	// ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS and permissionMode is
-	// bypassPermissions, so nothing gates mechanically either. Observed effect is
-	// not a stall but trailing "Would you like me to..." offers, which are wasted
-	// output in a result handed back to another model.
-	//
-	// This invokes the preset's own documented override ("if explicitly asked to
-	// operate more autonomously, then you may proceed without confirmation, but
-	// still attend to the risks and consequences") rather than contradicting it,
-	// so the surrounding blast-radius guidance keeps its force.
-	if (input.noInteractiveChannel) {
-		bullets.push(
-			`You are a delegated sub-agent: your output is returned to another model, not to a person. There is ` +
-			`nobody to answer a question and no tool for asking, so treat this as the explicit instruction to ` +
-			`operate more autonomously that the guidance above refers to. Proceed without confirmation within the ` +
-			`scope of the request, still weighing reversibility and blast radius, and stop and report rather than ` +
-			`asking when something would exceed that scope.`,
 		);
 	}
 

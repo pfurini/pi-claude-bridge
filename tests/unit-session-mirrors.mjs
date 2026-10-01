@@ -28,7 +28,7 @@ async function withBridge(plans, run) {
 			const profile = join(root, `${name}-claude`);
 			mkdirSync(cwd); mkdirSync(agentDir);
 			writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({
-				startupNoticeShown: "test", provider: { plan: "max", usageEvents: false, claudeConfigDir: profile }, askClaude: { enabled: false },
+				startupNoticeShown: "test", provider: { plan: "max", usageEvents: false, claudeConfigDir: profile },
 			}));
 			const handlers = new Map();
 			module.default({

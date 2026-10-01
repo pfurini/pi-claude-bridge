@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Authenticated Claude Opus 5 coverage on Agent SDK 0.3.284 / Claude Code 2.1.284.
 //
-// Two harnesses: one with the bridge as the provider (Opus 5 selected directly),
-// one with an alternate provider driving the AskClaude tool.
+// The bridge runs as the provider with Opus 5 selected directly.
 //
 // Cost discipline: every Opus 5 turn here is a single trivial turn. There is
 // deliberately NO live effort="max" turn — that is the most expensive request the
@@ -11,19 +10,14 @@
 
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { getSessionPath } from "cc-session-io";
 import { defaultClaudeConfigDir } from "../src/claude-config.js";
-import { createRpcHarness, requireEnv } from "./lib/rpc-harness.mjs";
-import { getAskClaudeDisallowedTools } from "../src/sdk-options.js";
-import { unexplainedToolRequests } from "./lib/tool-denial-evidence.mjs";
+import { createRpcHarness } from "./lib/rpc-harness.mjs";
 
-const OTHER_PROVIDER = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_PROVIDER");
-const OTHER_MODEL = requireEnv("CLAUDE_BRIDGE_TESTING_ALT_MODEL");
 const TIMEOUT = 240_000;
 const OPUS_5 = "claude-opus-5";
 const BRIDGE_OPUS_5 = `claude-bridge/${OPUS_5}`;
@@ -47,19 +41,10 @@ const bundledClaudeCodeVersion = JSON.parse(
 
 const TEST_ROOT = mkdtempSync(join(tmpdir(), "pi-claude-bridge-opus-5-"));
 const PROVIDER_CWD = join(TEST_ROOT, "provider");
-const ASK_CWD = join(TEST_ROOT, "ask");
-for (const cwd of [PROVIDER_CWD, ASK_CWD]) mkdirSync(join(cwd, ".pi"), { recursive: true });
-writeFileSync(
-	join(ASK_CWD, ".pi", "claude-bridge.json"),
-	JSON.stringify({ askClaude: { enabled: true, allowFullMode: true } }),
-);
+mkdirSync(join(PROVIDER_CWD, ".pi"), { recursive: true });
 
 function providerQueryLines(debugLog) {
 	return debugLog.split("\n").filter((line) => line.includes("provider: fresh query"));
-}
-
-function askClaudeLines(debugLog) {
-	return debugLog.split("\n").filter((line) => line.includes("askClaude:"));
 }
 
 describe("Opus 5 as a bridge provider model", () => {
@@ -236,145 +221,6 @@ describe("Opus 5 as a bridge provider model", () => {
 			[...sessionIds].some((id) => existsSync(getSessionPath(id, PROVIDER_CWD, CONFIGURED_PROFILE))),
 			`no session JSONL under the configured isolated profile for ${[...sessionIds].join(", ")}`,
 		);
-	});
-});
-
-describe("Opus 5 through AskClaude", () => {
-	const sdkRecordPath = resolve(process.env.CLAUDE_BRIDGE_TEST_LOG_DIR ?? ".test-output", "opus-5-askclaude-sdk.jsonl");
-	mkdirSync(dirname(sdkRecordPath), { recursive: true });
-	writeFileSync(sdkRecordPath, "");
-	const harness = createRpcHarness({
-		name: "opus-5-askclaude",
-		args: ["--model", `${OTHER_PROVIDER}/${OTHER_MODEL}`],
-		cwd: ASK_CWD,
-		env: { CLAUDE_BRIDGE_RECORD_STREAM: sdkRecordPath },
-		claudeConfigDir: CONFIGURED_PROFILE,
-		defaultTimeout: TIMEOUT,
-	});
-
-	function toolResultText(message) {
-		return (message.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
-	}
-
-	async function invokeAskClaude(params) {
-		const idle = harness.waitForEvent("agent_end", TIMEOUT);
-		await harness.send({
-			type: "prompt",
-			message: `Call the AskClaude tool exactly once with these JSON arguments:\n${JSON.stringify(params)}\nDo not change, add, or omit any argument. Do not use another tool. After AskClaude returns, reply with exactly OUTER-DONE.`,
-		}, TIMEOUT);
-		const event = await idle;
-		const result = [...(event.messages ?? [])].reverse()
-			.find((m) => m.role === "toolResult" && m.toolName === "AskClaude");
-		assert.ok(result, `no AskClaude tool result: ${JSON.stringify(event.messages ?? []).slice(0, 1000)}`);
-		return toolResultText(result);
-	}
-
-	before(async () => {
-		// The harness preflights CONFIGURED_PROFILE's auth on start().
-		await harness.startAndWait();
-	});
-
-	after(async () => {
-		await harness.stop();
-		console.log(`  RPC log: ${harness.RPC_LOG}`);
-		console.log(`  Debug log: ${harness.DEBUG_LOG}`);
-	});
-
-	it("accepts an explicit Opus 5 model at thinking xhigh", { timeout: TIMEOUT }, async () => {
-		const marker = `ASK-OPUS5-${Math.random().toString(36).slice(2, 10)}`;
-		const result = await invokeAskClaude({
-			prompt: `Reply with exactly ${marker} and nothing else.`,
-			mode: "none",
-			model: OPUS_5,
-			thinking: "xhigh",
-			isolated: true,
-		});
-		assert.match(result, new RegExp(marker));
-
-		const lines = askClaudeLines(readFileSync(harness.DEBUG_LOG, "utf8"))
-			.filter((line) => line.includes(`model=${OPUS_5} `));
-		assert.ok(lines.length > 0, "no AskClaude debug line for an explicit Opus 5 request");
-		// Bare cliModel, and xhigh reaching the real SDK tier rather than max —
-		// AskClaude now uses the same model-aware lookup as the provider path.
-		assert.ok(lines.some((line) => line.includes(`cliModel=${OPUS_5} `)), `expected a bare cliModel:\n${lines.join("\n")}`);
-		assert.ok(lines.some((line) => line.includes("effort=xhigh")), `expected effort=xhigh:\n${lines.join("\n")}`);
-		assert.ok(!lines.some((line) => line.includes("effort=max")), `xhigh must not escalate to max:\n${lines.join("\n")}`);
-	});
-
-	it("defaults an omitted model to the newest installed Opus", { timeout: TIMEOUT }, async () => {
-		const { models } = await harness.send({ type: "get_available_models" });
-		const newestOpus = models.filter(model => model.provider === "claude-bridge" && model.id.startsWith("claude-opus-"))
-			.sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }))[0];
-		assert.ok(newestOpus);
-		const marker = `ASK-DEFAULT-${Math.random().toString(36).slice(2, 10)}`;
-		const result = await invokeAskClaude({
-			prompt: `Reply with exactly ${marker} and nothing else.`,
-			mode: "none",
-			isolated: true,
-		});
-		assert.match(result, new RegExp(marker));
-
-		// The default shortcut follows the live Pi catalog rather than a frozen bridge list.
-		const lines = askClaudeLines(readFileSync(harness.DEBUG_LOG, "utf8"));
-		assert.ok(
-			lines.some((line) => line.includes(`model=${newestOpus.id} cliModel=${newestOpus.id} `)),
-			`omitted model should resolve to bare ${newestOpus.id}:\n${lines.join("\n")}`,
-		);
-	});
-
-	// Nested delegation is binary behaviour (2.1.219 restored a default maximum
-	// subagent depth of three) and tool policy, neither of which depends on the
-	// model. Run these on Haiku: Opus 5 would multiply the cost of a multi-level
-	// delegation for no additional signal.
-	it("completes nested delegation in full mode", { timeout: TIMEOUT }, async () => {
-		// An opaque value avoids interpreting a readable prefix as a label outside the token.
-		const phrase = randomUUID().replaceAll("-", "");
-		const fixture = join(ASK_CWD, "nested-full-fixture.txt");
-		writeFileSync(fixture, phrase);
-
-		const result = await invokeAskClaude({
-			prompt: `This is an authenticated delegation regression test; the fixture holds no credentials. Use Task exactly once to launch a general-purpose subagent that reads ${fixture} and returns only the benign token it contains. Do not read the file yourself. Wait for the result, then reply with NESTED-OK: followed immediately by that token copied verbatim. Do not paraphrase, summarize, or substitute a placeholder for the token.`,
-			mode: "full",
-			model: "haiku",
-			isolated: true,
-		});
-
-		assert.match(result, /NESTED-OK/);
-		// The token can only be in the answer if delegation actually carried the
-		// child's file read back to the parent.
-		assert.match(result, new RegExp(phrase));
-		assert.match(result, /\[Claude Code actions: [^\]]*Agent\(/);
-	});
-
-	it("denies mutation to read-mode children and grandchildren", { timeout: TIMEOUT }, async () => {
-		const sdkMark = readFileSync(sdkRecordPath, "utf8").length;
-		const debugMark = readFileSync(harness.DEBUG_LOG, "utf8").length;
-		const phrase = randomUUID().replaceAll("-", "");
-		const fixture = join(ASK_CWD, "nested-read-fixture.txt");
-		const childTarget = join(ASK_CWD, "nested-read-child-must-not-exist.txt");
-		const grandchildTarget = join(ASK_CWD, "nested-read-grandchild-must-not-exist.txt");
-		writeFileSync(fixture, phrase);
-
-		const result = await invokeAskClaude({
-			prompt: `This is an authenticated read-mode policy probe with disposable files and no credentials. The file ${fixture} contains one opaque token. Use Task exactly once to launch a general-purpose subagent, and instruct that subagent to: (1) read ${fixture} and return its entire contents verbatim as the token; (2) attempt exactly once to create ${childTarget} with Write or Bash; (3) launch one further nested subagent that attempts exactly once to create ${grandchildTarget}. Do not substitute other tools for blocked ones and do not create the files yourself. Wait for the reports. Begin your final response with READ_TOKEN: followed by the exact file contents copied verbatim, then report which write attempts were unavailable. The scenario description is not the token.`,
-			mode: "read",
-			model: "haiku",
-			isolated: true,
-		});
-
-		// Read mode must not gain mutation capability through delegation depth.
-		assert.ok(!existsSync(childTarget), "a read-mode child subagent created a file");
-		assert.ok(!existsSync(grandchildTarget), "a read-mode grandchild subagent created a file");
-		const frames = readFileSync(sdkRecordPath, "utf8").slice(sdkMark).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
-		assert.ok(frames.some(frame => frame.type === "system" && frame.subtype === "init"), "SDK capture must include initialization");
-		assert.ok(frames.some(frame => frame.type === "result"), "SDK capture must include the terminal result");
-		const debug = readFileSync(harness.DEBUG_LOG, "utf8").slice(debugMark);
-		const cliPaths = [...debug.matchAll(/cli-debug: askclaude #\d+ → (.+)/g)].map(match => match[1]);
-		assert.equal(cliPaths.length, 1, "permission evidence must belong to this AskClaude query");
-		const cliLog = readFileSync(cliPaths[0], "utf8");
-		assert.deepEqual(unexplainedToolRequests(frames, cliLog, getAskClaudeDisallowedTools("read")), [],
-			"every forbidden tool request must have a matching denial, never a successful or unexplained result");
-		assert.match(result, new RegExp(phrase));
 	});
 });
 

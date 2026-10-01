@@ -22,7 +22,7 @@ async function withBridge(plans, run, providerOverrides = {}) {
 	const handlers = new Map();
 	try {
 		const path = prepareBridge(root);
-		writeFileSync(join(root, "claude-bridge.json"), JSON.stringify({ provider: { plan: "max", usageEvents: false, claudeConfigDir: join(root, "profile"), ...providerOverrides }, askClaude: { enabled: false } }));
+		writeFileSync(join(root, "claude-bridge.json"), JSON.stringify({ provider: { plan: "max", usageEvents: false, claudeConfigDir: join(root, "profile"), ...providerOverrides } }));
 		const { default: activate, __test } = await import(path);
 		let provider;
 		activate({ cwd: root, agentDir: root, on(name, handler) { const list = handlers.get(name) ?? []; list.push(handler); handlers.set(name, list); }, registerProvider(_name, config) { provider = config; }, registerTool() {} });
@@ -339,18 +339,6 @@ it("restarts a background child without disturbing its waiting parent", { timeou
 
 const accountingPlan = (cost, input, cumulativeInput) => ({ usage: { input_tokens: input }, result: { total_cost_usd: cost, modelUsage: { main: { inputTokens: cumulativeInput, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: cost } } } });
 
-it('shares a cumulative accounting checkpoint between provider and shared AskClaude', { timeout: 10_000 }, () => withBridge([accountingPlan(1, 10, 10), accountingPlan(3, 25, 35), accountingPlan(6, 40, 75)], async ({ state, request, bridgeTest, root }) => {
-	const initial = user('accounting task');
-	const first = await request([initial]).result();
-	const shared = await bridgeTest.promptAndWait('delegated question', 'none', new Map(), undefined, { model: 'claude-opus-5', context: [initial, first], cwd: root, piSessionId: 'parent' });
-	assert.equal(shared.usage.cost.total, 2);
-	assert.equal(shared.usage.input, 25);
-	const next = await request([initial, first, user('next task')]).result();
-	assert.equal(first.usage.cost.total, 1);
-	assert.equal(next.usage.cost.total, 3);
-	assert.equal(state.queries[1].options.resume, state.queries[2].options.resume);
-}));
-
 it('rebuilds an unknown accounting baseline instead of assuming zero on reuse', { timeout: 10_000 }, () => withBridge([accountingPlan(1, 10, 10), accountingPlan(0.2, 5, 5)], async ({ state, request, bridgeTest }) => {
 	const initial = user('accounting task');
 	const first = await request([initial]).result();
@@ -359,43 +347,6 @@ it('rebuilds an unknown accounting baseline instead of assuming zero on reuse', 
 	const next = await request([initial, first, user('next')]).result();
 	assert.equal(state.seeds, 1);
 	assert.equal(next.usage.cost.total, 0.2);
-}));
-
-it('preserves failed shared AskClaude usage when the SDK throws after its result and rotates before reuse', { timeout: 10_000 }, () => withBridge([accountingPlan(1, 10, 10), { ...accountingPlan(3, 25, 35), failAfterResult: true }], async ({ request, bridgeTest, root }) => {
-	const initial = user('accounting task');
-	const first = await request([initial]).result();
-	await assert.rejects(bridgeTest.promptAndWait('failed question', 'none', new Map(), undefined, { model: 'claude-opus-5', context: [initial, first], cwd: root, piSessionId: 'parent' }), error => {
-		assert.match(error.message, /MOCK_AFTER_RESULT/);
-		assert.equal(error.usage.cost.total, 2);
-		assert.equal(error.usage.input, 25);
-		return true;
-	});
-	assert.equal(bridgeTest.getSharedSession('parent').accounting.snapshot, undefined);
-	assert.equal(bridgeTest.getSharedSession('parent').forceRotate, true);
-}));
-
-it('closes an AskClaude query cancelled during construction even when interrupt resolves', { timeout: 10_000 }, () => withBridge([{}], async ({ state, bridgeTest, root }) => {
-	const controller = new AbortController();
-	state.onQuery = () => controller.abort();
-	await assert.rejects(bridgeTest.promptAndWait('cancel', 'none', new Map(), controller.signal, { model: 'claude-opus-5', isolated: true, cwd: root }), /Aborted/);
-	assert.equal(state.controls[0].closed, true);
-}));
-
-it('forks parallel shared AskClaude calls instead of racing one transcript accounting epoch', { timeout: 10_000 }, () => withBridge([accountingPlan(1, 10, 10), accountingPlan(3, 20, 30), accountingPlan(0.5, 5, 5)], async ({ state, request, bridgeTest, root }) => {
-	const initial = user('parent task');
-	const first = await request([initial]).result();
-	state.pauseNext = true;
-	const paused = new Promise(resolve => { state.onPaused = resolve; });
-	const options = { model: 'claude-opus-5', context: [initial, first], cwd: root, piSessionId: 'parent' };
-	const pending = bridgeTest.promptAndWait('one', 'none', new Map(), undefined, options);
-	await paused;
-	const child = await bridgeTest.promptAndWait('two', 'none', new Map(), undefined, options);
-	assert.notEqual(state.queries[1].options.resume, state.queries[2].options.resume);
-	assert.equal(child.usage.cost.total, 0.5);
-	assert.equal(bridgeTest.getSharedSession('parent').accounting.inFlight, true);
-	state.release();
-	assert.equal((await pending).usage.cost.total, 2);
-	assert.equal(bridgeTest.getSharedSession('parent').accounting.snapshot.totalCostUsd, 3);
 }));
 
 it("a retired asynchronous delivery cannot mutate its replacement", { timeout: 10_000 }, () => withBridge([], async ({ bridgeTest }) => {

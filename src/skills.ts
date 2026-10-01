@@ -25,7 +25,7 @@ const SKILL_LISTING_TAG_PREFIX = "<available_skills";
 
 export const SKILL_TOOL_NAME = "skill";
 
-export type SkillsFraming = "skill-tool" | "read-mcp" | "read-native";
+export type SkillsFraming = "skill-tool" | "read-mcp";
 
 export interface SkillsBlockResult {
 	/** Framing plus block, ready to append. This is what call sites forward. */
@@ -38,7 +38,7 @@ export interface SkillsBlockResult {
 	legacy: boolean;
 }
 
-// pi's own third preamble line, kept verbatim in all three framings: it is
+// pi's own third preamble line, kept verbatim in both framings: it is
 // load-bearing for skills that reference references/*.md, and is otherwise
 // lost with the preamble.
 const RELATIVE_PATH_LINE =
@@ -52,8 +52,6 @@ const RELATIVE_PATH_LINE =
 //   mcp__custom-tools__skill. Must not tell the model to read the file.
 // - read-mcp: no skill tool, so the model reads the <location> file through the
 //   MCP read tool. Must not claim a skill tool exists.
-// - read-native: AskClaude, where the sub-agent runs on Claude Code's native
-//   tools and the MCP tools do not exist. Never names the MCP prefix.
 // `satisfies`, not an annotation: it still fails the build if a framing loses
 // its text, without widening each entry to plain `string`.
 const FRAMINGS = {
@@ -65,13 +63,9 @@ const FRAMINGS = {
 		`Load a skill by reading the file at its <location> with the ${MCP_TOOL_PREFIX}read tool when the task matches its description.`,
 		RELATIVE_PATH_LINE,
 	].join("\n"),
-	"read-native": [
-		"Load a skill by reading the file at its <location> with the Read tool when the task matches its description.",
-		RELATIVE_PATH_LINE,
-	].join("\n"),
 } satisfies Record<SkillsFraming, string>;
 
-// extractSkillsBlock runs on every provider request and every AskClaude call,
+// extractSkillsBlock runs on every provider request,
 // so an unrecognized tag would otherwise reprint its warning over the TUI on
 // every turn for the rest of the session. Same reason, same idiom as
 // config.ts's warnedClaudeConfigDirs.

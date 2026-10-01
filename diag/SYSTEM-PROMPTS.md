@@ -184,17 +184,14 @@ fixed; defect 4 is noise and is left alone.
    The preset is generated inside the binary and cannot be edited at the source,
    so `buildHarnessCorrections` (`src/harness-prompt.ts`) appends a `# Harness
    corrections` block naming the real tool surface. It costs 525 characters and is
-   emitted on the provider path only, where the native inventory really is empty.
-   AskClaude keeps Claude Code's native tools, so disclaiming them there would
-   itself be false; that path gets a narrower shell-only line in `read` and `none`
-   modes, which are the modes that block `Bash`.
+   emitted on the provider path, where the native inventory really is empty.
 
 2. **Auto memory was the largest unactionable block. FIXED.** Both families
    instructed the model to use a file-based memory directory and to "write to it
    directly with the `Write` tool", which is not in the inventory.
    `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` was set only on the compaction path
-   (`buildIsolatedSummaryQueryOptions`); it now applies to the provider and
-   AskClaude paths as well, via `CLAUDE_ISOLATION_ENV` in `src/sdk-options.ts`.
+   (`buildIsolatedSummaryQueryOptions`); it now applies to the provider path
+   as well, via `CLAUDE_ISOLATION_ENV` in `src/sdk-options.ts`.
    Re-measured on the bridge path after the change:
 
    | Model | before | after | saved |
@@ -232,7 +229,7 @@ fixed; defect 4 is noise and is left alone.
 
    The corrections block states the bare ID and explains the suffix, costing 187
    characters and emitted only when `cliModelId` actually differs from the
-   registered `modelId`. It applies to the provider path and to AskClaude.
+   registered `modelId`.
 
 4. **Hooks and CLAUDE.md references.** Both families describe Claude Code hooks,
    which pi has no concept of: five mentions in the legacy family, two in the new
@@ -242,99 +239,9 @@ fixed; defect 4 is noise and is left alone.
    accurate: `extractAgentsAppend` (`src/agents-md.ts:38`) labels the appended
    AGENTS.md as `# CLAUDE.md`, so the prompt names something the bridge does send.
 
-## The AskClaude path is not the provider path
+## AskClaude
 
-Worth knowing before assuming a provider-path finding transfers: **AskClaude sends
-no Claude Code system prompt at all unless a skills block is being forwarded.**
-`buildAskClaudeQueryOptions` leaves `systemPrompt` undefined when there is nothing
-to append, and the SDK reads that as "no preset", not "default preset". Measured
-with `claude-sonnet-5[1m]`:
-
-| Mode | Skills block | Prompt | PowerShell | `[1m]` |
-| --- | --- | --- | --- | --- |
-| read / full / none | absent | 62 chars (identity line only) | n/a | n/a |
-| read | present | 14,766 | yes | yes |
-| full | present | 14,754 | no | yes |
-| none | present | 13,894 | yes | yes |
-
-PowerShell tracks whether `Bash` is in the disallowed list, which is why `full`
-mode escapes it. AskClaude also keeps Claude Code's native tools, so it gets the
-model-ID line and (in `read`/`none`) a shell-only line, never the provider path's
-MCP tool disclaimer.
-
-### What the preset-free sub-agent was missing
-
-Probing the assembled request for a `full`-mode call with no skills block: 25 tool
-definitions (Bash, Write, Edit, Agent and 21 others) against a 136-character system
-prompt. Absent were the entire `# Environment` block (working directory, platform,
-OS, shell, git status, model identity) and `# Executing actions with care`, which
-is the reversibility and blast-radius policy. Tool *descriptions* were still
-present and carry substantial embedded guidance, so the sub-agent was not
-unguided; what it lacked was the cross-cutting harness framing.
-
-Handing a model `Bash`, `Write` and `Edit` with no blast-radius policy and no idea
-what directory it is in is not a defensible default, and it was not a chosen one:
-whether a sub-agent got that framing depended on whether pi's system prompt
-happened to contain a skills block, which has nothing to do with how much damage
-that sub-agent can do.
-
-### Resolution
-
-`full` mode now always sends the preset. `read` and `none` stay preset-free when
-there is nothing to append: `none` has a single tool and `read` has a low blast
-radius, so ~14K characters of tool guidance would be waste.
-
-The condition in `buildAskClaudeQueryOptions` is `mode === "full" || Boolean(append)`,
-a union rather than a plain mode check, because the forwarded skills block is
-delivered *through* that append. Testing the mode alone would silently stop
-forwarding skills in `read` and `none`. `index.ts` mirrors the same union when
-deciding whether to build corrections; the two have to stay in step, since
-emitting corrections is itself what can make the append non-empty.
-
-Measured after the change, with `claude-sonnet-5[1m]`:
-
-| Mode | Skills block | Prompt | Blast-radius policy | Environment | Skills forwarded |
-| --- | --- | --- | --- | --- | --- |
-| full | absent | 16,045 | yes | yes | n/a |
-| read | absent | 137 | no | no | n/a |
-| none | absent | 137 | no | no | n/a |
-| full | present | 16,097 | yes | yes | yes |
-| read | present | 16,278 | yes | yes | yes |
-| none | present | 15,406 | yes | yes | yes |
-
-The preset block carries `cache_control: ephemeral 1h`, so the added cost is a
-cache write on the first `full`-mode call per hour per distinct prefix and cache
-reads after that, not full input tokens on every call.
-
-Sending the preset brought one incoherence with it, since `# Executing actions
-with care` tells the model to confirm before hard-to-reverse actions and to
-"always confirm first". A delegated sub-agent cannot: `AskUserQuestion` is in
-`ASKCLAUDE_UNSUPPORTED_INTERACTIVE_TOOLS`, nobody is listening, and
-`permissionMode` is `bypassPermissions` so nothing gates mechanically either.
-
-The correction invokes the preset's own documented override rather than
-contradicting it:
-
-> This default can be changed by user instructions - if explicitly asked to
-> operate more autonomously, then you may proceed without confirmation, but still
-> attend to the risks and consequences when taking actions.
-
-so `buildHarnessCorrections` adds a `noInteractiveChannel` bullet telling the
-sub-agent it is delegated, to proceed autonomously within the scope of the
-request, and to stop and report rather than ask when something would exceed that
-scope. The surrounding blast-radius guidance is left intact and still appears in
-the captured prompt alongside the correction. This bullet is **not** emitted on
-the provider path, where pi's TUI does put a user on the other end and the
-confirmation guidance is actionable.
-
-Measured effect: the sub-agent never stalled waiting for an answer, before or
-after. Across 69 distinct sub-agent results in one authenticated run, three
-contained a trailing offer, all from `none` mode and all of the form "I could not
-do that, would you like me to try alternatives?" after being asked for four
-operations it has no tools for. That is a different phenomenon from
-permission-seeking, and no before/after rate was measured, so no improvement is
-claimed there. What the correction fixes is the instruction itself being
-impossible to follow.
+The AskClaude tool was removed on 2026-10-01. The provider path is the only path these measurements describe.
 
 ## Recommendation
 
@@ -357,10 +264,10 @@ have now been closed within the append seam for a total of 712 characters.
 What was done:
 
 1. ~~Set `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` on the provider path.~~ **Done.**
-   Applied to the provider and AskClaude paths through `CLAUDE_ISOLATION_ENV`
+   Applied to the provider path through `CLAUDE_ISOLATION_ENV`
    (`src/sdk-options.ts`), matching what the compaction path already did. Halves
    the legacy-family prompt. Not gated behind a provider setting, since the
-   instructions it removes name a tool neither path exposes; add a setting if
+   instructions it removes name a tool the provider path does not expose; add a setting if
    someone turns out to want Claude Code memory through the bridge.
 2. ~~Add a corrective block naming pi's actual tool surface and shell.~~ **Done.**
    `buildHarnessCorrections` (`src/harness-prompt.ts`) emits a `# Harness

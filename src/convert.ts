@@ -9,8 +9,8 @@ import { MCP_TOOL_PREFIX } from "./skills.js";
 
 export const PROVIDER_ID = "claude-bridge";
 
-// Pi tool names under Claude Code's builtin names. Only ever correct on the
-// AskClaude path, where CC runs its own tools — see mapPiToolNameToSdk.
+// Pi tool names under Claude Code's builtin names. Never correct for the provider,
+// which serves every tool over MCP — see mapPiToolNameToSdk.
 export const PI_TO_SDK_TOOL_NAME: Record<string, string> = {
 	read: "Read", write: "Write", edit: "Edit", bash: "Bash",
 };
@@ -41,14 +41,15 @@ export function sanitizeToolId(id: string, cache: Map<string, string>): string {
  *    tool Claude can call is a pi tool served over MCP, and its name is
  *    `mcp__custom-tools__<pi name>` by construction (resolveMcpTools). The map
  *    is consulted first only because it carries the served tool's exact casing.
- *    A name it lacks is a tool pi ran that we do not serve now — AskClaude,
- *    excluded on purpose, or an extension since disabled — and naming that after
+ *    A name it lacks is a tool pi ran that we do not serve now — an extension
+ *    since disabled, say — and naming that after
  *    a Claude Code builtin would tell the model a builtin it cannot call is
  *    available and was already used. That is the prompt condition behind the
  *    phantom-call deadlock fixed in 122914dd, and the read direction refuses the
  *    same names for the same reason (piToolNameFor in index.ts).
- *  - **Without a map — the AskClaude path.** CC runs its own tools there, so
- *    builtin names are real, matching mapToolName in the other direction.
+ *  - **Without a map — diagnostics only.** No production caller omits the map
+ *    since AskClaude's removal. diag/lib/write-path.mjs still does, which names
+ *    pi tools after Claude Code builtins (TODO.md, item 6).
  */
 export function mapPiToolNameToSdk(name: string, customToolNameToSdk?: Map<string, string>): string {
 	if (!name) return "";

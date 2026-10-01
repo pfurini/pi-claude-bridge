@@ -285,17 +285,8 @@ describe("framing variants", () => {
 		assert.ok(!result.framing.includes("mcp__custom-tools__skill"));
 	});
 
-	it("AC7: read-native framing names the native Read tool and never the mcp__custom-tools__ prefix", () => {
-		const result = extractSkillsBlock(V2_PROMPT, { framing: "read-native" });
-		assert.ok(result.framing.includes("Read tool"));
-		assert.ok(
-			!result.framing.includes("mcp__custom-tools__"),
-			"naming the MCP tool there points the sub-agent at a tool it does not have",
-		);
-	});
-
-	it("AC8: all three framings retain the relative-path resolution instruction", () => {
-		for (const framing of ["skill-tool", "read-mcp", "read-native"]) {
+	it("AC8: both framings retain the relative-path resolution instruction", () => {
+		for (const framing of ["skill-tool", "read-mcp"]) {
 			const result = extractSkillsBlock(V2_PROMPT, { framing });
 			assert.ok(
 				result.framing.includes("resolve it against the skill directory"),
@@ -339,32 +330,6 @@ describe("provider call site", () => {
 			),
 			undefined,
 		);
-	});
-});
-
-describe("AskClaude call site", () => {
-	const { askClaudeSkillsAppend } = __test;
-
-	it("AC7: the append names the native Read tool, never the MCP prefix", () => {
-		const append = askClaudeSkillsAppend(V2_PROMPT, undefined, false);
-		assert.ok(append.includes("Read tool"));
-		assert.ok(
-			!append.includes("mcp__custom-tools__"),
-			"naming the MCP tool there points the sub-agent at a tool it does not have",
-		);
-		assert.ok(append.includes(SKILL_LISTING_START_DELIMITER), "listing not forwarded");
-	});
-
-	it("skips the catalog when Read is disallowed (none mode)", () => {
-		assert.strictEqual(askClaudeSkillsAppend(V2_PROMPT, undefined, true), undefined);
-	});
-
-	it("skips the catalog when the caller opts out", () => {
-		assert.strictEqual(askClaudeSkillsAppend(V2_PROMPT, false, false), undefined);
-	});
-
-	it("returns undefined without a system prompt, which leaves the preset off", () => {
-		assert.strictEqual(askClaudeSkillsAppend(undefined, undefined, false), undefined);
 	});
 });
 

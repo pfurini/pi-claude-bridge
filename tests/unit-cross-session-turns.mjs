@@ -27,7 +27,7 @@ import { join } from "node:path";
 // time, and the fake model below exercises claudeCodeModelId's pricing lookup —
 // point both at throwaway dirs so no real state is read or written.
 const claudeDir = mkdtempSync(join(tmpdir(), "claude-bridge-cross-session-cc-"));
-writeFileSync(join(claudeDir, "claude-bridge.json"), JSON.stringify({ provider: { plan: "max", usageEvents: false, claudeConfigDir: claudeDir }, askClaude: { enabled: false } }));
+writeFileSync(join(claudeDir, "claude-bridge.json"), JSON.stringify({ provider: { plan: "max", usageEvents: false, claudeConfigDir: claudeDir } }));
 process.env.CLAUDE_CONFIG_DIR = claudeDir;
 process.on("exit", () => rmSync(claudeDir, { recursive: true, force: true }));
 

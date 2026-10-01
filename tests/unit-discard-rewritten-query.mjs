@@ -57,7 +57,7 @@ async function fixture(plans, run) {
 	const handlers = new Map(), releases = [];
 	try {
 		const entry = prepareBridge(root);
-		writeFileSync(join(root, "claude-bridge.json"), JSON.stringify({ provider: { plan: "max", usageEvents: false, claudeConfigDir: join(root, "profile") }, askClaude: { enabled: false } }));
+		writeFileSync(join(root, "claude-bridge.json"), JSON.stringify({ provider: { plan: "max", usageEvents: false, claudeConfigDir: join(root, "profile") } }));
 		const { default: activate, __test: bridge } = await import(entry);
 		let provider;
 		activate({ cwd: root, agentDir: root, on(name, handler) { handlers.set(name, handler); }, registerProvider(_name, config) { provider = config; }, registerTool() {} });

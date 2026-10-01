@@ -570,7 +570,7 @@ are equally fatal and leave no recoverable timestamp.
   (n=157), May 10.4% (48), Jun 6.5% (46), Jul 24.3% (259), Aug 17.9% (515). Only
   2 commit-spanning boundaries with a resolved repo exist before July, so the jump
   could be a CC version change, a usage-pattern change, or improving cwd coverage.
-- `500eea19` does **not** split the corpus; it changed the AskClaude path only.
+- `500eea19` does **not** split the corpus; it changed the AskClaude path only (AskClaude was removed on 2026-10-01).
   The provider path has passed `preset: "claude_code"` since 2026-04-02, before
   the log opens (`git log -S`).
 - The non-commit portion is not decomposable: the 15.4% non-spanning on-prefix

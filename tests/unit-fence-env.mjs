@@ -13,7 +13,6 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { claudeChildEnv } from "../src/claude-config.js";
 import {
-	buildAskClaudeQueryOptions,
 	buildIsolatedSummaryQueryOptions,
 	buildProviderQueryOptions,
 } from "../src/sdk-options.js";
@@ -71,7 +70,7 @@ describe("pi-fence environment passthrough", () => {
 	});
 
 	// Every query() call site feeds the builders baseEnv: process.env
-	// (src/index.ts provider, AskClaude, and compaction-summary paths), so the
+	// (src/index.ts provider and compaction-summary paths), so the
 	// builders are the real spawn contract. The fence variables must survive
 	// alongside the isolation extras each builder adds.
 	const builders = {
@@ -82,14 +81,6 @@ describe("pi-fence environment passthrough", () => {
 				claudeConfigDir: "/cfg",
 				cliModel: "claude-test",
 				strictMcpConfigEnabled: true,
-			}),
-		askClaude: (baseEnv) =>
-			buildAskClaudeQueryOptions({
-				cwd: "/work/project",
-				baseEnv,
-				claudeConfigDir: "/cfg",
-				cliModel: "claude-test",
-				mode: "read",
 			}),
 		isolatedSummary: (baseEnv) =>
 			buildIsolatedSummaryQueryOptions({

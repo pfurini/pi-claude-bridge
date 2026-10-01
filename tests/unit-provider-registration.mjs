@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { after } from "node:test";
 
 const fixtureDir = mkdtempSync(join(tmpdir(), "bridge-registry-"));
-writeFileSync(join(fixtureDir, "claude-bridge.json"), JSON.stringify({ provider: { usageEvents: false }, askClaude: { enabled: false } }));
+writeFileSync(join(fixtureDir, "claude-bridge.json"), JSON.stringify({ provider: { usageEvents: false } }));
 after(() => rmSync(fixtureDir, { recursive: true, force: true }));
 
 const PROVIDER_ID = "claude-bridge";

@@ -39,7 +39,7 @@ const nestedMarker = `NESTED_${nonce}`;
 writeFileSync(join(parentCwd, "marker.txt"), `${parentMarker}\n`);
 writeFileSync(join(childCwd, "marker.txt"), `${childMarker}\n`);
 writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({
-	startupNoticeShown: "live-test", askClaude: { enabled: false },
+	startupNoticeShown: "live-test",
 	provider: { plan: "max", usageEvents: false, claudeConfigDir: profile, excludeModels: ["claude-opus-4-5", "claude-sonnet-4-5"] },
 }));
 writeFileSync(join(agentDir, "agents", "live-reader.md"), [

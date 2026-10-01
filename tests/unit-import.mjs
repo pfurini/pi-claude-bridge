@@ -264,7 +264,7 @@ describe("message structure", () => {
 	// With a tool map the query runs `tools: []`, so no name in the transcript may
 	// look like a Claude Code builtin — that is what makes the model call one it
 	// cannot call. A tool missing from the map is one pi ran and we no longer
-	// serve (AskClaude is excluded on purpose), not a builtin.
+	// serve (e.g. AskClaude, removed on 2026-10-01, in an older session), not a builtin.
 	it("tool name mapping: unserved pi tools keep the MCP namespace", () => {
 		const served = new Map([["read", "mcp__custom-tools__read"]]);
 		const msgs = [

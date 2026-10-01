@@ -16,16 +16,6 @@ import { defaultClaudeConfigDir } from "./claude-config.js";
 export interface Config {
 	/** Date (YYYY-MM-DD) the one-time startup notice was shown. Written by the extension, not the user. */
 	startupNoticeShown?: string;
-	askClaude?: {
-		enabled?: boolean;
-		name?: string;
-		label?: string;
-		description?: string;
-		defaultMode?: "full" | "read" | "none";
-		defaultIsolated?: boolean;
-		allowFullMode?: boolean;
-		appendSkills?: boolean;
-	};
 	/** Low-level Claude Agent SDK plumbing. Most users won't need these. */
 	provider?: {
 		appendSystemPrompt?: boolean;
@@ -117,26 +107,6 @@ export function markStartupNoticeShown(agentDir: string = getAgentDir()): string
 	return path;
 }
 
-export function normalizeAskClaudeDefaultMode(
-	defaultMode: unknown,
-	allowFullMode?: unknown,
-): "full" | "read" | "none" | undefined {
-	if (defaultMode === undefined) return undefined;
-	if (defaultMode !== "full" && defaultMode !== "read" && defaultMode !== "none") {
-		console.warn(
-			`claude-bridge: invalid askClaude.defaultMode ${JSON.stringify(defaultMode)}; using "read"`,
-		);
-		return "read";
-	}
-	if (defaultMode === "full" && allowFullMode === false) {
-		console.warn(
-			'claude-bridge: askClaude.defaultMode "full" is disabled by allowFullMode=false; using "read"',
-		);
-		return "read";
-	}
-	return defaultMode;
-}
-
 // loadConfig runs at extension load and again on session_start, so an invalid
 // value would otherwise reprint its warning over the TUI on each call.
 const warnedClaudeConfigDirs = new Set<string>();
@@ -211,22 +181,12 @@ export function loadConfig(cwd: string, agentDir: string = getAgentDir()): Confi
 	const global = tryParseJson(globalConfigPath(agentDir));
 	const projectPath = join(cwd, CONFIG_DIR_NAME, "claude-bridge.json");
 	const project = tryParseJson(projectPath);
-	const askClaude = { ...global.askClaude, ...project.askClaude } as NonNullable<Config["askClaude"]> & {
-		defaultMode?: unknown;
-	};
-	const defaultMode = normalizeAskClaudeDefaultMode(
-		askClaude.defaultMode,
-		askClaude.allowFullMode,
-	);
-	if (defaultMode !== undefined) askClaude.defaultMode = defaultMode;
-
 	const provider = { ...global.provider, ...withoutGlobalOnlyKeys(project.provider, projectPath) } as NonNullable<Config["provider"]> & {
 		claudeConfigDir?: unknown;
 	};
 	provider.claudeConfigDir = normalizeClaudeConfigDir(global.provider?.claudeConfigDir);
 	return {
 		startupNoticeShown: project.startupNoticeShown ?? global.startupNoticeShown,
-		askClaude: askClaude as NonNullable<Config["askClaude"]>,
 		provider: provider as NonNullable<Config["provider"]>,
 	};
 }

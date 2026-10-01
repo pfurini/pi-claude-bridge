@@ -1,16 +1,15 @@
 import { calculateCost, createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type ImageContent, type Model, type SimpleStreamOptions, type TextContent, type Tool, type Usage, type UserMessage } from "@earendil-works/pi-ai";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { getModels, registerApiProvider } from "@earendil-works/pi-ai/compat";
-import { buildSessionContext, compact, generateBranchSummary, keyHint, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { compact, generateBranchSummary, type BranchSummaryResult, type CompactionEntry, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { query, type SDKMessage, type SDKRateLimitInfo, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
-import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
 import { appendFileSync, mkdirSync, realpathSync, statSync, writeSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
-import { applyLongContext, assertClaudeCodeModelAvailable, buildModels, claudeCodeModelId, type LongContextSettings, resolveEffort, resolveModel as _resolveModel } from "./models.js";
+import { applyLongContext, buildModels, claudeCodeModelId, type LongContextSettings, resolveEffort } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, SKILL_TOOL_NAME, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
@@ -24,11 +23,9 @@ import { steeringAppendFor } from "./steering.js";
 import { makePromptStream, userMessage } from "./prompt-stream.js";
 import { collectCarriedAttachments, placeCarriedAttachments, type CarriedAttachment } from "./attachments.js";
 import { createToolServer } from "./mcp-server.js";
-import { buildAskClaudeQueryOptions, buildIsolatedSummaryQueryOptions, buildProviderQueryOptions, getAskClaudeDisallowedTools } from "./sdk-options.js";
+import { buildIsolatedSummaryQueryOptions, buildProviderQueryOptions } from "./sdk-options.js";
 import { buildHarnessCorrections } from "./harness-prompt.js";
 import { createSdkMessageState, parseSdkResult, parseSdkSystemInit, rateLimitResetDate, rateLimitUtilizationPercent, reduceSdkMessage, type SdkTerminalResult } from "./sdk-messages.js";
-import { buildActionSummary, formatUsageLine, type ToolCallState } from "./askclaude-ui.js";
-import { askClaudeCallTags, askClaudeToolDescription, buildAskClaudeParams, resolveAskClaudeDefaults, resolveAskClaudeMode } from "./askclaude-schema.js";
 import { effectiveInstructions, nonSystemMessages, toBridgeContext } from "./transcript.js";
 import { alignHistory, snapshotHistory, snapshotRequestHistory, snapshotTools } from "./session-history.js";
 import { newAccountingEpoch, queryAccounting, type AccountingEpoch, type AccountingSnapshot } from "./session-accounting.js";
@@ -44,7 +41,7 @@ const DEBUG_LOG_PATH = process.env.CLAUDE_BRIDGE_DEBUG_PATH || join(homedir(), "
 // a temp dir), so setting CLAUDE_BRIDGE_DEBUG_PATH redirects both together.
 const DIAG_LOG_PATH = process.env.CLAUDE_BRIDGE_DIAG_PATH || join(dirname(DEBUG_LOG_PATH), "claude-bridge-diag.log");
 
-// CLAUDE_BRIDGE_RECORD_STREAM=<path> records provider and AskClaude SDK messages as JSONL.
+// CLAUDE_BRIDGE_RECORD_STREAM=<path> records provider SDK messages as JSONL.
 // Replay fixtures and live denial checks use the raw message shapes without interpreting UI summaries.
 const RECORD_STREAM_PATH = process.env.CLAUDE_BRIDGE_RECORD_STREAM;
 
@@ -131,12 +128,6 @@ function diagDump(label: string, data: Record<string, unknown>) {
 // see the "--- Provider ---" block in activate() below.
 const ACTIVE_STREAM_SIMPLE_KEY = Symbol.for("claude-bridge:activeStreamSimple");
 
-// Claude Code's own builtin tools, for the AskClaude path where CC really runs
-// them. The provider path never sees these — it starts CC with `tools: []`.
-const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
-	read: "read", write: "write", edit: "edit", bash: "bash",
-};
-
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
 const MODELS = buildModels(getModels("anthropic"));
 // Read fresh on every request, so session_start re-applies them from the dirs
@@ -156,10 +147,6 @@ let usagePublisher: UsagePublisher | undefined;
 // session would let a request ask for a 1M window on a model registered at
 // 200K, or refuse a Fable model that pi still lists in the picker.
 let longContextSettings: LongContextSettings = { plan: "pro", longContextExtraUsage: false };
-
-function resolveModel(input: string) {
-	return _resolveModel(MODELS, input);
-}
 
 // --- Error handling ---
 
@@ -217,7 +204,7 @@ function readCarriedAttachments(sessionId: string, cwd: string, claudeConfigDir:
 }
 
 /** The session key a pi session's provider calls address. Unattributed calls
- *  (no options.sessionId — AskClaude's direct sync, or a host that omits it)
+ *  (no options.sessionId, e.g. a host that omits it)
  *  share the "(none)" bucket: they cannot be told apart, so they share the
  *  pre-existing single-slot semantics. */
 function sessionKey(piSessionId: string | null | undefined): string {
@@ -240,7 +227,6 @@ interface SessionBinding {
 	cwd: string;
 	agentDir: string;
 	provider: NonNullable<Config["provider"]>;
-	askClaudeToolName: string;
 	customization: { custom?: string; append?: string };
 }
 const SESSION_BINDINGS_KEY = Symbol.for("claude-bridge:sessionBindings");
@@ -252,10 +238,6 @@ const sessionEndHooks = (bridgeGlobals[SESSION_END_HOOKS_KEY] ??= new Set<Sessio
 
 function providerSettingsFor(id?: string | null): NonNullable<Config["provider"]> {
 	return (id ? sessionBindings.get(id)?.provider : undefined) ?? providerSettings;
-}
-function claudeConfigDirFor(id?: string | null): string {
-	const binding = id ? sessionBindings.get(id) : undefined;
-	return binding ? binding.provider.claudeConfigDir ?? defaultClaudeConfigDir() : effectiveClaudeConfigDir;
 }
 
 /** Each module retires only its queries; a child may use another module's registered provider. */
@@ -306,7 +288,7 @@ function requestSessionBinding(options?: SimpleStreamOptions): SessionBinding {
 	const config = loadConfig(metadata.cwd, metadata.agentDir);
 	const binding: SessionBinding = {
 		agentSessionId: metadata.agentSessionId, cwd: metadata.cwd, agentDir: metadata.agentDir,
-		provider: config.provider ?? {}, askClaudeToolName: config.askClaude?.name ?? "AskClaude", customization: {},
+		provider: config.provider ?? {}, customization: {},
 	};
 	if (!current) sessionBindings.set(metadata.agentSessionId, binding);
 	return binding;
@@ -926,7 +908,6 @@ export const __test = {
 	extractUserPromptBlocks,
 	updateUsage,
 	resultFrameToPiUsage,
-	promptAndWait,
 	consumeQuery,
 	finalizeCurrentStream,
 	resultErrorText,
@@ -935,7 +916,6 @@ export const __test = {
 	buildMcpServers,
 	branchSummaryOutcome,
 	providerSkillsAppend,
-	askClaudeSkillsAppend,
 };
 
 // --- Skills listing: the two call sites ---
@@ -953,30 +933,7 @@ function providerSkillsAppend(context: Context, appendSystemPrompt: boolean): st
 	})?.append;
 }
 
-// AskClaude runs on Claude Code's native tools and never receives the MCP skill
-// tool, so the framing is always read-native — naming an MCP tool here would
-// point the sub-agent at one it does not have. When Read is disallowed (none
-// mode) the block is skipped entirely: the sub-agent cannot open a skill file,
-// and forwarding the catalog would be pure token overhead.
-function askClaudeSkillsAppend(
-	systemPrompt: string | undefined,
-	appendSkills: boolean | undefined,
-	readDisallowed: boolean,
-): string | undefined {
-	if (appendSkills === false || readDisallowed) return undefined;
-	return extractSkillsBlock(systemPrompt, { framing: "read-native" })?.append;
-}
-
 // --- Provider helpers: tool name mapping ---
-
-// AskClaude path: CC runs its own tools, so builtin names are real.
-function mapToolName(name: string): string {
-	const normalized = name.toLowerCase();
-	const builtin = SDK_TO_PI_TOOL_NAME[normalized];
-	if (builtin) return builtin;
-	if (normalized.startsWith(MCP_TOOL_PREFIX)) return name.slice(MCP_TOOL_PREFIX.length);
-	return name;
-}
 
 // Provider path: the query runs with `tools: []`, so the only tools CC can
 // legitimately call are the pi tools we serve over MCP. Any other name is the
@@ -1033,8 +990,8 @@ let piMode: ExtensionContext["mode"] | null = null;
 let userSystemPrompt: { custom?: string; append?: string } = {};
 const activeQueryContexts = new Set<QueryContext>();
 
-// Defaults that silently cost the user something (no Opus 1M on Max, no
-// AskClaude tool) are announced once. Deferred to the first bridge query rather
+// Defaults that silently cost the user something (no Opus 1M on Max) are
+// announced once. Deferred to the first bridge query rather
 // than session_start: the notice persists a flag to the global config, and
 // firing it on startup would write that file for every pi session that merely
 // has this extension installed. One message, because consecutive info notifies
@@ -1111,7 +1068,7 @@ function contextForToolResults(results: McpResult[], piSessionId?: string): Quer
 	return undefined;
 }
 
-function resolveMcpTools(context: Context, excludeToolName?: string): {
+function resolveMcpTools(context: Context): {
 	mcpTools: Tool[];
 	customToolNameToSdk: Map<string, string>;
 	customToolNameToPi: Map<string, string>;
@@ -1123,7 +1080,6 @@ function resolveMcpTools(context: Context, excludeToolName?: string): {
 	if (!context.tools) return { mcpTools, customToolNameToSdk, customToolNameToPi };
 
 	for (const tool of context.tools) {
-		if (tool.name === excludeToolName) continue;
 		const sdkName = `${MCP_TOOL_PREFIX}${tool.name}`;
 		mcpTools.push(tool);
 		customToolNameToSdk.set(tool.name, sdkName);
@@ -1314,12 +1270,9 @@ function sumModelUsageTokens(message: SDKMessage): TokenTotals | undefined {
 /** Build a pi `Usage` from an SDK result frame. Cost components are left zero and
  *  `cost.total` adopts CC's `total_cost_usd` (Decision 6). Tokens prefer the
  *  `modelUsage` sum, which includes CC-native subagent activity, falling back to
- *  `result.usage` when modelUsage is absent — this matters for AskClaude read/full
- *  modes, which retain delegation tools (Agent/Task/Workflow), so a subagent's
- *  tokens would otherwise be undercounted while its cost was already billed.
- *  Reasoning comes from the current main-loop result as informational best-effort.
- *  Used by AskClaude and compaction summaries, which land
- *  in the "Tools/summaries" bucket of pi's /usage breakdown. */
+ *  `result.usage` when modelUsage is absent. Reasoning comes from the current
+ *  main-loop result as informational best-effort. Used by compaction and branch
+ *  summaries, which land in the "Tools/summaries" bucket of pi's /usage breakdown. */
 function resultFrameToPiUsage(frame: SDKMessage, baseline?: AccountingSnapshot): Usage {
 	const message = queryAccounting(frame, baseline).message;
 	const raw = (message as SDKMessage & { usage?: Record<string, number | undefined> & { output_tokens_details?: { thinking_tokens?: number } } }).usage;
@@ -1952,7 +1905,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// handlers. Results that arrive before their handler get queued in pendingResults.
 	if (resultCtx) {
 		const nextHistory = snapshotRequestHistory(context.messages);
-		const tools = resolveMcpTools(context, binding.askClaudeToolName).mcpTools;
+		const tools = resolveMcpTools(context).mcpTools;
 		const nextTools = snapshotTools(tools);
 		const nextInstructions = buildProviderSystemPromptAppend(model, context, binding);
 		// A transient message (a context hook added it to the previous request only) may drop out.
@@ -2097,7 +2050,7 @@ function setupProviderQuery(
 	if (piSessionId) historyRewrittenBySession.delete(piSessionId);
 	queryCtx.latestHistory = snapshotRequestHistory(context.messages);
 
-	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context, binding.askClaudeToolName);
+	const { mcpTools, customToolNameToSdk, customToolNameToPi } = resolveMcpTools(context);
 	queryCtx.toolInventory = snapshotTools(mcpTools);
 	const cwd = binding.cwd;
 	const providerSettings = binding.provider;
@@ -2364,227 +2317,7 @@ function setupProviderQuery(
 	return stream;
 }
 
-// --- AskClaude: prompt and wait ---
-
-async function promptAndWait(
-	prompt: string,
-	mode: "full" | "read" | "none",
-	toolCalls: Map<string, ToolCallState>,
-	signal?: AbortSignal,
-	options?: {
-		systemPrompt?: string;
-		appendSkills?: boolean;
-		model?: string;
-		thinking?: string;
-		isolated?: boolean;
-		context?: Context["messages"];
-		// AskClaude carries its invoking extension context directly.
-		cwd?: string;
-		piSessionId?: string;
-	},
-): Promise<{ responseText: string; stopReason: string; usage?: Usage }> {
-	if (signal?.aborted) throw new Error("Aborted");
-	const piSessionId = options?.piSessionId;
-	const providerSettings = providerSettingsFor(piSessionId);
-	const requestClaudeConfigDir = claudeConfigDirFor(piSessionId);
-	const cwd = resolveCwd(options);
-	const requestedModel = options?.model ?? "opus";
-	const model = resolveModel(requestedModel);
-	const modelId = model?.id ?? requestedModel;
-	if (!model) assertClaudeCodeModelAvailable(modelId, longContextSettings);
-	const cliModel = model ? claudeCodeModelId(model, longContextSettings) : modelId;
-
-	// Shared calls validate the same projected history and accounting epoch as provider calls.
-	// A concurrent call gets a private import rather than another writer on the active transcript.
-	const sync = !options?.isolated && options?.context?.length
-		? syncSharedSession([...options.context, { role: "user", content: prompt, timestamp: Date.now() }], cwd, requestClaudeConfigDir, undefined, cliModel, { piSessionId: options.piSessionId })
-		: undefined;
-	const resumeSessionId = sync?.sessionId ?? null;
-	const accounting = sync?.accounting ?? newAccountingEpoch();
-	if (!accounting.snapshot) throw new Error("Claude session accounting baseline is unavailable");
-	const accountingBaseline = structuredClone(accounting.snapshot);
-
-	const readDisallowed = getAskClaudeDisallowedTools(mode).includes("Read");
-	const skillsBlock = askClaudeSkillsAppend(options?.systemPrompt, options?.appendSkills, readDisallowed);
-
-	// Corrections are only meaningful when the preset is actually sent, so this
-	// mirrors the `usePreset` union in buildAskClaudeQueryOptions. Keep the two in
-	// step: emitting corrections here is what makes the append non-empty, which is
-	// the other half of that union. Unlike the provider, AskClaude keeps Claude
-	// Code's native tools, so only the model ID is wrong here, plus the shell in
-	// modes that block Bash.
-	const presetActive = mode === "full" || Boolean(skillsBlock);
-	const askClaudeCorrections = presetActive
-		? buildHarnessCorrections({
-			modelId,
-			cliModelId: cliModel,
-			toolsAreMcpOnly: false,
-			noShellTool: getAskClaudeDisallowedTools(mode).includes("Bash"),
-			noInteractiveChannel: true,
-		})
-		: undefined;
-	const systemPromptAppend = [skillsBlock, askClaudeCorrections]
-		.filter((part): part is string => Boolean(part))
-		.join("\n\n") || undefined;
-
-	// Effort — same model-aware lookup the provider path uses, so the same level
-	// word means the same served tier through either interface.
-	const effort = resolveEffort(model, options?.thinking);
-
-	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
-
-
-	debug("askClaude:",
-		`mode=${mode} model=${modelId} cliModel=${cliModel} effort=${effort ?? "default"}`,
-		`isolated=${options?.isolated ?? false} resume=${resumeSessionId?.slice(0, 8) ?? "none"}`,
-		`skills=${Boolean(skillsBlock)} promptLen=${prompt.length}`);
-
-	// skills: [] suppresses Claude Code's own skill listing, a system-reminder naming every
-	// skill under the ~/.claude estate. The provider path gets this for free — `tools: []`
-	// removes the Skill tool and the listing with it — but AskClaude runs on CC's native
-	// tools, so it has to be asked for. Pi-side skills still arrive via skillsBlock below,
-	// which is meant to be the only channel.
-	accounting.inFlight = true;
-	accounting.snapshot = undefined;
-	let sdkQuery: ReturnType<typeof query>;
-	try {
-		sdkQuery = query({
-			prompt,
-			options: buildAskClaudeQueryOptions({
-				cwd,
-				baseEnv: process.env,
-				claudeConfigDir: requestClaudeConfigDir,
-				cliModel,
-				mode,
-				effort,
-				systemPromptAppend,
-				resumeSessionId,
-				isolated: options?.isolated,
-				claudeExecutable,
-				autoMemoryEnabled: providerSettings.autoMemoryEnabled,
-				debugOptions: makeCliDebugOptions("askclaude"),
-			}),
-		});
-	} catch (error) {
-		accounting.inFlight = false;
-		const state = sessionStateFor(piSessionId);
-		if (state?.accounting === accounting) setSessionStateFor(piSessionId, { ...state, needsRebuild: true, forceRotate: true });
-		throw error;
-	}
-
-	// Abort handling
-	let wasAborted = false;
-	const onAbort = () => {
-		wasAborted = true;
-		void sdkQuery.interrupt().catch(() => {});
-		try { sdkQuery.close(); } catch {}
-	};
-	if (signal?.aborted) onAbort();
-	signal?.addEventListener("abort", onAbort, { once: true });
-
-	let responseText = "";
-	let sdkMessageCount = 0;
-	const messageState = createSdkMessageState();
-	let resultSubtype: string | undefined;
-	let capturedUsage: Usage | undefined;
-	let capturedAccounting: AccountingSnapshot | undefined;
-	let capturedSessionId = resumeSessionId;
-
-	try {
-		if (wasAborted) throw new Error("Aborted");
-		for await (const message of sdkQuery) {
-			if (RECORD_STREAM_PATH) appendLog(RECORD_STREAM_PATH, JSON.stringify(message) + "\n");
-			if (wasAborted) break;
-			sdkMessageCount++;
-			capturedSessionId = systemInitSessionId(message) ?? capturedSessionId;
-
-			const reduced = reduceSdkMessage(messageState, message);
-			if (reduced.textDelta !== undefined) {
-				responseText = messageState.streamedText;
-			}
-			if (reduced.toolUseStarted) {
-				debug(`askClaude: tool_use start: ${reduced.toolUseStarted.name}`);
-				toolCalls.set(reduced.toolUseStarted.id, {
-					name: mapToolName(reduced.toolUseStarted.name),
-					status: "running",
-				});
-			}
-			for (const toolUse of reduced.toolUsesCompleted ?? []) {
-				toolCalls.set(toolUse.id, {
-					name: mapToolName(toolUse.name),
-					status: "complete",
-					rawInput: toolUse.input,
-				});
-			}
-			if (reduced.result) {
-				resultSubtype = reduced.result.subtype;
-				const result = message as SDKMessage & {
-					result?: unknown;
-					usage?: Record<string, number | undefined> & { output_tokens_details?: { thinking_tokens?: number } };
-					total_cost_usd?: unknown;
-					num_turns?: number;
-				};
-				if (result.usage) {
-					debug(`askClaude: result usage: in=${result.usage.input_tokens} out=${result.usage.output_tokens} cacheRead=${result.usage.cache_read_input_tokens ?? 0} cacheWrite=${result.usage.cache_creation_input_tokens ?? 0} turns=${result.num_turns ?? "?"}`);
-				}
-				// Attach the delegation's own spend to the tool result so it lands in
-				// pi's /usage "Tools/summaries" bucket instead of being discarded. Tokens
-				// prefer modelUsage (subagent-inclusive), since read/full modes keep the
-				// delegation tools. Captured on failure too — a failed call still spent.
-				capturedUsage = resultFrameToPiUsage(message, accountingBaseline);
-				capturedAccounting = queryAccounting(message, accountingBaseline).snapshot;
-				const resultText = typeof result.result === "string" ? result.result : "";
-				if (!responseText && reduced.result.successful && resultText) {
-					responseText = resultText;
-				}
-			}
-		}
-
-		if (!wasAborted && messageState.result && !messageState.result.successful) {
-			debugTerminalFailure("askClaude", messageState.result);
-			const failure = messageState.result.errorText ?? `Claude Code query failed: ${messageState.result.subtype}`;
-			// A failed call still spent tokens; carry the usage on the error so the
-			// tool result attributes it rather than losing it.
-			throw Object.assign(new Error(failure), capturedUsage ? { usage: capturedUsage } : {});
-		}
-
-		const stopReason = wasAborted ? "cancelled" : "stop";
-		debug(`askClaude: done`,
-			`stopReason=${stopReason} resultSubtype=${resultSubtype ?? "none"}`,
-			`sdkMessages=${sdkMessageCount} textDeltas=${messageState.textDeltaCount} responseLen=${responseText.length}`,
-			`toolCalls=${toolCalls.size}`);
-		return { responseText, stopReason, usage: capturedUsage };
-	} catch (error) {
-		capturedAccounting = undefined;
-		if (capturedUsage) throw Object.assign(error instanceof Error ? error : new Error(String(error)), { usage: capturedUsage });
-		throw error;
-	} finally {
-		signal?.removeEventListener("abort", onAbort);
-		try { sdkQuery.close(); } finally {
-			accounting.inFlight = false;
-			accounting.snapshot = wasAborted ? undefined : capturedAccounting;
-			const state = sessionStateFor(piSessionId);
-			if (!accounting.snapshot && state?.accounting === accounting) {
-				setSessionStateFor(piSessionId, { ...state, needsRebuild: true, forceRotate: true });
-			}
-			if (sync?.preserveSharedSession && capturedSessionId && capturedSessionId !== state?.sessionId) {
-				deleteEphemeralSession(capturedSessionId, cwd, requestClaudeConfigDir);
-			}
-		}
-	}
-}
-
 // --- Extension registration ---
-
-const PREVIEW_MAX_CHARS = 1000;
-const PREVIEW_MAX_LINES = 6;
-
-// AskClaude receives cwd directly from its extension context.
-const resolveCwd = (options?: { cwd?: string; piSessionId?: string }): string => {
-	const cwd = options?.cwd ?? (options?.piSessionId ? sessionBindings.get(options.piSessionId)?.cwd : undefined);
-	if (!cwd) throw new Error("AskClaude requires the invoking session's working directory.");
-	return cwd;
-};
 
 // The first factory owns registration defaults and quota publication, not other sessions' request settings.
 // Reload creates a new module scope; named requests resolve their own SessionBinding.
@@ -2652,7 +2385,6 @@ export default function (pi: ExtensionAPI) {
 
 	if (!config.startupNoticeShown) {
 		if (config.provider?.plan === undefined) pendingNotices.push('Are you using a Max plan? You need to set provider.plan to "max" to unlock 1M context in Opus.');
-		if (config.askClaude?.enabled === undefined) pendingNotices.push("The AskClaude tool is opt-in only. Set askClaude.enabled to use it.");
 	}
 
 	let boundSessionId: string | undefined;
@@ -2670,8 +2402,7 @@ export default function (pi: ExtensionAPI) {
 		const agentDir = sessionAgentDir(context);
 		const sessionConfig = loadConfig(context.cwd, agentDir);
 		boundSessionId = id;
-		boundSession = { agentSessionId: id, cwd: context.cwd, agentDir, provider: sessionConfig.provider ?? {},
-			askClaudeToolName: sessionConfig.askClaude?.name ?? "AskClaude", customization: {} };
+		boundSession = { agentSessionId: id, cwd: context.cwd, agentDir, provider: sessionConfig.provider ?? {}, customization: {} };
 		sessionBindings.set(id, boundSession);
 		debug(`session_start:${event.reason}: bound session ${id}`);
 		if (isProviderOwner) {
@@ -2843,129 +2574,6 @@ export default function (pi: ExtensionAPI) {
 			}
 			debug(`provider: registry lacks ${PROVIDER_ID}, registering (module=${moduleInstanceId})`);
 			pi.registerProvider(PROVIDER_ID, providerConfig);
-		});
-	}
-
-	// --- AskClaude tool ---
-
-	const askConf = config.askClaude;
-	const askDefaults = resolveAskClaudeDefaults(askConf);
-
-	if (askConf?.enabled) {
-		const askClaudeParams = buildAskClaudeParams(askDefaults);
-		pi.registerTool<typeof askClaudeParams>({
-			name: askConf?.name ?? "AskClaude",
-			label: askConf?.label ?? "Ask Claude Code",
-			description: askClaudeToolDescription(askDefaults, askConf?.description),
-			parameters: askClaudeParams,
-			renderCall(args, theme) {
-				let text = theme.fg("mdLink", theme.bold("AskClaude "));
-				const tags = askClaudeCallTags(args, askDefaults);
-				if (tags.length) text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
-				const truncated = args.prompt.length > PREVIEW_MAX_CHARS ? args.prompt.substring(0, PREVIEW_MAX_CHARS) : args.prompt;
-				const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
-				text += theme.fg("muted", `"${lines.join("\n")}"`);
-				if (args.prompt.length > PREVIEW_MAX_CHARS || args.prompt.split("\n").length > PREVIEW_MAX_LINES) text += theme.fg("dim", " …");
-				return new Text(text, 0, 0);
-			},
-			renderResult(result, { expanded, isPartial }, theme) {
-				if (isPartial) {
-					const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
-					return new Text(theme.fg("mdLink", "◉ Claude Code ") + theme.fg("muted", status), 0, 0);
-				}
-
-				const details = result.details as { prompt?: string; executionTime?: number; actions?: string; error?: boolean; usage?: { totalTokens?: number; cost?: number } } | undefined;
-				const body = result.content[0]?.type === "text" ? result.content[0].text : "";
-
-				let text = details?.error
-					? theme.fg("error", "✗ Claude Code error")
-					: theme.fg("mdLink", "✓ Claude Code");
-
-				if (details?.executionTime) text += ` ${theme.fg("dim", `${(details.executionTime / 1000).toFixed(1)}s`)}`;
-				const usageLine = formatUsageLine(details?.usage);
-				if (usageLine) text += ` ${theme.fg("dim", usageLine)}`;
-				if (details?.actions) text += ` ${theme.fg("muted", details.actions)}`;
-
-				if (expanded) {
-					if (details?.prompt) text += `\n${theme.fg("dim", `Prompt: ${details.prompt}`)}`;
-					if (details?.prompt && body) text += `\n${theme.fg("dim", "─".repeat(40))}`;
-					if (body) text += `\n${theme.fg("toolOutput", body)}`;
-				} else {
-					const truncated = body.length > PREVIEW_MAX_CHARS ? body.substring(0, PREVIEW_MAX_CHARS) : body;
-					const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
-					if (lines.length) text += `\n${theme.fg("toolOutput", lines.join("\n"))}`;
-					if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) text += `\n${theme.fg("dim", `… (${keyHint("app.tools.expand", "to expand")})`)}`;
-
-				}
-
-				return new Text(text, 0, 0);
-			},
-			async execute(_id, params, signal, onUpdate, ctx) {
-				// Guard: circular delegation
-				if (ctx.model?.baseUrl === "claude-bridge") {
-					debug("askClaude: blocked circular delegation (active provider is claude-bridge)");
-					return {
-						content: [{ type: "text" as const, text: "Error: AskClaude cannot be used when the active provider is claude-bridge — you're already running through Claude Code." }],
-						details: { error: true },
-					};
-				}
-
-				const mode = resolveAskClaudeMode(params.mode, askDefaults);
-				const isolated = params.isolated ?? askDefaults.isolated;
-				const toolCalls = new Map<string, ToolCallState>();
-				const start = Date.now();
-
-				const progressInterval = setInterval(() => {
-					const elapsed = ((Date.now() - start) / 1000).toFixed(0);
-					const summary = buildActionSummary(toolCalls);
-					const status = summary ? `${elapsed}s — ${summary}` : `${elapsed}s — working...`;
-					onUpdate?.({
-						content: [{ type: "text", text: status }],
-						details: { prompt: params.prompt, executionTime: Date.now() - start },
-					});
-				}, 1000);
-
-				try {
-					const result = await promptAndWait(params.prompt, mode, toolCalls, signal, {
-						systemPrompt: ctx.getSystemPrompt(),
-						appendSkills: askConf?.appendSkills,
-						model: params.model,
-						thinking: params.thinking,
-						isolated,
-						context: isolated ? undefined : buildSessionContext(ctx.sessionManager.getBranch()).messages as Context["messages"],
-						cwd: ctx.cwd,
-						piSessionId: ctx.sessionManager.getSessionId(),
-					});
-					clearInterval(progressInterval);
-					onUpdate?.({ content: [{ type: "text", text: "" }], details: {} });
-					const executionTime = Date.now() - start;
-					const actions = buildActionSummary(toolCalls);
-
-					const text = actions
-						? `${result.responseText}\n\n[Claude Code actions: ${actions}]`
-						: result.responseText;
-					return {
-						content: [{ type: "text" as const, text }],
-						details: { prompt: params.prompt, executionTime, actions, ...(result.usage ? { usage: { totalTokens: result.usage.totalTokens, cost: result.usage.cost.total } } : {}) },
-						// Attach the delegation's spend so pi buckets it under "Tools/summaries"
-						// in /usage; the tool result is correctly excluded from context-window
-						// accounting by pi.
-						...(result.usage ? { usage: result.usage } : {}),
-					};
-				} catch (err) {
-					clearInterval(progressInterval);
-					debug(`askClaude error: mode=${mode}, model=${params.model ?? "default"}, isolated=${isolated}, elapsed=${((Date.now() - start) / 1000).toFixed(1)}s, error=`, err);
-					const msg = errorMessage(err);
-					// A failed delegation still spent tokens; promptAndWait attaches the
-					// usage to the thrown error so it is not lost from /usage accounting.
-					const failedUsage = (err as { usage?: Usage })?.usage;
-					return {
-						content: [{ type: "text" as const, text: `Error: ${msg}` }],
-						details: { prompt: params.prompt, executionTime: Date.now() - start, error: true, ...(failedUsage ? { usage: { totalTokens: failedUsage.totalTokens, cost: failedUsage.cost.total } } : {}) },
-						...(failedUsage ? { usage: failedUsage } : {}),
-					};
-				}
-			},
 		});
 	}
 }

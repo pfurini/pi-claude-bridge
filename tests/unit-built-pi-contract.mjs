@@ -34,7 +34,7 @@ it("the real bridge factory honors the compiled Pi transcript and summary contra
 		const cwd = join(root, "workspace");
 		const agentDir = join(root, "agent");
 		mkdirSync(cwd); mkdirSync(agentDir);
-		writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({ startupNoticeShown: "test", askClaude: { enabled: false }, provider: { usageEvents: false, plan: "max", claudeConfigDir: join(root, "claude") } }));
+		writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({ startupNoticeShown: "test", provider: { usageEvents: false, plan: "max", claudeConfigDir: join(root, "claude") } }));
 		const loaded = await loadExtensions([bridge], cwd, agentDir);
 		assert.deepEqual(loaded.errors, []);
 		assert.equal(loaded.runtime.pendingProviderRegistrations.length, 1);

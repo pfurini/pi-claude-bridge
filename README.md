@@ -4,9 +4,7 @@
 
 Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript). Originally based on [claude-agent-sdk-pi](https://github.com/prateekmedia/claude-agent-sdk-pi) by Prateek Sunal.
 
-1. **Provider** — Use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI
-2. **AskClaude tool** — Delegate tasks or questions to Claude Code when using another provider
-
+It registers a **provider**: use Opus/Sonnet/Haiku as models in pi, with all tool calls flowing through pi's TUI.
 
 **FYI:** Anthropic [announced and then unannounced](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) a change to how you would be billed for tools that use the Agent SDK like this one. It currently uses your regular subscription quota just like Claude Code.
 
@@ -57,30 +55,6 @@ Upstream `a78a2a5` measured Sonnet 5.5 on Pro with both Extra Usage states on 20
 A local 2026-09-30 probe confirms the suffixed ID reports 1M on the configured subscription profile; see [diag/CONTEXT-SIZE.md](diag/CONTEXT-SIZE.md).
 Fable 5.1's Pro restriction remains conservative rather than measured on Pro.
 
-## AskClaude Tool
-
-Opt-in: set `askClaude.enabled` to `true` (see [Configuration](#configuration)). Available when using any non-claude-bridge provider. Pi's LLM can delegate tasks to Claude Code and wait for it to answer a question or perform a task. Examples of how to use:
-
-- "Ask Claude to plan a fix"
-- "If you get stuck, ask claude for help"
-- "Ask claude to review the plan in @foo.md, implement it, then ask an isolated=true claude to review the implementation"
-- "Ask claude to poke holes in this theory"
-
-Delegated calls use the configured Claude profile and exclude native `CLAUDE.md` files.
-Full mode always receives Claude Code's preset. Read and none modes receive the preset only when the bridge has instructions to append.
-None mode blocks all tools; read and full modes retain their existing native-skill policy.
-
-You could also create skills or add something to AGENTS.md to e.g. "Always call Ask Claude to review complicated feature implementations before considering the task complete."
-
-### Parameters
-
-- **`prompt`** — the question or task for Claude Code
-- **`mode`** — `read` (default, read files and search/fetch on web), `none` (no file access), or `full` (read+write+bash). Set `allowFullMode: false` to disable full mode.
-- **`model`** — `opus` by default, another family shortcut, or an exact full model ID. Shortcuts follow the newest installed catalog version.
-- **`thinking`** — effort level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Levels resolve per model, the same way they do for the provider: on models with a distinct top-but-one tier (Opus 5, Opus 4.8, Opus 4.7, Sonnet 5, Fable 5, Fable 5.1) `xhigh` means the literal `xhigh` tier, and `max` is the maximum. On models with no separate `xhigh` tier (Opus 4.6, Sonnet 4.6, Haiku 4.5) `xhigh` and `max` both request the maximum.
-  Explicit null or invalid catalog mappings omit the effort argument. Only missing mappings use the generic fallback.
-- **`isolated`** — when `true`, Claude gets a clean session with no conversation history (default: `false`)
-
 ## Configuration
 
 Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config directory, usually `.pi/claude-bridge.json` (project; merged over global).
@@ -96,12 +70,6 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 
 ```json
 {
-  "askClaude": {
-    "enabled": true,
-    "allowFullMode": true,
-    "defaultIsolated": false,
-    "description": "Custom tool description override"
-  },
   "provider": {
     "plan": "max",
     "longContextExtraUsage": false,
@@ -113,27 +81,17 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 }
 ```
 
-`askClaude`:
-- `enabled` — register the AskClaude tool (default `false`). If it's unset, the startup notice below points this out once.
-- `name` — override the tool's pi-side name (default `"AskClaude"`)
-- `label` — override the TUI label (default `"Ask Claude Code"`)
-- `description` — override the tool description. Default when `allowFullMode: true`: *"Delegate to Claude Code for a second opinion or analysis (code review, architecture questions, debugging theories), or to autonomously handle a task. Defaults to read-only mode — use full mode when the user wants to delegate a task that requires changes. Prefer to handle straightforward tasks yourself."*
-- `defaultMode` — `"read"` (default), `"none"`, or `"full"`. Invalid values fall back to read mode with a warning.
-- `defaultIsolated` — start each call in a fresh session (default `false`)
-- `allowFullMode` — allow `mode: "full"`; set `false` to lock it out. This also overrides `defaultMode: "full"`, falls back to read mode, and emits a warning.
-- `appendSkills` — forward pi's skills block into the system prompt (default `true`). Note that `full` mode always sends Claude Code's system prompt regardless of this setting, since it grants shell and filesystem access and needs the accompanying safety guidance; `read` and `none` send it only when there is something to append. See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md).
-
 `provider`:
 - `plan` (default `"pro"`) — set to `"max"` for Max (or Team Premium/Enterprise) to enable Opus 4.6 with 1M context. If it's unset, the first interactive session points this out once, then records `startupNoticeShown` (the date, `YYYY-MM-DD`) in the global config so it doesn't nag again.
 - `longContextExtraUsage` — set to `true` to enable 1M models that cost money through Extra Usage. It enables Sonnet 4.6 with 1M on every plan and Opus 4.6 with 1M on Pro. Not needed for Opus 4.7 or 4.8.
 - `excludeModels` — model ids (case-insensitive) to drop from the `/model` picker entirely, e.g. `["claude-opus-4-5", "claude-sonnet-4-5"]`. Use this to silence the `claude-bridge: encountered model … with no known context size` warning for catalog entries you don't intend to use — the excluded id never reaches the context-window lookup that logs it. Load-time only, like `plan` and `longContextExtraUsage` above.
 - `appendSystemPrompt` controls generated project-context and skill forwarding (default `true`).
   - Project instructions come from Pi's global and ancestor `AGENTS.md` / `CLAUDE.md` files.
-  - Skill framing names the available MCP `skill` or `read` tool. AskClaude uses native `Read` framing.
+  - Skill framing names the available MCP `skill` or `read` tool.
   - Effective authored sections, guidelines, addenda, and forced prompts remain authoritative independently of this gate.
   - The sanitizer removes recognized Pi boilerplate while preserving authored contributions and section overrides.
   - Exact project/skill duplicates disappear only when the dedicated forwarding path already supplies the same block.
-  - Provider harness corrections always apply. AskClaude receives corrections in full mode or when forwarding skills.
+  - Provider harness corrections always apply.
   - Disabled forwarding retains authored customization for legacy flat contexts that lack structured prompt state.
   - See [diag/SYSTEM-PROMPTS.md](diag/SYSTEM-PROMPTS.md) for the prompt-channel background.
 - `settingSources` — which Claude Code settings tiers the spawned binary loads (`user`/`project`/`local`). Default `[]`: no `settings.json` of any tier and no `CLAUDE.md` of Claude Code's own, so pi's forwarded context block is the only channel for project rules. Independent of `appendSystemPrompt`. (The bridge also excludes `**/CLAUDE.md` on every spawn path, so opting a tier back in for its `settings.json` — e.g. Bedrock/Vertex `apiKeyHelper` — does not re-admit a native CLAUDE.md.)
@@ -144,7 +102,7 @@ When `provider.pathToClaudeCodeExecutable` is configured, use that executable in
 - `usageEvents` — publish Claude subscription usage on pi's `pi:provider-usage` event channel (default `true`). See [Usage events](#usage-events) below. An invalid value warns once and falls back to `true`.
 
 
-**Startup notice:** the first session lists `provider.plan` and `askClaude.enabled` if unset, then records `startupNoticeShown` in the global config so it doesn't nag again.
+**Startup notice:** the first session lists `provider.plan` if unset, then records `startupNoticeShown` in the global config so it doesn't nag again.
 
 The bridge's explicit context-window policy lives in `src/models.ts`. This fork does not expose `provider.forceTwoHundredK`.
 
@@ -223,7 +181,7 @@ Exclude `fault-startup` when selecting an existing profile; that case requires d
 Set `CLAUDE_BRIDGE_DEBUG=1` to enable debug output:
 
 - **Bridge log** at `~/.pi/agent/claude-bridge.log` — provider calls, session sync decisions, tool results, CC stderr. Override location with `CLAUDE_BRIDGE_DEBUG_PATH`.
-- **Per-query CC CLI logs** at `~/.pi/agent/cc-cli-logs/<timestamp>-<tag>-<seq>.log` — the subprocess's own debug stream; tag is `provider` or `askclaude`. Shows CC's view of session loading, API requests, and tool calls.
+- **Per-query CC CLI logs** at `~/.pi/agent/cc-cli-logs/<timestamp>-<tag>-<seq>.log` — the subprocess's own debug stream; tag is `provider` or `compact-summary`. Shows CC's view of session loading, API requests, and tool calls.
 
 Diagnostics use `claude-bridge-diag.log` beside the bridge log; `CLAUDE_BRIDGE_DIAG_PATH` selects an explicit destination.
 Denied log writes preserve their entries on stderr rather than replacing the provider result.
@@ -252,9 +210,6 @@ Repeated identical recovery checkpoints, startup failures, and cancellation prod
 Retired queries retain their observed usage and estimated costs, matching the existing abort policy when no terminal cost report arrives.
 
 ## Known issues
-
-After a Claude Code release, review `getAskClaudeToolPolicy()` in `src/sdk-options.ts`.
-The policy controls native tools in AskClaude's `read`, `full`, and `none` modes; new agentic tools require explicit review.
 
 **A session rebuild re-sends the conversation.** A rebuild can lose prompt-cache reuse beyond the system prompt.
 Upstream's `diag/AUDIT.md` records this effect on tested Claude Code 2.1.263+ runs, not every account, SDK, or rebuild.

@@ -28,7 +28,7 @@ it(`native child teardown preserves its shared-runtime parent (${variant})`, { t
 		const cwd = join(root, "parent");
 		mkdirSync(agentDir); mkdirSync(cwd);
 		writeFileSync(join(agentDir, "claude-bridge.json"), JSON.stringify({
-			startupNoticeShown: "test", provider: { plan: "max", usageEvents: false, claudeConfigDir: join(root, "claude") }, askClaude: { enabled: false },
+			startupNoticeShown: "test", provider: { plan: "max", usageEvents: false, claudeConfigDir: join(root, "claude") },
 		}));
 		const loaded = await loadExtensions([bridge], cwd, agentDir);
 		assert.deepEqual(loaded.errors, []);

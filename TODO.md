@@ -29,10 +29,10 @@ Each item was verified against source; none is fixed yet.
    shorter-context branch in `syncSharedSession` is also the guard that stops a
    subagent resuming and overwriting the parent's session, and a subagent's priors
    are not empty. `isReentrant` is computed immediately before the main
-   `syncSharedSession` call (`src/index.ts:1642`; AskClaude's at `:1903`) and just
+   `syncSharedSession` call in `setupProviderQuery` (`src/index.ts`) and just
    isn't passed in. The stale `fix/issue-30-pruned-history` branch discriminates on
    `priorMessages.length === 0` and would break subagent isolation -- do not merge
-   it. Decide deliberately what the AskClaude caller should pass. Guarded by
+   it. Guarded by
    `unit-sync-shared-session.mjs` plus `int-subagent-rpiv-codebase-locator.mjs`.
 
 2. **Make the dropped-thinking-signature rate visible.** 26 of 2,363
@@ -88,18 +88,13 @@ Each item was verified against source; none is fixed yet.
     tools may have similar mismatches (units, defaults, optional-vs-required params).
     Compare Claude Code's tool schemas against pi's for read, write, edit, grep, find.
 
-14. **AskUserQuestion pi shim** (main provider only): CC never sees
-    AskUserQuestion (it's in `DISALLOWED_BUILTIN_TOOLS`), so it can't ask the
-    user questions interactively. Port a pi-native version using `ctx.ui.custom()`
-    for an option picker with free-text fallback. Not applicable to AskClaude
-    subagents (can't interact with user). See `fractary/pi-claude-code`
-    `AskUserQuestion.ts` for reference.
+14. **AskUserQuestion pi shim** -- superseded: the Pi fork's `ask_user_question`
+    base tool reaches Claude as `mcp__custom-tools__ask_user_question`.
 
 15. **PlanMode pi shim** (main provider only): Similarly, EnterPlanMode/
     ExitPlanMode are blocked. A pi-native plan mode could use
     `pi.setActiveTools()` to restrict to read-only tools, block destructive bash
-    via `tool_call` event, and surface plan approval through pi's TUI. Not
-    applicable to AskClaude subagents. See `fractary/pi-claude-code`
+    via `tool_call` event, and surface plan approval through pi's TUI. See `fractary/pi-claude-code`
     `PlanMode.ts`.
 
 ## Open questions
