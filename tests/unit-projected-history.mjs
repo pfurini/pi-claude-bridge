@@ -115,19 +115,20 @@ it("retains unchanged prefixes when only timestamp or usage metadata differs", a
 	assert.doesNotThrow(() => snapshotHistory([{ role: "toolResult", toolCallId: "call", content: [], details, isError: false }]));
 });
 
-it("lets a request's trailing user messages drop out of the next projection, and nothing else", async () => {
+it("lets a trailing reminder drop out of the next projection, and nothing else", async () => {
 	const { snapshotHistory, snapshotRequestHistory, alignHistory } = await import("../src/session-history.js");
 	const prompt = { role: "user", content: "task", timestamp: 1 };
 	const call = { role: "assistant", provider: "claude-bridge", content: [{ type: "toolCall", id: "t1", name: "read", arguments: {} }], timestamp: 2 };
 	const result = { role: "toolResult", toolCallId: "t1", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 3 };
-	const reminder = { role: "user", content: "TASK_REMINDER", timestamp: 4 };
+	const reminder = { role: "user", content: [{ type: "text", text: "<system-reminder>\nTASKS\n</system-reminder>" }], timestamp: 4 };
 	const steer = { role: "user", content: "STEER", timestamp: 4 };
 	const reply = { role: "assistant", provider: "claude-bridge", content: [{ type: "text", text: "done" }], timestamp: 5 };
 	const recorded = [...snapshotRequestHistory([prompt, call, result, steer, reminder]), ...snapshotHistory([reply])];
-	// A context hook's reminder is absent from the next projection; the persisted steer is present.
+	// The tasks hook's reminder is absent from the next projection; the persisted steer is present.
 	assert.equal(alignHistory(recorded, snapshotHistory([prompt, call, result, steer, reply])), 5);
 	assert.equal(alignHistory(recorded, snapshotHistory([prompt, call, result, steer, reminder, reply])), 6);
-	// Only the trailing user run is transient: a missing tool result or prompt is a divergence.
+	// A trailing prompt or steer that a context edit omits is a divergence, as is a missing result.
+	assert.equal(alignHistory(recorded, snapshotHistory([prompt, call, result, reply])), undefined);
 	assert.equal(alignHistory(recorded, snapshotHistory([prompt, call, steer, reply])), undefined);
-	assert.equal(alignHistory(snapshotRequestHistory([prompt, call, result]), snapshotHistory([call, result])), undefined);
+	assert.equal(alignHistory(snapshotRequestHistory([prompt, steer]), snapshotHistory([steer])), undefined);
 });

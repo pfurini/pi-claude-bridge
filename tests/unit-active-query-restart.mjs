@@ -9,6 +9,8 @@ import { prepareBridge, stateKey } from "./lib/mocked-bridge.mjs";
 const tool = (name, description = name, parameters = { type: "object", properties: {} }) => ({ name, description, parameters });
 const tools = [tool("read"), tool("bash")];
 const user = content => ({ role: "user", content, timestamp: 1 });
+// The fork's tasks hook sends this shape for one request only.
+const reminder = text => user([{ type: 'text', text: `<system-reminder>\n${text}\n</system-reminder>` }]);
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 async function withBridge(plans, run, providerOverrides = {}) {
@@ -86,12 +88,23 @@ it("continues an unchanged query despite metadata and equivalent declaration ord
 	assert.equal(state.controls[0].toolResult.isError, false);
 }));
 
+// A context edit can omit a persisted message from the next projection: that must still restart.
+it('restarts when the next projection omits a persisted trailing message', { timeout: 10_000 }, () => withBridge([{ tool: 'read' }, { reply: 'CURRENT' }], async ({ state, request, completeTool }) => {
+	const label = user('The old label is OLD.');
+	const initial = user('task');
+	const first = await request([label, initial]).result();
+	const result = completeTool(first);
+	const final = await request([initial, first, result]).result();
+	assert.equal(final.content[0].text, 'CURRENT');
+	assert.equal(state.queries.length, 2);
+}));
+
 // The fork's tasks `context` hook appends a reminder to one request only; Pi never persists it.
 it('continues the query when the previous delivery carried a transient reminder', { timeout: 10_000 }, () => withBridge([{ tool: ['read', 'read'], reply: 'DONE' }], async ({ state, request, completeTool }) => {
 	const initial = user('task');
 	const first = await request([initial]).result();
 	const firstResult = completeTool(first);
-	const second = await request([initial, first, firstResult, user('TASK_REMINDER')]).result();
+	const second = await request([initial, first, firstResult, reminder('TASK_REMINDER')]).result();
 	const secondResult = completeTool(second);
 	const final = await request([initial, first, firstResult, second, secondResult]).result();
 	assert.equal(final.content[0].text, 'DONE');
@@ -104,7 +117,7 @@ it('resumes the Claude session after a turn whose last delivery carried a transi
 	const initial = user('task');
 	const first = await request([initial]).result();
 	const result = completeTool(first);
-	const final = await request([initial, first, result, user('TASK_REMINDER')]).result();
+	const final = await request([initial, first, result, reminder('TASK_REMINDER')]).result();
 	const seeds = state.seeds;
 	await request([initial, first, result, final, user('next task')]).result();
 	assert.equal(state.seeds, seeds);

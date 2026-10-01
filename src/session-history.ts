@@ -33,14 +33,29 @@ export function snapshotHistory(messages: Context["messages"]): string[] {
 const TRANSIENT = "~";
 
 /**
- * A request's history, with its trailing user messages marked transient. A Pi `context` hook may
- * add messages to one request only (the fork's tasks reminder appends one), so the next projection
- * can omit them. Persisted prompts and steers reappear and still match.
+ * A reminder a Pi `context` hook adds to one request only. The fork's tasks reminder
+ * (`fork-builtins/tasks/reminder.ts`) wraps the whole message in system-reminder tags, as Claude
+ * Code's own todo reminders do. Only this shape counts: a projection can also omit a persisted
+ * prompt (a context edit), and that omission must still rebuild.
+ */
+function isTransientReminder(message: Context["messages"][number]): boolean {
+	if (message.role !== "user") return false;
+	const blocks = typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
+	if (!blocks.every(block => block.type === "text")) return false;
+	const text = blocks.map(block => (block as { text: string }).text).join("").trim();
+	return text.startsWith("<system-reminder>") && text.endsWith("</system-reminder>");
+}
+
+/**
+ * A request's history, with its trailing reminders marked transient: the next projection omits
+ * them, and every other difference still counts.
  */
 export function snapshotRequestHistory(messages: Context["messages"]): string[] {
-	const snapshot = snapshotHistory(messages);
-	const roles = messages.filter(message => message.role !== "system").map(message => message.role);
-	for (let index = roles.length - 1; index >= 0 && roles[index] === "user"; index--) snapshot[index] = TRANSIENT + snapshot[index];
+	const history = messages.filter(message => message.role !== "system");
+	const snapshot = snapshotHistory(history);
+	for (let index = history.length - 1; index >= 0 && history[index].role === "user"; index--) {
+		if (isTransientReminder(history[index])) snapshot[index] = TRANSIENT + snapshot[index];
+	}
 	return snapshot;
 }
 
